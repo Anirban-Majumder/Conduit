@@ -3495,6 +3495,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "keyring",
+ "keyring-core",
  "notify",
  "rand 0.9.4",
  "rusqlite",

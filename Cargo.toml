@@ -35,8 +35,10 @@ rand = "0.9"
 # UUIDs for keyring secret references (one per env var)
 uuid = { version = "1", features = ["v4"] }
 
-# Per-OS OS keyring for secret env vars + OAuth tokens
+# Per-OS OS keyring for secret env vars + OAuth tokens.
+# keyring v4 split the client API into keyring-core; both are required.
 keyring = "4"
+keyring-core = { version = "1", features = ["sample"] }
 
 # IDE auto-detect uses std::env / std::fs directly — no sysinfo needed in v0
 # (sysinfo's strength is process inspection, not what we want for IDE detection).
