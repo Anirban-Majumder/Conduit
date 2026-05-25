@@ -16,6 +16,12 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Error)]
+pub enum WatcherError {
+    #[error("notify: {0}")]
+    Notify(#[from] notify::Error),
+}
+
+#[derive(Debug, Error)]
 pub enum DbError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
