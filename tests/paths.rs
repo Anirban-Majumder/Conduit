@@ -24,10 +24,7 @@ fn under_composes_paths_from_root() {
 
 #[test]
 fn ensure_created_makes_root_installs_and_logs() {
-    let tmp = std::env::temp_dir().join(format!(
-        "mcp-router-paths-test-{}",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("mcp-router-paths-test-{}", std::process::id()));
     std::fs::remove_dir_all(&tmp).ok();
     let paths = Paths::under(&tmp);
 

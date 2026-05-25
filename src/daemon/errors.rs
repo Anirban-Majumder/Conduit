@@ -1,4 +1,19 @@
+use std::path::PathBuf;
+
 use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("reading {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("parsing config.toml: {0}")]
+    Parse(#[from] toml::de::Error),
+}
 
 #[derive(Debug, Error)]
 pub enum DbError {
