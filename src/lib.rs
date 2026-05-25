@@ -4,4 +4,5 @@
 )]
 
 pub mod daemon;
+pub mod paths;
 pub mod runtime;
