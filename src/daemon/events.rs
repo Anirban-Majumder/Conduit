@@ -1,13 +1,25 @@
 use tokio::sync::broadcast;
 
 use crate::daemon::config_toml::Settings;
+use crate::daemon::db::types::ApprovalStatus;
 
 const BUS_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    ApprovalPending { id: i64 },
-    ConfigReloaded { settings: Settings },
+    ApprovalPending {
+        id: String,
+        server: String,
+        tool: String,
+        ide_key: String,
+    },
+    ApprovalResolved {
+        id: String,
+        status: ApprovalStatus,
+    },
+    ConfigReloaded {
+        settings: Settings,
+    },
 }
 
 #[derive(Debug, Clone)]
