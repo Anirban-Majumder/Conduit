@@ -4,6 +4,7 @@
 )]
 
 pub mod daemon;
+pub mod gui;
 pub mod installer;
 pub mod paths;
 pub mod runtime;

@@ -23,6 +23,7 @@ use mcp_router::daemon::ide_detect::IdeKind;
 use mcp_router::daemon::ide_writer;
 use mcp_router::daemon::paste_parser;
 use mcp_router::daemon::upstream::manager::UpstreamManager;
+use mcp_router::gui::{hotkey, notifications as gui_notifications};
 use mcp_router::paths::Paths;
 use mcp_router::runtime::Worker;
 
@@ -91,7 +92,24 @@ fn main() -> Result<()> {
         worker.handle().clone(),
     );
     push_initial_models(&window, &db, &settings, worker.handle().clone());
-    spawn_event_bridge(&window, bus.subscribe(), db, worker.handle().clone());
+    let settings_arc = Arc::new(settings);
+    spawn_event_bridge(
+        &window,
+        bus.subscribe(),
+        db.clone(),
+        worker.handle().clone(),
+    );
+
+    // Notifications bridge — fires an OS notification on every ApprovalPending.
+    {
+        let _guard = worker.handle().enter();
+        let _notif = gui_notifications::spawn(bus.subscribe(), db, settings_arc, cancel.clone());
+    }
+
+    // Tray-icon deferred (its libxdo system dep is not universally available).
+    // Spec §"Open questions" already designates the global hotkey as the
+    // Wayland-no-SNI fallback; we ship it as the primary entry point in v0.
+    let _hotkey = install_hotkey(&window);
 
     let cancel_for_close = cancel.clone();
     window.window().on_close_requested(move || {
@@ -108,6 +126,26 @@ fn main() -> Result<()> {
     drop(bus);
     drop(worker);
     Ok(())
+}
+
+fn install_hotkey(window: &MainWindow) -> Option<hotkey::HotkeyHandles> {
+    let handles = hotkey::try_install()?;
+    let weak = window.as_weak();
+    hotkey::spawn_event_pump(handles.hotkey_id, move || {
+        focus_window(&weak);
+    });
+    tracing::info!("global hotkey Ctrl+Alt+Shift+M registered");
+    Some(handles)
+}
+
+fn focus_window(weak: &slint::Weak<MainWindow>) {
+    let weak = weak.clone();
+    slint::invoke_from_event_loop(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.window().show().ok();
+        }
+    })
+    .ok();
 }
 
 fn init_tracing() {

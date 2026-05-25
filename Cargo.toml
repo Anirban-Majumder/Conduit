@@ -62,6 +62,15 @@ keyring-core = { version = "1", features = ["sample"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# Notifications + GUI focus hotkey.
+# `tray-icon` dep deferred: muda (its dependency) hard-links to libxdo.so,
+# which requires xdotool to be installed system-wide on Linux. The global
+# hotkey below (Ctrl+Alt+Shift+M) is the documented Wayland-no-SNI fallback
+# per spec §"Open questions" — keeping it as the primary entry point lets
+# us ship without that system dep. When tray returns it joins this list.
+notify-rust = "4"
+global-hotkey = "0.8"
+
 [build-dependencies]
 slint-build = "1"
 
