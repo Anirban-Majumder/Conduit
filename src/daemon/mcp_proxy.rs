@@ -40,6 +40,10 @@ const TOOLS_LIST: &str = "tools/list";
 /// For everything else: upstream forward (pass-through). Audit is recorded for
 /// `tools/call` outcomes only — list/initialize traffic is verbose and the spec
 /// scopes audit to tool-level decisions.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single end-to-end match over policy + outcome"
+)]
 pub async fn route_tool_call(
     state: &AppState,
     ide_key: &str,

@@ -62,6 +62,9 @@ keyring-core = { version = "1", features = ["sample"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+[build-dependencies]
+slint-build = "1"
+
 # Single-binary GUI app; release profile optimized for distribution size.
 [profile.release]
 opt-level = 3

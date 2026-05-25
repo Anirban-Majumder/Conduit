@@ -1,0 +1,623 @@
+import { Theme } from "theme.slint";
+
+// Data structs exposed to Rust via Slint's struct-binding. Numeric fields are
+// stringified on the Rust side so Slint Text bindings stay trivial.
+
+export struct ApprovalRow {
+    id: string,
+    ide_name: string,
+    server: string,
+    tool: string,
+    created_at: string,
+}
+
+export struct ServerRow {
+    name: string,
+    transport: string,
+    lifecycle_label: string,    // "persistent" / "ephemeral" / "300s idle"
+    status: string,             // "running" | "idle" | "crashed"
+    tool_count_label: string,
+}
+
+export struct IdeRow {
+    name: string,
+    key: string,
+    config_path: string,
+}
+
+export struct PolicyRow {
+    server: string,
+    tool: string,
+    decision: string,           // "allow" | "deny" | "ask"
+    source: string,
+}
+
+export struct AuditRow {
+    ts_label: string,
+    ide_name: string,
+    server: string,
+    tool: string,
+    decision: string,
+    latency_label: string,
+}
+
+export struct SettingsRow {
+    port: string,
+    approval_timeout: string,
+    default_lifecycle: string,
+    audit_retention: string,
+    theme: string,
+    autostart_at_login: string,
+    notifications_enabled: string,
+}
+
+// ----- Reusable components (defined before use) -----
+
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    in property <int> badge;
+    callback clicked <=> ta.clicked;
+
+    background: active ? Theme.surface-2 : transparent;
+    border-radius: Theme.radius-sm;
+    height: 36px;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+        }
+
+        if root.badge > 0 : Rectangle {
+            background: Theme.accent;
+            border-radius: 999px;
+            min-width: 18px;
+            height: 18px;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: root.badge;
+                    color: Theme.bg;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+
+    ta := TouchArea {}
+}
+
+component StatusDot inherits Rectangle {
+    in property <color> tint;
+    background: root.tint;
+    border-radius: 999px;
+    width: 8px;
+    height: 8px;
+}
+
+component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <color> bg-color: Theme.surface-3;
+    in property <color> fg-color: Theme.text-primary;
+    callback clicked <=> ta.clicked;
+    background: root.bg-color;
+    border-radius: Theme.radius-sm;
+    height: 28px;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.fg-color;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {}
+}
+
+component RowCard inherits Rectangle {
+    background: Theme.surface;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border;
+    height: 64px;
+}
+
+component EmptyState inherits Rectangle {
+    in property <string> text;
+    background: transparent;
+    VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.text;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component SettingLine inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    height: 28px;
+    HorizontalLayout {
+        spacing: Theme.gap-md;
+        alignment: space-between;
+        Text {
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ----- Tab components -----
+
+component ApprovalsTab inherits Rectangle {
+    in property <[ApprovalRow]> rows;
+    callback approve-clicked(string);
+    callback deny-clicked(string);
+
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Pending approvals (" + rows.length + ")" : "No pending approvals";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "When an IDE calls a tool whose policy is `ask`, the request appears here.";
+            height: 200px;
+        }
+        for row in rows : RowCard {
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: row.server + "." + row.tool;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                    }
+                    Text {
+                        text: row.ide_name + " · " + row.id;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: center;
+                    PillButton {
+                        label: "Approve";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.approve-clicked(row.id); }
+                    }
+                    PillButton {
+                        label: "Deny";
+                        clicked => { root.deny-clicked(row.id); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ServersTab inherits Rectangle {
+    in property <[ServerRow]> rows;
+    callback remove-clicked(string);
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Servers (" + rows.length + ")" : "No MCP servers configured";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "Add MCP servers via the Add Server form (or seed state.db directly).";
+            height: 200px;
+        }
+        for row in rows : RowCard {
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: row.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                    }
+                    Text {
+                        text: row.transport + " · " + row.tool_count_label + " · " + row.lifecycle_label;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: center;
+                    StatusDot {
+                        tint: row.status == "running" ? Theme.success : row.status == "crashed" ? Theme.danger : Theme.text-tertiary;
+                    }
+                    Text {
+                        text: row.status;
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                    PillButton {
+                        label: "Remove";
+                        clicked => { root.remove-clicked(row.name); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component EditorsTab inherits Rectangle {
+    in property <[IdeRow]> rows;
+    callback remove-clicked(string);
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Connected IDEs (" + rows.length + ")" : "No IDEs connected";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "Connect an IDE via the (TBD) Add IDE flow.";
+            height: 200px;
+        }
+        for row in rows : RowCard {
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: row.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                    }
+                    Text {
+                        text: "key " + row.key + " · " + row.config_path;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                PillButton {
+                    label: "Remove";
+                    clicked => { root.remove-clicked(row.name); }
+                }
+            }
+        }
+    }
+}
+
+component PolicyTab inherits Rectangle {
+    in property <[PolicyRow]> rows;
+    callback change-decision(string, string, string);
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Policies (" + rows.length + ")" : "No policies set";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "Tool policies appear here as IDEs call tools (defaulted to `ask`).";
+            height: 200px;
+        }
+        for row in rows : RowCard {
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: row.server + "." + row.tool;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                    }
+                    Text {
+                        text: "source: " + row.source;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: center;
+                    PillButton {
+                        label: "Allow";
+                        bg-color: row.decision == "allow" ? Theme.accent : Theme.surface-3;
+                        fg-color: row.decision == "allow" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.change-decision(row.server, row.tool, "allow"); }
+                    }
+                    PillButton {
+                        label: "Ask";
+                        bg-color: row.decision == "ask" ? Theme.warning : Theme.surface-3;
+                        fg-color: row.decision == "ask" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.change-decision(row.server, row.tool, "ask"); }
+                    }
+                    PillButton {
+                        label: "Deny";
+                        bg-color: row.decision == "deny" ? Theme.danger : Theme.surface-3;
+                        fg-color: row.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
+                        clicked => { root.change-decision(row.server, row.tool, "deny"); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component LogTab inherits Rectangle {
+    in property <[AuditRow]> rows;
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Recent audit (" + rows.length + ")" : "Audit log empty";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "Every tool call is logged here with the policy decision + latency.";
+            height: 200px;
+        }
+        for row in rows : Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border;
+            height: 48px;
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: Theme.gap-md;
+                    alignment: center;
+                    StatusDot {
+                        tint: row.decision == "allow" || row.decision == "ask-approved" ? Theme.success
+                             : row.decision == "deny" || row.decision == "ask-denied" ? Theme.danger
+                             : Theme.warning;
+                    }
+                    Text {
+                        text: row.ide_name + " → " + row.server + "." + row.tool;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: row.decision + " · " + row.latency_label;
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+component SettingsTab inherits Rectangle {
+    in property <SettingsRow> data;
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: "Read-only view of config.toml — edit in your $EDITOR or via this tab in a later release.";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: 4px;
+                SettingLine { label: "daemon.port"; value: root.data.port; }
+                SettingLine { label: "daemon.approval_timeout_seconds"; value: root.data.approval_timeout; }
+                SettingLine { label: "daemon.default_lifecycle_seconds"; value: root.data.default_lifecycle; }
+                SettingLine { label: "daemon.audit_retention_days"; value: root.data.audit_retention; }
+                SettingLine { label: "daemon.autostart_at_login"; value: root.data.autostart_at_login; }
+                SettingLine { label: "gui.theme"; value: root.data.theme; }
+                SettingLine { label: "notifications.enabled"; value: root.data.notifications_enabled; }
+            }
+        }
+    }
+}
+
+component HelpTab inherits Rectangle {
+    VerticalLayout {
+        spacing: Theme.gap-md;
+        alignment: start;
+        Text {
+            text: "mcp-router v0";
+            color: Theme.text-primary;
+            font-size: Theme.font-h3;
+        }
+        Text {
+            text: "Polished MCP proxy + policy enforcer. Routes IDE → MCP server traffic with per-tool approval gates, logs every tool call.";
+            color: Theme.text-secondary;
+            font-size: Theme.font-body;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "URL pattern · http://127.0.0.1:<port>/<ide-key>/<server>/mcp";
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+        }
+        Text {
+            text: "Daemon logs · <state_root>/logs/daemon.log";
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+        }
+    }
+}
+
+// ----- Root window -----
+
+export component MainWindow inherits Window {
+    title: "MCP Router";
+    preferred-width: 1200px;
+    preferred-height: 760px;
+    min-width: 720px;
+    min-height: 480px;
+    background: Theme.bg;
+
+    in property <[ApprovalRow]> approvals;
+    in property <[ServerRow]> servers;
+    in property <[IdeRow]> ides;
+    in property <[PolicyRow]> policies;
+    in property <[AuditRow]> audit;
+    in property <SettingsRow> settings;
+    in property <string> status-message: "ready";
+    in property <bool> daemon-healthy: true;
+
+    in-out property <int> active-tab: 0;
+
+    callback approve-clicked(string);
+    callback deny-clicked(string);
+    callback remove-server-clicked(string);
+    callback remove-ide-clicked(string);
+    callback change-policy(string, string, string);
+    callback refresh-clicked();
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // Header
+        Rectangle {
+            background: Theme.surface;
+            height: 56px;
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: center;
+                    Rectangle {
+                        background: Theme.accent;
+                        border-radius: 4px;
+                        width: 12px;
+                        height: 12px;
+                    }
+                    Text {
+                        text: "MCP ROUTER";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-lg;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: center;
+                    StatusDot { tint: root.daemon-healthy ? Theme.success : Theme.warning; }
+                    Text {
+                        text: root.status-message;
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Tab strip
+        Rectangle {
+            background: Theme.surface;
+            height: 48px;
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: 4px;
+                alignment: start;
+                for label[i] in ["Approvals", "Servers", "Editors", "Policy", "Log", "Settings", "Help"] : TabButton {
+                    label: label;
+                    active: root.active-tab == i;
+                    badge: i == 0 ? root.approvals.length : 0;
+                    clicked => { root.active-tab = i; }
+                }
+            }
+        }
+
+        // Content
+        Rectangle {
+            background: Theme.bg;
+            VerticalLayout {
+                padding: Theme.gap-lg;
+                if root.active-tab == 0 : ApprovalsTab {
+                    rows: root.approvals;
+                    approve-clicked(id) => { root.approve-clicked(id); }
+                    deny-clicked(id) => { root.deny-clicked(id); }
+                }
+                if root.active-tab == 1 : ServersTab {
+                    rows: root.servers;
+                    remove-clicked(name) => { root.remove-server-clicked(name); }
+                }
+                if root.active-tab == 2 : EditorsTab {
+                    rows: root.ides;
+                    remove-clicked(name) => { root.remove-ide-clicked(name); }
+                }
+                if root.active-tab == 3 : PolicyTab {
+                    rows: root.policies;
+                    change-decision(server, tool, decision) => {
+                        root.change-policy(server, tool, decision);
+                    }
+                }
+                if root.active-tab == 4 : LogTab {
+                    rows: root.audit;
+                }
+                if root.active-tab == 5 : SettingsTab {
+                    data: root.settings;
+                }
+                if root.active-tab == 6 : HelpTab {}
+            }
+        }
+    }
+}
