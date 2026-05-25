@@ -28,8 +28,12 @@ pub enum Transport {
         /// Env entries already resolved (secrets fetched from the keyring).
         env: Vec<(String, String)>,
     },
-    /// HTTP MCP upstream (streamable-http transport).
-    Http { url: String },
+    /// HTTP MCP upstream (streamable-http transport). `bearer_token`, when
+    /// set, becomes `Authorization: Bearer <token>` on every request.
+    Http {
+        url: String,
+        bearer_token: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -216,7 +220,9 @@ impl UpstreamManager {
             Transport::Stdio { command, args, env } => {
                 stdio::connect(command, args, env, self.cancel.clone()).await?
             }
-            Transport::Http { url } => http::connect(url, self.cancel.clone()).await?,
+            Transport::Http { url, bearer_token } => {
+                http::connect(url, bearer_token.as_deref(), self.cancel.clone()).await?
+            }
         };
 
         // Insert atomically OR detect a race; cancel any duplicate OUTSIDE the lock.

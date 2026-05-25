@@ -161,31 +161,42 @@ pub(crate) fn server_to_config(
     use crate::daemon::secrets;
     use crate::daemon::upstream::manager::{ServerConfig, Transport};
 
+    use crate::daemon::upstream::http::BEARER_TOKEN_ENV;
+
+    let resolved_env: Vec<(String, String)> = {
+        let mut out = Vec::with_capacity(server.env.len());
+        for entry in &server.env {
+            let value = match &entry.value {
+                EnvValue::Plain(v) => v.clone(),
+                EnvValue::Secret(uuid) => match secrets::fetch(&server.name, uuid) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(error = %e, server = %server.name, env = %entry.name, "secret fetch failed");
+                        String::new()
+                    }
+                },
+            };
+            out.push((entry.name.clone(), value));
+        }
+        out
+    };
+
     let transport = match server.transport.as_str() {
-        TRANSPORT_STDIO => {
-            let mut env = Vec::with_capacity(server.env.len());
-            for entry in &server.env {
-                let value = match &entry.value {
-                    EnvValue::Plain(v) => v.clone(),
-                    EnvValue::Secret(uuid) => match secrets::fetch(&server.name, uuid) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            tracing::warn!(error = %e, server = %server.name, env = %entry.name, "secret fetch failed");
-                            String::new()
-                        }
-                    },
-                };
-                env.push((entry.name.clone(), value));
-            }
-            Transport::Stdio {
-                command: server.command.clone().unwrap_or_default(),
-                args: server.args.clone(),
-                env,
+        TRANSPORT_STDIO => Transport::Stdio {
+            command: server.command.clone().unwrap_or_default(),
+            args: server.args.clone(),
+            env: resolved_env,
+        },
+        TRANSPORT_HTTP => {
+            let bearer_token = resolved_env
+                .iter()
+                .find(|(name, _)| name == BEARER_TOKEN_ENV)
+                .map(|(_, value)| value.clone());
+            Transport::Http {
+                url: server.url.clone().unwrap_or_default(),
+                bearer_token,
             }
         }
-        TRANSPORT_HTTP => Transport::Http {
-            url: server.url.clone().unwrap_or_default(),
-        },
         other => {
             return Err(ServerError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
