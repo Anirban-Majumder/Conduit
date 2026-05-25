@@ -3,3 +3,8 @@ pub mod config_watcher;
 pub mod db;
 pub mod errors;
 pub mod events;
+pub mod ide_detect;
+pub mod ide_writer;
+pub mod paste_parser;
+pub mod secrets;
+pub mod upstream;
