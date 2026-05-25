@@ -232,12 +232,23 @@ component ApprovalsTab inherits Rectangle {
 component ServersTab inherits Rectangle {
     in property <[ServerRow]> rows;
     callback remove-clicked(string);
+    callback add-clicked();
     VerticalLayout {
         spacing: Theme.gap-sm;
-        Text {
-            text: rows.length > 0 ? "Servers (" + rows.length + ")" : "No MCP servers configured";
-            color: Theme.text-secondary;
-            font-size: Theme.font-eyebrow;
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: rows.length > 0 ? "Servers (" + rows.length + ")" : "No MCP servers configured";
+                color: Theme.text-secondary;
+                font-size: Theme.font-eyebrow;
+                vertical-alignment: center;
+            }
+            PillButton {
+                label: "+ Add server";
+                bg-color: Theme.accent;
+                fg-color: Theme.bg;
+                clicked => { root.add-clicked(); }
+            }
         }
         if rows.length == 0 : EmptyState {
             text: "Add MCP servers via the Add Server form (or seed state.db directly).";
@@ -288,12 +299,23 @@ component ServersTab inherits Rectangle {
 component EditorsTab inherits Rectangle {
     in property <[IdeRow]> rows;
     callback remove-clicked(string);
+    callback add-clicked();
     VerticalLayout {
         spacing: Theme.gap-sm;
-        Text {
-            text: rows.length > 0 ? "Connected IDEs (" + rows.length + ")" : "No IDEs connected";
-            color: Theme.text-secondary;
-            font-size: Theme.font-eyebrow;
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: rows.length > 0 ? "Connected IDEs (" + rows.length + ")" : "No IDEs connected";
+                color: Theme.text-secondary;
+                font-size: Theme.font-eyebrow;
+                vertical-alignment: center;
+            }
+            PillButton {
+                label: "+ Add IDE";
+                bg-color: Theme.accent;
+                fg-color: Theme.bg;
+                clicked => { root.add-clicked(); }
+            }
         }
         if rows.length == 0 : EmptyState {
             text: "Connect an IDE via the (TBD) Add IDE flow.";
@@ -496,6 +518,202 @@ component HelpTab inherits Rectangle {
     }
 }
 
+// ----- Modal dialogs -----
+
+component LabeledInput inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text <=> input.text;
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    input := TextInput {
+        color: Theme.text-primary;
+        font-size: Theme.font-body;
+        single-line: true;
+        height: 32px;
+    }
+    Rectangle { background: Theme.border; height: 1px; }
+}
+
+component LabeledTextArea inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text <=> input.text;
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    Rectangle {
+        background: Theme.surface-2;
+        border-radius: Theme.radius-sm;
+        height: 120px;
+        input := TextInput {
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            single-line: false;
+            wrap: word-wrap;
+            width: parent.width - 24px;
+            height: parent.height - 16px;
+            x: 12px;
+            y: 8px;
+        }
+    }
+}
+
+component ModalShell inherits Rectangle {
+    in property <string> title;
+    callback dismiss();
+    background: #000000aa;
+    TouchArea { clicked => { root.dismiss(); } }
+    Rectangle {
+        background: Theme.surface;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border;
+        width: 560px;
+        height: 560px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        // Trap clicks inside the card so dismiss() isn't fired by clicks on
+        // the form itself — only the dim backdrop dismisses.
+        TouchArea {}
+        VerticalLayout {
+            padding: Theme.gap-lg;
+            spacing: Theme.gap-md;
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-h3;
+                }
+                PillButton {
+                    label: "Close";
+                    clicked => { root.dismiss(); }
+                }
+            }
+            @children
+        }
+    }
+}
+
+component AddServerDialog inherits Rectangle {
+    in-out property <string> name <=> name-input.text;
+    in-out property <string> command <=> cmd-input.text;
+    in-out property <string> args <=> args-input.text;
+    in-out property <string> url <=> url-input.text;
+    in-out property <string> transport;
+    in-out property <string> paste <=> paste-input.text;
+    callback save();
+    callback dismiss();
+    callback parse();
+
+    ModalShell {
+        title: "Add MCP Server";
+        dismiss => { root.dismiss(); }
+
+        VerticalLayout {
+            spacing: Theme.gap-sm;
+
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                PillButton {
+                    label: "stdio";
+                    bg-color: root.transport == "stdio" ? Theme.accent : Theme.surface-3;
+                    fg-color: root.transport == "stdio" ? Theme.bg : Theme.text-secondary;
+                    clicked => { root.transport = "stdio"; }
+                }
+                PillButton {
+                    label: "http";
+                    bg-color: root.transport == "http" ? Theme.accent : Theme.surface-3;
+                    fg-color: root.transport == "http" ? Theme.bg : Theme.text-secondary;
+                    clicked => { root.transport = "http"; }
+                }
+            }
+
+            name-input := LabeledInput { label: "Name"; }
+            cmd-input := LabeledInput { label: "Command (stdio only)"; }
+            args-input := LabeledInput { label: "Args, space-separated (stdio only)"; }
+            url-input := LabeledInput { label: "URL (http only)"; }
+
+            paste-input := LabeledTextArea {
+                label: "Paste env vars / dotenv / MCP JSON to auto-fill";
+            }
+
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                alignment: end;
+                PillButton {
+                    label: "Parse paste";
+                    clicked => { root.parse(); }
+                }
+                PillButton {
+                    label: "Save";
+                    bg-color: Theme.accent;
+                    fg-color: Theme.bg;
+                    clicked => { root.save(); }
+                }
+            }
+        }
+    }
+}
+
+component AddIdeDialog inherits Rectangle {
+    in-out property <string> selected;
+    callback save();
+    callback dismiss();
+
+    ModalShell {
+        title: "Add IDE";
+        dismiss => { root.dismiss(); }
+
+        VerticalLayout {
+            spacing: Theme.gap-sm;
+            Text {
+                text: "Generate a new 8-char IDE key and auto-write the MCP config for:";
+                color: Theme.text-secondary;
+                font-size: Theme.font-body-sm;
+                wrap: word-wrap;
+            }
+            for ide in ["Claude Code", "Cursor", "VsCodeCopilot", "OpenCode", "OpenClaude"] : Rectangle {
+                background: root.selected == ide ? Theme.surface-2 : Theme.surface;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.selected == ide ? Theme.accent : Theme.border;
+                height: 40px;
+                HorizontalLayout {
+                    padding-left: Theme.gap-md;
+                    padding-right: Theme.gap-md;
+                    alignment: start;
+                    Text {
+                        text: ide;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea {
+                    clicked => { root.selected = ide; }
+                }
+            }
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                alignment: end;
+                PillButton {
+                    label: "Generate + Write";
+                    bg-color: Theme.accent;
+                    fg-color: Theme.bg;
+                    clicked => { root.save(); }
+                }
+            }
+        }
+    }
+}
+
 // ----- Root window -----
 
 export component MainWindow inherits Window {
@@ -516,6 +734,17 @@ export component MainWindow inherits Window {
     in property <bool> daemon-healthy: true;
 
     in-out property <int> active-tab: 0;
+    in-out property <bool> show-add-server-dialog: false;
+    in-out property <bool> show-add-ide-dialog: false;
+
+    in-out property <string> add-server-name;
+    in-out property <string> add-server-command;
+    in-out property <string> add-server-args;
+    in-out property <string> add-server-url;
+    in-out property <string> add-server-transport: "stdio";
+    in-out property <string> add-server-paste;
+
+    in-out property <string> add-ide-selected: "Cursor";
 
     callback approve-clicked(string);
     callback deny-clicked(string);
@@ -523,6 +752,22 @@ export component MainWindow inherits Window {
     callback remove-ide-clicked(string);
     callback change-policy(string, string, string);
     callback refresh-clicked();
+    callback submit-add-server();          // reads add-server-* properties
+    callback submit-add-ide();             // reads add-ide-selected
+    callback parse-paste();                // reads add-server-paste, fills the other add-server-* fields
+
+    public function show-add-server() {
+        root.show-add-server-dialog = true;
+        root.add-server-name = "";
+        root.add-server-command = "";
+        root.add-server-args = "";
+        root.add-server-url = "";
+        root.add-server-paste = "";
+    }
+
+    public function show-add-ide() {
+        root.show-add-ide-dialog = true;
+    }
 
     VerticalLayout {
         padding: 0px;
@@ -586,11 +831,13 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Content
+        // Content — see below; dialog overlays come after the layout.
         Rectangle {
             background: Theme.bg;
+            vertical-stretch: 1;
             VerticalLayout {
                 padding: Theme.gap-lg;
+                alignment: start;
                 if root.active-tab == 0 : ApprovalsTab {
                     rows: root.approvals;
                     approve-clicked(id) => { root.approve-clicked(id); }
@@ -599,10 +846,12 @@ export component MainWindow inherits Window {
                 if root.active-tab == 1 : ServersTab {
                     rows: root.servers;
                     remove-clicked(name) => { root.remove-server-clicked(name); }
+                    add-clicked => { root.show-add-server(); }
                 }
                 if root.active-tab == 2 : EditorsTab {
                     rows: root.ides;
                     remove-clicked(name) => { root.remove-ide-clicked(name); }
+                    add-clicked => { root.show-add-ide(); }
                 }
                 if root.active-tab == 3 : PolicyTab {
                     rows: root.policies;
@@ -619,5 +868,27 @@ export component MainWindow inherits Window {
                 if root.active-tab == 6 : HelpTab {}
             }
         }
+    }
+
+    // Modal dialog overlays — sit on top of everything when shown.
+    if root.show-add-server-dialog : AddServerDialog {
+        width: root.width;
+        height: root.height;
+        name <=> root.add-server-name;
+        command <=> root.add-server-command;
+        args <=> root.add-server-args;
+        url <=> root.add-server-url;
+        transport <=> root.add-server-transport;
+        paste <=> root.add-server-paste;
+        save => { root.submit-add-server(); root.show-add-server-dialog = false; }
+        dismiss => { root.show-add-server-dialog = false; }
+        parse => { root.parse-paste(); }
+    }
+    if root.show-add-ide-dialog : AddIdeDialog {
+        width: root.width;
+        height: root.height;
+        selected <=> root.add-ide-selected;
+        save => { root.submit-add-ide(); root.show-add-ide-dialog = false; }
+        dismiss => { root.show-add-ide-dialog = false; }
     }
 }
