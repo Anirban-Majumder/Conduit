@@ -1,10 +1,13 @@
+pub mod approval;
 pub mod config_toml;
 pub mod config_watcher;
 pub mod db;
 pub mod errors;
 pub mod events;
+pub mod http_server;
 pub mod ide_detect;
 pub mod ide_writer;
+pub mod mcp_proxy;
 pub mod paste_parser;
 pub mod secrets;
 pub mod upstream;

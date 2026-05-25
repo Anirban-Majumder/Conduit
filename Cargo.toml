@@ -17,6 +17,22 @@ tokio-util = "0.7"
 
 slint = { version = "1", features = ["backend-winit", "renderer-skia"] }
 
+# HTTP server (the daemon's IDE-facing surface — bound to 127.0.0.1)
+axum = "0.8"
+
+# MCP wire protocol — tilde pin: minor bumps are deliberate work, patches OK
+rmcp = { version = "~1.7", features = [
+    "client",
+    "server",
+    "transport-child-process",
+    "transport-streamable-http-server",
+    "transport-streamable-http-client-reqwest",
+    "auth",
+] }
+
+# rustls only — openssl is banned in deny.toml
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 # Settings + paths
