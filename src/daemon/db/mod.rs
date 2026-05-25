@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::db::types::{
     fresh_ide_key, ApprovalStatus, AuditDecision, AuditEntry, AuditFilter, Decision,
-    DecisionSource, IdeKey, ManagedIdeConfig, PendingApproval, Policy,
+    DecisionSource, EnvEntry, IdeKey, ManagedIdeConfig, PendingApproval, Policy, Server,
 };
 use crate::daemon::errors::DbError;
 
@@ -118,9 +118,24 @@ pub enum DbCmd {
         older_than_ts: i64,
         reply: oneshot::Sender<Result<u64, DbError>>,
     },
+    UpsertServer {
+        server: Server,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    GetServer {
+        name: String,
+        reply: oneshot::Sender<Result<Option<Server>, DbError>>,
+    },
+    ListServers {
+        reply: oneshot::Sender<Result<Vec<Server>, DbError>>,
+    },
+    DeleteServer {
+        name: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Db {
     tx: mpsc::Sender<DbCmd>,
 }
@@ -410,6 +425,48 @@ impl Db {
             .map_err(|_closed| DbError::ActorGone)?;
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
+
+    pub async fn upsert_server(&self, server: Server) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::UpsertServer { server, reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn get_server(&self, name: &str) -> Result<Option<Server>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::GetServer {
+                name: name.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn list_servers(&self) -> Result<Vec<Server>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListServers { reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn delete_server(&self, name: &str) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::DeleteServer {
+                name: name.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
 }
 
 fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
@@ -547,6 +604,18 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
             reply
                 .send(query_purge_old_audit_entries(conn, older_than_ts))
                 .ok();
+        }
+        DbCmd::UpsertServer { server, reply } => {
+            reply.send(query_upsert_server(conn, &server)).ok();
+        }
+        DbCmd::GetServer { name, reply } => {
+            reply.send(query_get_server(conn, &name)).ok();
+        }
+        DbCmd::ListServers { reply } => {
+            reply.send(query_list_servers(conn)).ok();
+        }
+        DbCmd::DeleteServer { name, reply } => {
+            reply.send(query_delete_server(conn, &name)).ok();
         }
     }
 }
@@ -1002,4 +1071,107 @@ fn query_purge_old_audit_entries(conn: &Connection, older_than_ts: i64) -> Resul
         .prepare_cached("DELETE FROM audit_log WHERE ts < ?1")?
         .execute(params![older_than_ts])?;
     Ok(n as u64)
+}
+
+fn decode_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
+    let args_json: String = row.get(3)?;
+    let env_json: String = row.get(4)?;
+    let args: Vec<String> = serde_json::from_str(&args_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            format!("args_json: {e}").into(),
+        )
+    })?;
+    let env: Vec<EnvEntry> = serde_json::from_str(&env_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            format!("env_json: {e}").into(),
+        )
+    })?;
+    Ok(Server {
+        name: row.get(0)?,
+        transport: row.get(1)?,
+        command: row.get(2)?,
+        args,
+        env,
+        url: row.get(5)?,
+        lifecycle_seconds: row.get(6)?,
+        last_init_duration_ms: row.get(7)?,
+        package_version: row.get(8)?,
+        mcp_self_version: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
+fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError> {
+    let args_json =
+        serde_json::to_string(&server.args).map_err(|e| DbError::Encoding(e.to_string()))?;
+    let env_json =
+        serde_json::to_string(&server.env).map_err(|e| DbError::Encoding(e.to_string()))?;
+    conn.prepare_cached(
+        "INSERT INTO servers
+         (name, transport, command, args_json, env_json, url, lifecycle_seconds,
+          last_init_duration_ms, package_version, mcp_self_version, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(name) DO UPDATE SET
+             transport = excluded.transport,
+             command = excluded.command,
+             args_json = excluded.args_json,
+             env_json = excluded.env_json,
+             url = excluded.url,
+             lifecycle_seconds = excluded.lifecycle_seconds,
+             last_init_duration_ms = excluded.last_init_duration_ms,
+             package_version = excluded.package_version,
+             mcp_self_version = excluded.mcp_self_version",
+    )?
+    .execute(params![
+        &server.name,
+        &server.transport,
+        &server.command,
+        args_json,
+        env_json,
+        &server.url,
+        server.lifecycle_seconds,
+        server.last_init_duration_ms,
+        &server.package_version,
+        &server.mcp_self_version,
+        server.created_at,
+    ])?;
+    Ok(())
+}
+
+fn query_get_server(conn: &Connection, name: &str) -> Result<Option<Server>, DbError> {
+    let row = conn
+        .prepare_cached(
+            "SELECT name, transport, command, args_json, env_json, url,
+                    lifecycle_seconds, last_init_duration_ms, package_version,
+                    mcp_self_version, created_at
+             FROM servers WHERE name = ?1",
+        )?
+        .query_row(params![name], decode_server_row)
+        .optional()?;
+    Ok(row)
+}
+
+fn query_list_servers(conn: &Connection) -> Result<Vec<Server>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT name, transport, command, args_json, env_json, url,
+                lifecycle_seconds, last_init_duration_ms, package_version,
+                mcp_self_version, created_at
+         FROM servers ORDER BY name",
+    )?;
+    let rows = stmt.query_map([], decode_server_row)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+fn query_delete_server(conn: &Connection, name: &str) -> Result<(), DbError> {
+    conn.prepare_cached("DELETE FROM servers WHERE name = ?1")?
+        .execute(params![name])?;
+    Ok(())
 }

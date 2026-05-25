@@ -1,2 +1,287 @@
-// MCP request bridging: forward IDE → upstream, pass-through upstream errors,
-// daemon-generated errors for our codes (-32000..-32004). Spec §"MCP request flow".
+// MCP request bridging: forward IDE → upstream, run policy + approval gate for
+// tools/call, audit every decision. Spec §"MCP request flow".
+
+use std::time::Instant;
+
+use serde_json::Value;
+use thiserror::Error;
+
+use crate::daemon::approval::{ApprovalError, ApprovalOutcome, ApprovalRequest};
+use crate::daemon::db::types::{AuditDecision, AuditEntry, Decision, DecisionSource, Server};
+use crate::daemon::errors::DbError;
+use crate::daemon::http_server::{server_to_config, AppState};
+use crate::daemon::upstream::manager::UpstreamError;
+
+#[derive(Debug)]
+pub enum ProxyOutcome {
+    Forward(Value),
+    UserDenied,
+    ApprovalTimeout,
+}
+
+#[derive(Debug, Error)]
+pub enum ProxyError {
+    #[error("db: {0}")]
+    Db(#[from] DbError),
+
+    #[error("approval: {0}")]
+    Approval(#[from] ApprovalError),
+
+    #[error("upstream: {0}")]
+    Upstream(#[from] UpstreamError),
+}
+
+const TOOLS_CALL: &str = "tools/call";
+const TOOLS_LIST: &str = "tools/list";
+
+/// Top-level routing for a single JSON-RPC request from an IDE.
+///
+/// For `tools/call`: policy lookup → maybe approval → upstream forward → audit.
+/// For everything else: upstream forward (pass-through). Audit is recorded for
+/// `tools/call` outcomes only — list/initialize traffic is verbose and the spec
+/// scopes audit to tool-level decisions.
+pub async fn route_tool_call(
+    state: &AppState,
+    ide_key: &str,
+    ide_name: &str,
+    server: &Server,
+    method: &str,
+    params: Value,
+) -> Result<ProxyOutcome, ProxyError> {
+    if method == TOOLS_LIST {
+        let config = server_to_config(server).map_err(io_to_upstream)?;
+        let result = state.upstream.list_tools(&config).await?;
+        return Ok(ProxyOutcome::Forward(result));
+    }
+    if method != TOOLS_CALL {
+        // v0 only proxies tools/list and tools/call. initialize is handled
+        // internally by rmcp during upstream spawn; everything else returns
+        // method_not_found at the JSON-RPC layer in the HTTP handler.
+        return Err(ProxyError::Upstream(UpstreamError::InitFailed(format!(
+            "method not supported: {method}"
+        ))));
+    }
+
+    let tool_name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let args_json = serde_json::to_string(&params).unwrap_or_else(|_| "null".to_string());
+
+    let decision_source_tuple = state.db.get_policy(&server.name, &tool_name).await?;
+    let (decision, source) = match decision_source_tuple {
+        Some(p) => (p.decision, p.decision_source),
+        None => (Decision::Ask, DecisionSource::Default),
+    };
+
+    let start = Instant::now();
+    let outcome = match decision {
+        Decision::Allow => {
+            forward_and_audit(
+                state,
+                ide_key,
+                ide_name,
+                server,
+                &tool_name,
+                params,
+                &args_json,
+                Some(source),
+                AuditDecision::Allow,
+                start,
+            )
+            .await?
+        }
+        Decision::Deny => {
+            insert_audit(
+                state,
+                ide_key,
+                ide_name,
+                &server.name,
+                &tool_name,
+                &args_json,
+                AuditDecision::Deny,
+                Some(source),
+                start.elapsed(),
+                None,
+                None,
+            )
+            .await;
+            ProxyOutcome::UserDenied
+        }
+        Decision::Ask => {
+            let approval_outcome = state
+                .approvals
+                .request(ApprovalRequest {
+                    server: server.name.clone(),
+                    tool: tool_name.clone(),
+                    args_json: args_json.clone(),
+                    ide_key: ide_key.to_string(),
+                })
+                .await?;
+            match approval_outcome {
+                ApprovalOutcome::Approved => {
+                    forward_and_audit(
+                        state,
+                        ide_key,
+                        ide_name,
+                        server,
+                        &tool_name,
+                        params,
+                        &args_json,
+                        Some(source),
+                        AuditDecision::AskApproved,
+                        start,
+                    )
+                    .await?
+                }
+                ApprovalOutcome::Denied => {
+                    insert_audit(
+                        state,
+                        ide_key,
+                        ide_name,
+                        &server.name,
+                        &tool_name,
+                        &args_json,
+                        AuditDecision::AskDenied,
+                        Some(source),
+                        start.elapsed(),
+                        None,
+                        None,
+                    )
+                    .await;
+                    ProxyOutcome::UserDenied
+                }
+                ApprovalOutcome::Timeout => {
+                    insert_audit(
+                        state,
+                        ide_key,
+                        ide_name,
+                        &server.name,
+                        &tool_name,
+                        &args_json,
+                        AuditDecision::AskTimeout,
+                        Some(source),
+                        start.elapsed(),
+                        None,
+                        None,
+                    )
+                    .await;
+                    ProxyOutcome::ApprovalTimeout
+                }
+            }
+        }
+    };
+
+    Ok(outcome)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "audit entry has many denormalised fields"
+)]
+async fn forward_and_audit(
+    state: &AppState,
+    ide_key: &str,
+    ide_name: &str,
+    server: &Server,
+    tool_name: &str,
+    params: Value,
+    args_json: &str,
+    source: Option<DecisionSource>,
+    decision: AuditDecision,
+    start: Instant,
+) -> Result<ProxyOutcome, ProxyError> {
+    let config = server_to_config(server).map_err(io_to_upstream)?;
+    match state.upstream.call_tool(&config, TOOLS_CALL, params).await {
+        Ok(result) => {
+            let latency = start.elapsed();
+            let response_status = "ok".to_string();
+            let response_len = i64::try_from(serde_json::to_string(&result).map_or(0, |s| s.len()))
+                .unwrap_or(i64::MAX);
+            insert_audit(
+                state,
+                ide_key,
+                ide_name,
+                &server.name,
+                tool_name,
+                args_json,
+                decision,
+                source,
+                latency,
+                Some(response_status),
+                Some(response_len),
+            )
+            .await;
+            Ok(ProxyOutcome::Forward(result))
+        }
+        Err(e) => {
+            let latency = start.elapsed();
+            insert_audit(
+                state,
+                ide_key,
+                ide_name,
+                &server.name,
+                tool_name,
+                args_json,
+                AuditDecision::Error,
+                source,
+                latency,
+                None,
+                None,
+            )
+            .await;
+            Err(ProxyError::Upstream(e))
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "audit entry has many denormalised fields"
+)]
+async fn insert_audit(
+    state: &AppState,
+    ide_key: &str,
+    ide_name: &str,
+    server: &str,
+    tool: &str,
+    args_json: &str,
+    decision: AuditDecision,
+    source: Option<DecisionSource>,
+    latency: std::time::Duration,
+    response_status: Option<String>,
+    response_length: Option<i64>,
+) {
+    let entry = AuditEntry {
+        id: None,
+        ts: now_unix(),
+        ide_key: Some(ide_key.to_string()),
+        ide_name: Some(ide_name.to_string()),
+        server: server.to_string(),
+        tool: Some(tool.to_string()),
+        decision,
+        decision_source: source,
+        latency_ms: i64::try_from(latency.as_millis()).ok(),
+        request_args: Some(args_json.to_string()),
+        response_status,
+        response_length,
+        error_code: None,
+    };
+    if let Err(e) = state.db.insert_audit_entry(entry).await {
+        tracing::warn!(error = %e, server, tool, "audit insert failed");
+    }
+}
+
+fn now_unix() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+fn io_to_upstream(e: crate::daemon::http_server::ServerError) -> ProxyError {
+    ProxyError::Upstream(UpstreamError::InitFailed(e.to_string()))
+}

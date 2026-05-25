@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -166,6 +168,39 @@ pub struct AuditFilter {
     pub until_ts: Option<i64>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "value_kind", content = "value_or_ref", rename_all = "lowercase")]
+pub enum EnvValue {
+    Plain(String),
+    Secret(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvEntry {
+    pub name: String,
+    #[serde(flatten)]
+    pub value: EnvValue,
+}
+
+/// Transport label as stored in `servers.transport`. "stdio" | "http".
+pub const TRANSPORT_STDIO: &str = "stdio";
+pub const TRANSPORT_HTTP: &str = "http";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub name: String,
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: Vec<EnvEntry>,
+    pub url: Option<String>,
+    pub lifecycle_seconds: i32,
+    pub last_init_duration_ms: Option<i64>,
+    pub package_version: Option<String>,
+    pub mcp_self_version: Option<String>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

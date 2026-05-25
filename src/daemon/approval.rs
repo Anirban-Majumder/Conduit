@@ -75,10 +75,7 @@ impl ApprovalCenter {
         &self.bus
     }
 
-    pub async fn request(
-        &self,
-        req: ApprovalRequest,
-    ) -> Result<ApprovalOutcome, ApprovalError> {
+    pub async fn request(&self, req: ApprovalRequest) -> Result<ApprovalOutcome, ApprovalError> {
         let id = Uuid::new_v4().to_string();
         let approval = PendingApproval {
             id: id.clone(),
@@ -145,11 +142,7 @@ impl ApprovalCenter {
         Ok(outcome)
     }
 
-    pub async fn resolve(
-        &self,
-        id: &str,
-        status: ApprovalStatus,
-    ) -> Result<(), ApprovalError> {
+    pub async fn resolve(&self, id: &str, status: ApprovalStatus) -> Result<(), ApprovalError> {
         match status {
             ApprovalStatus::Approved | ApprovalStatus::Denied | ApprovalStatus::Timeout => {}
             ApprovalStatus::Pending => return Err(ApprovalError::InvalidStatus),
