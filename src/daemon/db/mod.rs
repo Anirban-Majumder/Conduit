@@ -17,6 +17,9 @@ pub enum DbCmd {
     GetSchemaVersion {
         reply: oneshot::Sender<Result<i64, DbError>>,
     },
+    ListTables {
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
+    },
 }
 
 #[derive(Debug)]
@@ -60,6 +63,15 @@ impl Db {
             .map_err(|_closed| DbError::ActorGone)?;
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
+
+    pub async fn list_tables(&self) -> Result<Vec<String>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListTables { reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
 }
 
 fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
@@ -86,6 +98,9 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         DbCmd::GetSchemaVersion { reply } => {
             reply.send(query_schema_version(conn)).ok();
         }
+        DbCmd::ListTables { reply } => {
+            reply.send(query_list_tables(conn)).ok();
+        }
     }
 }
 
@@ -93,4 +108,15 @@ fn query_schema_version(conn: &Connection) -> Result<i64, DbError> {
     let mut stmt = conn.prepare_cached("SELECT MAX(version) FROM schema_version")?;
     let version: i64 = stmt.query_row([], |row| row.get(0))?;
     Ok(version)
+}
+
+fn query_list_tables(conn: &Connection) -> Result<Vec<String>, DbError> {
+    let mut stmt =
+        conn.prepare_cached("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
