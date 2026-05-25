@@ -1,0 +1,12 @@
+# Stable rustfmt options only.
+# Nightly-only options (group_imports, imports_granularity, etc.) silently no-op
+# on stable and break CI on stable runners — leave them out.
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
+reorder_imports = true
+reorder_modules = true

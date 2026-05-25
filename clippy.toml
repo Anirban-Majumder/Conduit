@@ -1,0 +1,9 @@
+avoid-breaking-exported-api = false
+too-many-arguments-threshold = 8
+type-complexity-threshold = 250
+large-error-threshold = 256
+
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "not thread-safe; use config.toml" },
+    { path = "std::env::remove_var", reason = "not thread-safe; use config.toml" },
+]

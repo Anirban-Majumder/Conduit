@@ -1,0 +1,113 @@
+[package]
+name = "mcp-router"
+version = "0.0.1"
+edition = "2021"
+description = "Polished MCP proxy + policy enforcer for IDEs"
+repository = "https://github.com/ahmed/mcp-router"  # TODO: replace with actual repo URL on push
+license = "Apache-2.0"
+
+# Dependencies populated as phases land. See docs/mcp-router-v0.md §Stack.
+[dependencies]
+
+# Single-binary GUI app; release profile optimized for distribution size.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = false
+incremental = false
+
+[profile.dev]
+opt-level = 0
+debug = "line-tables-only"
+incremental = true
+
+# Profiling builds: optimized but with symbols.
+[profile.release-debug]
+inherits = "release"
+strip = "none"
+debug = "full"
+lto = "thin"
+
+# ─────────────────────────────────────────────────────────────
+# Lints — enforced via `cargo clippy -- -D warnings` in CI.
+# See CLAUDE.md for rationale on each category.
+# ─────────────────────────────────────────────────────────────
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+# Note: clippy::let_underscore_must_use is broader; we use that instead.
+
+[lints.clippy]
+# Baseline groups (priority = -1 lets specific overrides win)
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# Hard bans — the panic/unwrap/print family
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "warn"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# Async footguns
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+future_not_send = "warn"
+large_futures = "warn"
+let_underscore_future = "deny"
+if_let_mutex = "warn"
+
+# Panic-adjacent / runtime correctness
+indexing_slicing = "warn"
+string_slice = "warn"
+get_unwrap = "warn"
+panic_in_result_fn = "warn"
+unwrap_in_result = "warn"
+mem_forget = "deny"
+float_cmp = "deny"
+lossy_float_literal = "deny"
+
+# Cast hygiene (AI tends to lose precision silently)
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+
+# Size / cost hygiene
+large_enum_variant = "warn"
+large_stack_arrays = "warn"
+
+# Silent-failure family
+let_underscore_must_use = "warn"
+map_err_ignore = "warn"
+
+# Style upgrades that catch AI-shaped code
+manual_let_else = "warn"
+redundant_clone = "warn"
+clone_on_copy = "warn"
+rc_mutex = "warn"
+
+# Suppression discipline
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+# Pedantic items dialed back — too noisy for app code
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"

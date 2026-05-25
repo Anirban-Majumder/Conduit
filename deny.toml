@@ -1,0 +1,38 @@
+# cargo-deny v2 config. Run via `cargo deny check advisories bans sources`.
+# License enforcement intentionally disabled for v0.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+[bans]
+version = 2
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # Force rustls; OpenSSL is a cross-OS bundling nightmare for single-binary distribution.
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
+    { crate = "native-tls", use-instead = "rustls" },
+
+    # One async runtime per process — tokio is chosen.
+    { crate = "async-std", reason = "tokio is the chosen runtime" },
+    { crate = "smol", reason = "tokio is the chosen runtime" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+version = 2
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []
+
+# License check intentionally not configured.
+# Re-enable by adding `[licenses] version = 2` with an `allow = [...]` list
+# when shipping publicly if you want to gate license drift.
