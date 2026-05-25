@@ -31,6 +31,9 @@ pub enum DbError {
 
     #[error("spawning db actor thread: {0}")]
     Spawn(#[from] std::io::Error),
+
+    #[error("encoding row value: {0}")]
+    Encoding(String),
 }
 
 #[derive(Debug, Error)]
