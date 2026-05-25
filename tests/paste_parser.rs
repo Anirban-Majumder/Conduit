@@ -85,7 +85,11 @@ fn test_dotenv_format() {
     assert_eq!(debug.value, "1");
     assert!(!debug.is_secret);
 
-    let token = result.env.iter().find(|e| e.name == "SECRET_TOKEN").unwrap();
+    let token = result
+        .env
+        .iter()
+        .find(|e| e.name == "SECRET_TOKEN")
+        .unwrap();
     assert_eq!(token.value, "xyz");
     assert!(token.is_secret);
 }

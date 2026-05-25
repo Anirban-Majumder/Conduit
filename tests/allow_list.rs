@@ -50,7 +50,10 @@ fn all_known_packages_return_correct_value() {
 fn unknown_package_returns_none() {
     assert_eq!(allow_list::lookup("some-unknown-mcp-server"), None);
     assert_eq!(allow_list::lookup(""), None);
-    assert_eq!(allow_list::lookup("@modelcontextprotocol/server-unknown"), None);
+    assert_eq!(
+        allow_list::lookup("@modelcontextprotocol/server-unknown"),
+        None
+    );
 }
 
 #[test]
@@ -58,13 +61,17 @@ fn is_browser_pkg_true_cases() {
     assert!(allow_list::is_browser_pkg("playwright"));
     assert!(allow_list::is_browser_pkg("puppeteer"));
     assert!(allow_list::is_browser_pkg("browser-use"));
-    assert!(allow_list::is_browser_pkg("/usr/local/bin/playwright-binary"));
+    assert!(allow_list::is_browser_pkg(
+        "/usr/local/bin/playwright-binary"
+    ));
     assert!(allow_list::is_browser_pkg("MCP-Browser-Use"));
 }
 
 #[test]
 fn is_browser_pkg_false_cases() {
-    assert!(!allow_list::is_browser_pkg("@modelcontextprotocol/server-filesystem"));
+    assert!(!allow_list::is_browser_pkg(
+        "@modelcontextprotocol/server-filesystem"
+    ));
     assert!(!allow_list::is_browser_pkg("mcp-server-time"));
     assert!(!allow_list::is_browser_pkg("exa-mcp"));
 }

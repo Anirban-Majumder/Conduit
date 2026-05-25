@@ -1,5 +1,173 @@
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    Deny,
+    Ask,
+}
+
+impl Decision {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Ask => "ask",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "allow" => Some(Self::Allow),
+            "deny" => Some(Self::Deny),
+            "ask" => Some(Self::Ask),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionSource {
+    Default,
+    User,
+    ToolListChanged,
+}
+
+impl DecisionSource {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::User => "user",
+            Self::ToolListChanged => "tool_list_changed",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "default" => Some(Self::Default),
+            "user" => Some(Self::User),
+            "tool_list_changed" => Some(Self::ToolListChanged),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Policy {
+    pub id: i64,
+    pub server: String,
+    pub tool: String,
+    pub decision: Decision,
+    pub decision_source: DecisionSource,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Denied,
+    Timeout,
+}
+
+impl ApprovalStatus {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "denied" => Some(Self::Denied),
+            "timeout" => Some(Self::Timeout),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingApproval {
+    pub id: String,
+    pub server: String,
+    pub tool: String,
+    pub args_json: String,
+    pub ide_key: String,
+    pub created_at: i64,
+    pub status: ApprovalStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditDecision {
+    Allow,
+    Deny,
+    AskApproved,
+    AskDenied,
+    AskTimeout,
+    Error,
+    Cancelled,
+}
+
+impl AuditDecision {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::AskApproved => "ask-approved",
+            Self::AskDenied => "ask-denied",
+            Self::AskTimeout => "ask-timeout",
+            Self::Error => "error",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "allow" => Some(Self::Allow),
+            "deny" => Some(Self::Deny),
+            "ask-approved" => Some(Self::AskApproved),
+            "ask-denied" => Some(Self::AskDenied),
+            "ask-timeout" => Some(Self::AskTimeout),
+            "error" => Some(Self::Error),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub id: Option<i64>,
+    pub ts: i64,
+    pub ide_key: Option<String>,
+    pub ide_name: Option<String>,
+    pub server: String,
+    pub tool: Option<String>,
+    pub decision: AuditDecision,
+    pub decision_source: Option<DecisionSource>,
+    pub latency_ms: Option<i64>,
+    pub request_args: Option<String>,
+    pub response_status: Option<String>,
+    pub response_length: Option<i64>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuditFilter {
+    pub ide_key: Option<String>,
+    pub server: Option<String>,
+    pub tool: Option<String>,
+    pub since_ts: Option<i64>,
+    pub until_ts: Option<i64>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdeKey {
     pub key: String,
@@ -16,10 +184,10 @@ pub struct ManagedIdeConfig {
     pub written_at: i64,
 }
 
-/// Generates an 8-char alphanumeric key per spec §Add IDE flow.
+/// Generates an 8-char alphanumeric key per spec §"Add IDE flow".
 ///
 /// 8 chars × 62 alphabet = ~47 bits — the IDE key is a *capability*, not a
-/// cryptographic secret; the threat model (spec §Threat model) explicitly
+/// cryptographic secret; the threat model (spec §"Threat model") explicitly
 /// excludes same-uid attackers, and the daemon binds 127.0.0.1.
 pub fn fresh_ide_key() -> String {
     use rand::distr::{Alphanumeric, SampleString};

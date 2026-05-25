@@ -1,8 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test ergonomics"
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
 // Tests use keyring_core's mock in-memory store so they never touch the
 // developer's real OS keyring.
@@ -51,7 +47,10 @@ fn delete_then_fetch_returns_not_found() {
 fn delete_nonexistent_is_ok() {
     with_mock_store(|| {
         let result = secrets::delete("myserver", "00000000-0000-0000-0000-000000000000");
-        assert!(result.is_ok(), "expected Ok for missing entry, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok for missing entry, got {result:?}"
+        );
     });
 }
 

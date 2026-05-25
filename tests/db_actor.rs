@@ -128,6 +128,351 @@ async fn ide_config_write_upserts_on_same_key() {
 }
 
 #[tokio::test]
+async fn policy_set_then_get_round_trip() {
+    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    let id = db
+        .set_policy(
+            "gmail",
+            "send_email",
+            Decision::Ask,
+            DecisionSource::Default,
+        )
+        .await
+        .unwrap();
+    assert!(id > 0);
+
+    let p = db.get_policy("gmail", "send_email").await.unwrap().unwrap();
+    assert_eq!(p.server, "gmail");
+    assert_eq!(p.tool, "send_email");
+    assert_eq!(p.decision, Decision::Ask);
+    assert_eq!(p.decision_source, DecisionSource::Default);
+}
+
+#[tokio::test]
+async fn policy_set_twice_upserts() {
+    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    let id1 = db
+        .set_policy(
+            "gmail",
+            "send_email",
+            Decision::Ask,
+            DecisionSource::Default,
+        )
+        .await
+        .unwrap();
+    let id2 = db
+        .set_policy("gmail", "send_email", Decision::Allow, DecisionSource::User)
+        .await
+        .unwrap();
+    assert_eq!(id1, id2, "should update same row, not insert");
+
+    let p = db.get_policy("gmail", "send_email").await.unwrap().unwrap();
+    assert_eq!(p.decision, Decision::Allow);
+    assert_eq!(p.decision_source, DecisionSource::User);
+}
+
+#[tokio::test]
+async fn policy_get_unknown_returns_none() {
+    let db = Db::spawn_in_memory().expect("spawn");
+    assert!(db.get_policy("nope", "nope").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn policy_list_for_server_filters() {
+    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    db.set_policy("gmail", "send", Decision::Allow, DecisionSource::User)
+        .await
+        .unwrap();
+    db.set_policy("gmail", "read", Decision::Ask, DecisionSource::Default)
+        .await
+        .unwrap();
+    db.set_policy(
+        "github",
+        "create_issue",
+        Decision::Deny,
+        DecisionSource::User,
+    )
+    .await
+    .unwrap();
+
+    let gmail = db.list_policies_for_server("gmail").await.unwrap();
+    let all = db.list_all_policies().await.unwrap();
+    assert_eq!(gmail.len(), 2);
+    assert_eq!(all.len(), 3);
+}
+
+#[tokio::test]
+async fn policy_delete_for_server_clears() {
+    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    db.set_policy("gmail", "send", Decision::Allow, DecisionSource::User)
+        .await
+        .unwrap();
+    db.delete_policies_for_server("gmail").await.unwrap();
+    assert!(db
+        .list_policies_for_server("gmail")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn pending_approval_create_get_resolve() {
+    use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    let approval = PendingApproval {
+        id: "uuid-1".to_string(),
+        server: "gmail".to_string(),
+        tool: "send".to_string(),
+        args_json: "{}".to_string(),
+        ide_key: "abcd1234".to_string(),
+        created_at: 100,
+        status: ApprovalStatus::Pending,
+    };
+    db.create_pending_approval(approval.clone()).await.unwrap();
+
+    let got = db.get_pending_approval("uuid-1").await.unwrap().unwrap();
+    assert_eq!(got.status, ApprovalStatus::Pending);
+
+    db.resolve_pending_approval("uuid-1", ApprovalStatus::Approved)
+        .await
+        .unwrap();
+    let got2 = db.get_pending_approval("uuid-1").await.unwrap().unwrap();
+    assert_eq!(got2.status, ApprovalStatus::Approved);
+}
+
+#[tokio::test]
+async fn pending_approval_list_only_returns_pending() {
+    use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    for (id, status) in [
+        ("a", ApprovalStatus::Pending),
+        ("b", ApprovalStatus::Approved),
+        ("c", ApprovalStatus::Pending),
+    ] {
+        db.create_pending_approval(PendingApproval {
+            id: id.to_string(),
+            server: "x".to_string(),
+            tool: "y".to_string(),
+            args_json: "{}".to_string(),
+            ide_key: "k".to_string(),
+            created_at: 1,
+            status: ApprovalStatus::Pending,
+        })
+        .await
+        .unwrap();
+        if status != ApprovalStatus::Pending {
+            db.resolve_pending_approval(id, status).await.unwrap();
+        }
+    }
+
+    let pending = db.list_pending_approvals().await.unwrap();
+    assert_eq!(pending.len(), 2);
+}
+
+#[tokio::test]
+async fn pending_approval_sweep_stale_flips_old_to_timeout() {
+    use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    db.create_pending_approval(PendingApproval {
+        id: "old".to_string(),
+        server: "x".to_string(),
+        tool: "y".to_string(),
+        args_json: "{}".to_string(),
+        ide_key: "k".to_string(),
+        created_at: 50,
+        status: ApprovalStatus::Pending,
+    })
+    .await
+    .unwrap();
+    db.create_pending_approval(PendingApproval {
+        id: "new".to_string(),
+        server: "x".to_string(),
+        tool: "y".to_string(),
+        args_json: "{}".to_string(),
+        ide_key: "k".to_string(),
+        created_at: 200,
+        status: ApprovalStatus::Pending,
+    })
+    .await
+    .unwrap();
+
+    let swept = db.sweep_stale_pending_approvals(100).await.unwrap();
+    assert_eq!(swept, 1);
+
+    assert_eq!(
+        db.get_pending_approval("old")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ApprovalStatus::Timeout
+    );
+    assert_eq!(
+        db.get_pending_approval("new")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ApprovalStatus::Pending
+    );
+}
+
+#[tokio::test]
+async fn audit_insert_then_query_round_trip() {
+    use mcp_router::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    let entry = AuditEntry {
+        id: None,
+        ts: 1000,
+        ide_key: Some("k1".to_string()),
+        ide_name: Some("Cursor".to_string()),
+        server: "gmail".to_string(),
+        tool: Some("send".to_string()),
+        decision: AuditDecision::Allow,
+        decision_source: None,
+        latency_ms: Some(42),
+        request_args: Some("{}".to_string()),
+        response_status: Some("ok".to_string()),
+        response_length: Some(123),
+        error_code: None,
+    };
+    let id = db.insert_audit_entry(entry).await.unwrap();
+    assert!(id > 0);
+
+    let rows = db.query_audit_log(AuditFilter::default()).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].server, "gmail");
+    assert_eq!(rows[0].latency_ms, Some(42));
+}
+
+#[tokio::test]
+async fn audit_query_filters_by_ide_and_server() {
+    use mcp_router::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    for (ide, server) in [("k1", "gmail"), ("k2", "gmail"), ("k1", "github")] {
+        db.insert_audit_entry(AuditEntry {
+            id: None,
+            ts: 1000,
+            ide_key: Some(ide.to_string()),
+            ide_name: None,
+            server: server.to_string(),
+            tool: None,
+            decision: AuditDecision::Allow,
+            decision_source: None,
+            latency_ms: None,
+            request_args: None,
+            response_status: None,
+            response_length: None,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let only_k1 = db
+        .query_audit_log(AuditFilter {
+            ide_key: Some("k1".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(only_k1.len(), 2);
+
+    let only_gmail = db
+        .query_audit_log(AuditFilter {
+            server: Some("gmail".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(only_gmail.len(), 2);
+}
+
+#[tokio::test]
+async fn audit_purge_old_removes_pre_cutoff() {
+    use mcp_router::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    for ts in [100, 200, 300] {
+        db.insert_audit_entry(AuditEntry {
+            id: None,
+            ts,
+            ide_key: None,
+            ide_name: None,
+            server: "x".to_string(),
+            tool: None,
+            decision: AuditDecision::Allow,
+            decision_source: None,
+            latency_ms: None,
+            request_args: None,
+            response_status: None,
+            response_length: None,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let purged = db.purge_old_audit_entries(250).await.unwrap();
+    assert_eq!(purged, 2);
+    let remaining = db.query_audit_log(AuditFilter::default()).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].ts, 300);
+}
+
+#[tokio::test]
+async fn enum_db_str_round_trips() {
+    use mcp_router::daemon::db::types::{ApprovalStatus, AuditDecision, Decision, DecisionSource};
+
+    for d in [Decision::Allow, Decision::Deny, Decision::Ask] {
+        assert_eq!(Decision::from_db_str(d.as_db_str()), Some(d));
+    }
+    assert_eq!(Decision::from_db_str("garbage"), None);
+
+    for s in [
+        DecisionSource::Default,
+        DecisionSource::User,
+        DecisionSource::ToolListChanged,
+    ] {
+        assert_eq!(DecisionSource::from_db_str(s.as_db_str()), Some(s));
+    }
+
+    for s in [
+        ApprovalStatus::Pending,
+        ApprovalStatus::Approved,
+        ApprovalStatus::Denied,
+        ApprovalStatus::Timeout,
+    ] {
+        assert_eq!(ApprovalStatus::from_db_str(s.as_db_str()), Some(s));
+    }
+
+    for d in [
+        AuditDecision::Allow,
+        AuditDecision::Deny,
+        AuditDecision::AskApproved,
+        AuditDecision::AskDenied,
+        AuditDecision::AskTimeout,
+        AuditDecision::Error,
+        AuditDecision::Cancelled,
+    ] {
+        assert_eq!(AuditDecision::from_db_str(d.as_db_str()), Some(d));
+    }
+}
+
+#[tokio::test]
 async fn ide_config_delete_for_ide_clears_rows() {
     use mcp_router::daemon::db::types::ManagedIdeConfig;
     use std::path::PathBuf;

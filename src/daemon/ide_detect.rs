@@ -102,7 +102,11 @@ pub fn scan_paths(paths: &[PathBuf], binary_names: &[&str]) -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 pub fn scan_apps(apps_root: &Path, app_name: &str) -> Option<PathBuf> {
     let candidate = apps_root.join(app_name);
-    if candidate.is_dir() { Some(candidate) } else { None }
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 /// Scan for installed IDEs across the current OS. Uses only `std::env` / `std::fs` (no external crate) —

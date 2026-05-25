@@ -50,14 +50,16 @@ fn is_secret_name(name: &str) -> bool {
 
 fn make_env(name: String, value: String) -> ParsedEnv {
     let is_secret = is_secret_name(&name);
-    ParsedEnv { name, value, is_secret }
+    ParsedEnv {
+        name,
+        value,
+        is_secret,
+    }
 }
 
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
-    if (s.starts_with('"') && s.ends_with('"'))
-        || (s.starts_with('\'') && s.ends_with('\''))
-    {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
         // Safety: we just confirmed the string starts and ends with a 1-byte ASCII char.
         let mut chars = s.chars();
         chars.next();
@@ -79,7 +81,11 @@ fn env_from_json_object(obj: &serde_json::Map<String, Value>) -> Option<Vec<Pars
             make_env(k.clone(), value)
         })
         .collect();
-    if env.is_empty() { None } else { Some(env) }
+    if env.is_empty() {
+        None
+    } else {
+        Some(env)
+    }
 }
 
 fn parse_json(input: &str) -> Option<ParsedServer> {
@@ -103,13 +109,19 @@ fn parse_json(input: &str) -> Option<ParsedServer> {
     let all_strings = obj.values().all(Value::is_string);
     if all_strings && !obj.is_empty() {
         let env = env_from_json_object(obj)?;
-        return Some(ParsedServer { env, ..Default::default() });
+        return Some(ParsedServer {
+            env,
+            ..Default::default()
+        });
     }
 
     None
 }
 
-fn extract_server_fields(obj: &serde_json::Map<String, Value>, name: Option<String>) -> ParsedServer {
+fn extract_server_fields(
+    obj: &serde_json::Map<String, Value>,
+    name: Option<String>,
+) -> ParsedServer {
     let command = obj
         .get("command")
         .and_then(|v| v.as_str())
@@ -143,7 +155,12 @@ fn extract_server_fields(obj: &serde_json::Map<String, Value>, name: Option<Stri
         })
         .unwrap_or_default();
 
-    ParsedServer { name, command, args, env }
+    ParsedServer {
+        name,
+        command,
+        args,
+        env,
+    }
 }
 
 fn parse_dotenv(input: &str) -> Option<Vec<ParsedEnv>> {
@@ -167,7 +184,11 @@ fn parse_dotenv(input: &str) -> Option<Vec<ParsedEnv>> {
         any_matched = true;
     }
 
-    if any_matched { Some(env) } else { None }
+    if any_matched {
+        Some(env)
+    } else {
+        None
+    }
 }
 
 fn parse_yaml_kv(input: &str) -> Option<Vec<ParsedEnv>> {
@@ -190,7 +211,11 @@ fn parse_yaml_kv(input: &str) -> Option<Vec<ParsedEnv>> {
         any_matched = true;
     }
 
-    if any_matched { Some(env) } else { None }
+    if any_matched {
+        Some(env)
+    } else {
+        None
+    }
 }
 
 /// Parse pasted text into a [`ParsedServer`], detecting the format automatically.
@@ -204,11 +229,17 @@ pub fn parse(input: &str) -> Result<ParsedServer, ParseError> {
     }
 
     if let Some(env) = parse_dotenv(trimmed) {
-        return Ok(ParsedServer { env, ..Default::default() });
+        return Ok(ParsedServer {
+            env,
+            ..Default::default()
+        });
     }
 
     if let Some(env) = parse_yaml_kv(trimmed) {
-        return Ok(ParsedServer { env, ..Default::default() });
+        return Ok(ParsedServer {
+            env,
+            ..Default::default()
+        });
     }
 
     Err(ParseError::NoMatch)
