@@ -1,13 +1,15 @@
 #![warn(rustdoc::broken_intra_doc_links)]
 #![warn(rustdoc::private_intra_doc_links)]
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
+use mcp_router::daemon::config_toml::Settings;
+use mcp_router::daemon::config_watcher;
 use mcp_router::daemon::db::Db;
+use mcp_router::daemon::events::Bus;
+use mcp_router::paths::Paths;
 use mcp_router::runtime::Worker;
 
 slint::slint! {
@@ -33,9 +35,23 @@ fn main() -> Result<()> {
     init_tracing();
     tracing::info!("mcp-router starting");
 
+    let paths = Paths::from_user_dirs().context("resolve mcp-router config dir")?;
+    paths.ensure_created().context("create state dirs")?;
+    tracing::info!(root = %paths.root().display(), "state root ready");
+
+    let settings = Settings::load_or_default(&paths.config_toml());
+    tracing::info!(port = settings.daemon.port, "settings loaded");
+
     let cancel = CancellationToken::new();
-    let _worker = Worker::spawn(cancel.clone()).context("spawn tokio worker")?;
-    let _db = Db::spawn_at(&state_db_path()?).context("spawn db actor")?;
+    let worker = Worker::spawn(cancel.clone()).context("spawn tokio worker")?;
+    let _db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
+    let bus = Bus::new();
+
+    let _watcher = {
+        let _guard = worker.handle().enter();
+        config_watcher::spawn(&paths.config_toml(), bus.clone(), cancel.clone())
+            .context("spawn config watcher")?
+    };
 
     let window = MainWindow::new().context("build slint main window")?;
     let cancel_for_close = cancel.clone();
@@ -50,19 +66,12 @@ fn main() -> Result<()> {
 
     cancel.cancel();
     tracing::info!("mcp-router stopped");
+    drop(bus);
+    drop(worker);
     Ok(())
 }
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
-}
-
-// Stage 1 placeholder. Stage 2 swaps this for dirs::config_dir().join("mcp-router")
-// per spec §Storage, alongside config.toml load + notify watcher.
-fn state_db_path() -> Result<PathBuf> {
-    let mut dir = std::env::temp_dir();
-    dir.push("mcp-router-stage1");
-    std::fs::create_dir_all(&dir).context("create state dir")?;
-    Ok(dir.join("state.db"))
 }
