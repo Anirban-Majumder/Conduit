@@ -1,6 +1,5 @@
-// OS keyring wrapper for upstream MCP server secret env vars + OAuth tokens.
-// Spec §Storage > Secrets and §Add MCP server flow > Secrets handling.
-// Keyed at `mcp-router/server/<server>/env/<uuid>`.
+// OS keyring wrapper. Per-server env at `mcp-router/server/<server>/env/<uuid>`.
+// OAuth tokens at `mcp-router-oauth/<account>:{access|refresh|client_secret}`.
 
 use keyring_core::{Entry, Error as KeyringError};
 use uuid::Uuid;
@@ -44,4 +43,78 @@ pub fn delete(server: &str, uuid: &str) -> Result<(), SecretsError> {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(other) => Err(SecretsError::Backend(other)),
     }
+}
+
+// ── OAuth token storage ───────────────────────────────────────────────────
+// Stored under service "mcp-router-oauth" with account suffixes:
+//   "<server>:access" / "<server>:refresh" / "<server>:client_secret"
+// During the wizard's step 2b, tokens are written under a draft UUID; on Save
+// they're promoted to the canonical server name and the draft entries deleted.
+
+const OAUTH_SERVICE: &str = "mcp-router-oauth";
+
+fn oauth_entry(account: &str) -> Result<Entry, SecretsError> {
+    Ok(Entry::new(OAUTH_SERVICE, account)?)
+}
+
+pub fn store_oauth_access(account: &str, token: &str) -> Result<(), SecretsError> {
+    oauth_entry(&format!("{account}:access"))?
+        .set_password(token)?;
+    Ok(())
+}
+
+pub fn store_oauth_refresh(account: &str, token: &str) -> Result<(), SecretsError> {
+    oauth_entry(&format!("{account}:refresh"))?
+        .set_password(token)?;
+    Ok(())
+}
+
+pub fn store_oauth_client_secret(account: &str, secret: &str) -> Result<(), SecretsError> {
+    oauth_entry(&format!("{account}:client_secret"))?
+        .set_password(secret)?;
+    Ok(())
+}
+
+pub fn fetch_oauth_access(account: &str) -> Result<String, SecretsError> {
+    fetch_keyring(&format!("{account}:access"))
+}
+
+pub fn fetch_oauth_refresh(account: &str) -> Result<String, SecretsError> {
+    fetch_keyring(&format!("{account}:refresh"))
+}
+
+fn fetch_keyring(account: &str) -> Result<String, SecretsError> {
+    match oauth_entry(account)?.get_password() {
+        Ok(v) => Ok(v),
+        Err(KeyringError::NoEntry) => Err(SecretsError::NotFound),
+        Err(other) => Err(SecretsError::Backend(other)),
+    }
+}
+
+/// Promote draft-namespaced OAuth entries to the canonical server-named ones.
+///
+/// Order: store new entries BEFORE deleting drafts so a crash mid-flight
+/// leaves the canonical entries valid.
+pub fn promote_oauth_tokens(draft: &str, server: &str) -> Result<(), SecretsError> {
+    let access = fetch_oauth_access(draft).ok();
+    let refresh = fetch_oauth_refresh(draft).ok();
+    if let Some(a) = &access {
+        store_oauth_access(server, a)?;
+    }
+    if let Some(r) = &refresh {
+        store_oauth_refresh(server, r)?;
+    }
+    delete_oauth_tokens(draft)?;
+    Ok(())
+}
+
+pub fn delete_oauth_tokens(account: &str) -> Result<(), SecretsError> {
+    for suffix in ["access", "refresh", "client_secret"] {
+        let full = format!("{account}:{suffix}");
+        match oauth_entry(&full)?.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => {}
+            Err(other) => return Err(SecretsError::Backend(other)),
+        }
+    }
+    Ok(())
 }

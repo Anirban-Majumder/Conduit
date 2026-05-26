@@ -73,10 +73,9 @@ pub async fn route_tool_call(
         .to_string();
     let args_json = serde_json::to_string(&params).unwrap_or_else(|_| "null".to_string());
 
-    let decision_source_tuple = state.db.get_policy(&server.name, &tool_name).await?;
-    let (decision, source) = match decision_source_tuple {
+    let (decision, source) = match state.db.get_policy(&server.name, &tool_name).await? {
         Some(p) => (p.decision, p.decision_source),
-        None => (Decision::Ask, DecisionSource::Default),
+        None => (state.db.resolve_policy(&server.name, &tool_name).await?, DecisionSource::Default),
     };
 
     let start = Instant::now();

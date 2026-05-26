@@ -5,7 +5,27 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::db::Db;
+use mcp_router::daemon::db::{types::Server, Db};
+
+fn server_row(name: &str) -> Server {
+    Server {
+        name: name.to_string(),
+        transport: "stdio".to_string(),
+        command: Some("echo".to_string()),
+        args: vec![],
+        env: vec![],
+        url: None,
+        lifecycle_seconds: 300,
+        last_init_duration_ms: None,
+        package_version: None,
+        mcp_self_version: None,
+        created_at: 0,
+        server_name: None,
+        server_version: None,
+        last_probed_at: None,
+        last_probe_error: None,
+    }
+}
 
 #[tokio::test]
 async fn ping_round_trips_through_db_actor() {
@@ -14,10 +34,10 @@ async fn ping_round_trips_through_db_actor() {
 }
 
 #[tokio::test]
-async fn schema_version_one_present_after_startup() {
+async fn schema_version_two_after_v01_migration() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
     let version = db.schema_version().await.expect("schema version query");
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 }
 
 #[tokio::test]
@@ -132,6 +152,7 @@ async fn policy_set_then_get_round_trip() {
     use mcp_router::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
+    db.upsert_server(server_row("gmail")).await.unwrap();
     let id = db
         .set_policy(
             "gmail",
@@ -155,6 +176,7 @@ async fn policy_set_twice_upserts() {
     use mcp_router::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
+    db.upsert_server(server_row("gmail")).await.unwrap();
     let id1 = db
         .set_policy(
             "gmail",
@@ -186,6 +208,8 @@ async fn policy_list_for_server_filters() {
     use mcp_router::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
+    db.upsert_server(server_row("gmail")).await.unwrap();
+    db.upsert_server(server_row("github")).await.unwrap();
     db.set_policy("gmail", "send", Decision::Allow, DecisionSource::User)
         .await
         .unwrap();
@@ -212,6 +236,7 @@ async fn policy_delete_for_server_clears() {
     use mcp_router::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
+    db.upsert_server(server_row("gmail")).await.unwrap();
     db.set_policy("gmail", "send", Decision::Allow, DecisionSource::User)
         .await
         .unwrap();
@@ -308,7 +333,7 @@ async fn pending_approval_sweep_stale_flips_old_to_timeout() {
     .unwrap();
 
     let swept = db.sweep_stale_pending_approvals(100).await.unwrap();
-    assert_eq!(swept, 1);
+    assert_eq!(swept, vec!["old".to_string()]);
 
     assert_eq!(
         db.get_pending_approval("old")
@@ -446,6 +471,8 @@ async fn enum_db_str_round_trips() {
         DecisionSource::Default,
         DecisionSource::User,
         DecisionSource::ToolListChanged,
+        DecisionSource::Probe,
+        DecisionSource::Notification,
     ] {
         assert_eq!(DecisionSource::from_db_str(s.as_db_str()), Some(s));
     }

@@ -129,6 +129,64 @@ pub fn write_uniform_mcp_servers(
     atomic_write_json(path, &Value::Object(root))
 }
 
+/// Drop one server's `mcpServers` entry by exact URL match.
+///
+/// Targets `http://127.0.0.1:<port>/<ide_key>/<server_name>/mcp`. Used by
+/// §3.1 cascade delete and the per-server "Remove from this IDE" button.
+/// Other entries (user-authored, other servers, other top-level keys) are
+/// preserved.
+pub fn purge_one_server_for_ide(
+    path: &Path,
+    port: u16,
+    ide_key: &str,
+    server_name: &str,
+) -> Result<(), IdeWriterError> {
+    let Some(mut root) = read_existing_object(path)? else {
+        return Ok(());
+    };
+    let target = url_for(port, ide_key, server_name);
+    if let Some(Value::Object(servers)) = root.get_mut("mcpServers") {
+        servers.retain(|_name, entry| {
+            entry.get("url").and_then(Value::as_str) != Some(target.as_str())
+        });
+    }
+    atomic_write_json(path, &Value::Object(root))
+}
+
+/// Read the raw file contents (UTF-8 string) for the Editors-tab inline JSON
+/// viewer. Returns `None` if the file doesn't exist yet.
+pub fn read_raw(path: &Path) -> Result<Option<String>, IdeWriterError> {
+    match fs::read_to_string(path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(IdeWriterError::Io(e)),
+    }
+}
+
+/// Atomic write of the inline-editor textarea. Validates JSON first; refuses
+/// to clobber the file on parse error.
+pub fn write_raw(path: &Path, text: &str) -> Result<(), IdeWriterError> {
+    let value: Value = serde_json::from_str(text)?;
+    let Value::Object(_) = &value else {
+        return Err(IdeWriterError::Json(serde::de::Error::custom(
+            "expected top-level JSON object",
+        )));
+    };
+    atomic_write_json(path, &value)
+}
+
+/// Returns Ok(()) if `text` parses as a valid top-level JSON object. Used by
+/// the Editors-tab live-validate (without writing).
+pub fn validate_json(text: &str) -> Result<(), IdeWriterError> {
+    let value: Value = serde_json::from_str(text)?;
+    let Value::Object(_) = &value else {
+        return Err(IdeWriterError::Json(serde::de::Error::custom(
+            "expected top-level JSON object",
+        )));
+    };
+    Ok(())
+}
+
 /// Drop every `mcpServers` entry whose `url` matches our (port, key) shape.
 /// Missing file is a no-op. Exposed so tests can drive arbitrary paths.
 pub fn purge_uniform_mcp_servers(path: &Path, key: &str, port: u16) -> Result<(), IdeWriterError> {

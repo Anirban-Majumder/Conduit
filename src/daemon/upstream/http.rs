@@ -29,7 +29,8 @@ pub type HttpClient = RunningService<RoleClient, ()>;
 /// Connect to an HTTP MCP server and complete the `initialize` handshake.
 ///
 /// `bearer_token` is wrapped into `Authorization: Bearer <token>` on every
-/// outbound request (see [`BEARER_TOKEN_ENV`]).
+/// outbound request (see [`BEARER_TOKEN_ENV`]). HTTPS support comes from
+/// `Cargo.toml`'s `rmcp` `reqwest` feature, which flips on `reqwest/rustls`.
 pub async fn connect(
     url: &str,
     bearer_token: Option<&str>,

@@ -32,6 +32,25 @@ export struct PolicyRow {
     source: string,
 }
 
+export struct ToolPolicyRow {
+    name: string,
+    description: string,
+    decision: string,           // "allow" | "ask" | "deny"
+}
+
+export struct ServerDetail {
+    name: string,
+    version: string,                // "server_version" from probe
+    transport: string,              // "stdio" | "http"
+    command_or_url: string,
+    lifecycle_label: string,
+    health_state: string,           // "live" | "idle" | "down" | "unprobed" | "needsauth" | "paused"
+    last_probe_label: string,       // "2m ago" or "never"
+    last_error: string,             // empty if no error
+    tool_count_label: string,       // "12 tools"
+}
+
+
 export struct AuditRow {
     ts_label: string,
     ide_name: string,
@@ -176,6 +195,7 @@ component SettingLine inherits Rectangle {
 
 component ApprovalsTab inherits Rectangle {
     in property <[ApprovalRow]> rows;
+    in property <string> focused-id;
     callback approve-clicked(string);
     callback deny-clicked(string);
 
@@ -190,7 +210,12 @@ component ApprovalsTab inherits Rectangle {
             text: "When an IDE calls a tool whose policy is `ask`, the request appears here.";
             height: 200px;
         }
-        for row in rows : RowCard {
+        for row in rows : Rectangle {
+            background: row.id == root.focused-id ? Theme.surface-2 : Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: row.id == root.focused-id ? 2px : 1px;
+            border-color: row.id == root.focused-id ? Theme.accent : Theme.border;
+            min-height: 56px;
             HorizontalLayout {
                 padding-left: Theme.gap-md;
                 padding-right: Theme.gap-md;
@@ -229,66 +254,345 @@ component ApprovalsTab inherits Rectangle {
     }
 }
 
-component ServersTab inherits Rectangle {
-    in property <[ServerRow]> rows;
-    callback remove-clicked(string);
-    callback add-clicked();
+component ToolPolicyRowItem inherits Rectangle {
+    in property <string> name;
+    in property <string> description;
+    in property <string> decision;
+    property <bool> expanded: false;
+    callback change-decision(string);
+    background: Theme.surface;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border;
     VerticalLayout {
-        spacing: Theme.gap-sm;
+        padding: Theme.gap-sm;
+        spacing: 4px;
         HorizontalLayout {
+            spacing: Theme.gap-md;
             alignment: space-between;
-            Text {
-                text: rows.length > 0 ? "Servers (" + rows.length + ")" : "No MCP servers configured";
-                color: Theme.text-secondary;
-                font-size: Theme.font-eyebrow;
-                vertical-alignment: center;
-            }
-            PillButton {
-                label: "+ Add server";
-                bg-color: Theme.accent;
-                fg-color: Theme.bg;
-                clicked => { root.add-clicked(); }
-            }
-        }
-        if rows.length == 0 : EmptyState {
-            text: "Add MCP servers via the Add Server form (or seed state.db directly).";
-            height: 200px;
-        }
-        for row in rows : RowCard {
-            HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: Theme.gap-md;
-                alignment: space-between;
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                horizontal-stretch: 1;
+                ta := TouchArea {
+                    clicked => { root.expanded = !root.expanded; }
                     Text {
-                        text: row.name;
+                        text: root.name;
                         color: Theme.text-primary;
-                        font-size: Theme.font-body;
-                    }
-                    Text {
-                        text: row.transport + " · " + row.tool_count_label + " · " + row.lifecycle_label;
-                        color: Theme.text-tertiary;
                         font-size: Theme.font-body-sm;
                     }
                 }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: center;
+                PillButton {
+                    label: "Allow";
+                    bg-color: root.decision == "allow" ? Theme.accent : Theme.surface-3;
+                    fg-color: root.decision == "allow" ? Theme.bg : Theme.text-secondary;
+                    clicked => { root.change-decision("allow"); }
+                }
+                PillButton {
+                    label: "Ask";
+                    bg-color: root.decision == "ask" ? Theme.warning : Theme.surface-3;
+                    fg-color: root.decision == "ask" ? Theme.bg : Theme.text-secondary;
+                    clicked => { root.change-decision("ask"); }
+                }
+                PillButton {
+                    label: "Deny";
+                    bg-color: root.decision == "deny" ? Theme.danger : Theme.surface-3;
+                    fg-color: root.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
+                    clicked => { root.change-decision("deny"); }
+                }
+            }
+        }
+        if root.description != "" : Text {
+            text: root.description;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+            wrap: word-wrap;
+            overflow: elide;
+            height: root.expanded ? self.preferred-height : 32px;
+        }
+        if root.description != "" : Rectangle {
+            height: 16px;
+            background: transparent;
+            TouchArea {
+                clicked => { root.expanded = !root.expanded; }
+                Text {
+                    text: root.expanded ? "Show less ▴" : "Show more ▾";
+                    color: Theme.accent;
+                    font-size: Theme.font-body-sm;
+                }
+            }
+        }
+    }
+}
+
+component ToolPolicyTable inherits Rectangle {
+    in property <[ToolPolicyRow]> rows;
+    in property <length> list-max-height: 320px;
+    callback change-decision(string, string);
+    VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: Theme.gap-sm;
+            alignment: end;
+            Text {
+                text: "Set all:";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                vertical-alignment: center;
+            }
+            PillButton {
+                label: "🟢";
+                clicked => { root.change-decision("*", "allow"); }
+            }
+            PillButton {
+                label: "🟡";
+                clicked => { root.change-decision("*", "ask"); }
+            }
+            PillButton {
+                label: "🔴";
+                clicked => { root.change-decision("*", "deny"); }
+            }
+        }
+        Flickable {
+            height: root.list-max-height;
+            viewport-height: content-layout.preferred-height;
+            content-layout := VerticalLayout {
+                spacing: 6px;
+                for tool in rows : ToolPolicyRowItem {
+                    name: tool.name;
+                    description: tool.description;
+                    decision: tool.decision;
+                    change-decision(d) => { root.change-decision(tool.name, d); }
+                }
+            }
+        }
+    }
+}
+
+component HealthCard inherits Rectangle {
+    in property <ServerDetail> detail;
+    callback copy-error();
+    background: Theme.surface;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: Theme.gap-md;
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: Theme.gap-sm;
+            alignment: start;
+            StatusDot {
+                tint: detail.health-state == "live" ? Theme.success
+                     : detail.health-state == "idle" ? Theme.text-tertiary
+                     : detail.health-state == "needsauth" ? Theme.warning
+                     : detail.health-state == "paused" ? Theme.text-tertiary
+                     : detail.health-state == "down" ? Theme.danger
+                     : Theme.text-tertiary;
+            }
+            Text {
+                text: detail.health-state == "live" ? "Live"
+                     : detail.health-state == "idle" ? "Idle"
+                     : detail.health-state == "needsauth" ? "Needs sign-in"
+                     : detail.health-state == "paused" ? "Paused"
+                     : detail.health-state == "down" ? "Down"
+                     : detail.health-state == "unprobed" ? "Unprobed"
+                     : detail.health-state;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: "Last probe: " + detail.last-probe-label;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+        }
+        if detail.last-error != "" : VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: detail.last-error;
+                color: Theme.danger;
+                font-size: Theme.font-body-sm;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                PillButton {
+                    label: "Copy error";
+                    clicked => { root.copy-error(); }
+                }
+            }
+        }
+    }
+}
+
+component ServersTab inherits Rectangle {
+    in property <[ServerRow]> rows;
+    in property <string> selected;
+    in property <ServerDetail> detail;
+    in property <[ToolPolicyRow]> tools;
+    callback select-server(string);
+    callback delete-clicked(string);
+    callback retest-clicked(string);
+    callback change-tool-policy(string, string, string);   // server, tool, decision
+    callback add-clicked();
+    callback copy-error-clicked(string);
+
+    HorizontalLayout {
+        spacing: Theme.gap-md;
+
+        // Master: server list
+        Rectangle {
+            width: 240px;
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: Theme.gap-sm;
+                spacing: Theme.gap-sm;
                 HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    alignment: center;
-                    StatusDot {
-                        tint: row.status == "running" ? Theme.success : row.status == "crashed" ? Theme.danger : Theme.text-tertiary;
-                    }
+                    alignment: space-between;
                     Text {
-                        text: row.status;
+                        text: "Servers";
                         color: Theme.text-secondary;
-                        font-size: Theme.font-body-sm;
+                        font-size: Theme.font-eyebrow;
                         vertical-alignment: center;
                     }
                     PillButton {
-                        label: "Remove";
-                        clicked => { root.remove-clicked(row.name); }
+                        label: "+ Add";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.add-clicked(); }
+                    }
+                }
+                if rows.length == 0 : Text {
+                    text: "No MCP servers yet. Click Add to begin.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                for row in rows : Rectangle {
+                    background: row.name == root.selected ? Theme.surface-2 : transparent;
+                    border-radius: Theme.radius-sm;
+                    min-height: 40px;
+                    ta := TouchArea {
+                        clicked => { root.select-server(row.name); }
+                    }
+                    HorizontalLayout {
+                        padding-left: Theme.gap-sm;
+                        padding-right: Theme.gap-sm;
+                        spacing: Theme.gap-sm;
+                        alignment: start;
+                        StatusDot {
+                            tint: row.status == "live" ? Theme.success
+                                 : row.status == "down" ? Theme.danger
+                                 : row.status == "needsauth" ? Theme.warning
+                                 : Theme.text-tertiary;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 0px;
+                            Text {
+                                text: row.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body-sm;
+                            }
+                            Text {
+                                text: row.transport + " · " + row.tool_count_label;
+                                color: Theme.text-tertiary;
+                                font-size: Theme.font-body-sm;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Detail panel
+        Rectangle {
+            horizontal-stretch: 1;
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: Theme.gap-md;
+                if root.selected == "" : Text {
+                    text: "Select a server on the left, or click Add.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                }
+                if root.selected != "" : VerticalLayout {
+                    spacing: Theme.gap-md;
+                    // Header
+                    HorizontalLayout {
+                        alignment: space-between;
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: detail.name;
+                                color: Theme.text-primary;
+                                font-size: 18px;
+                            }
+                            Text {
+                                text: detail.version != "" ? detail.version : "—";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body-sm;
+                            }
+                            Text {
+                                text: detail.transport + " · " + detail.command-or-url;
+                                color: Theme.text-tertiary;
+                                font-size: Theme.font-body-sm;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: detail.lifecycle-label + " · " + detail.tool-count-label;
+                                color: Theme.text-tertiary;
+                                font-size: Theme.font-body-sm;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.gap-sm;
+                            alignment: center;
+                            PillButton {
+                                label: "Re-test";
+                                clicked => { root.retest-clicked(root.selected); }
+                            }
+                            PillButton {
+                                label: "Delete";
+                                bg-color: Theme.danger;
+                                fg-color: Theme.bg;
+                                clicked => { root.delete-clicked(root.selected); }
+                            }
+                        }
+                    }
+                    HealthCard {
+                        detail: root.detail;
+                        copy-error => { root.copy-error-clicked(root.detail.last-error); }
+                    }
+                    // Tools + per-tool policy
+                    if tools.length > 0 : Text {
+                        text: "Tools (" + tools.length + ")";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    if tools.length > 0 : ToolPolicyTable {
+                        rows: root.tools;
+                        change-decision(tool, decision) => {
+                            root.change-tool-policy(root.selected, tool, decision);
+                        }
+                    }
+                    if tools.length == 0 : Text {
+                        text: "No tools discovered. Click Re-test.";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
                     }
                 }
             }
@@ -350,66 +654,6 @@ component EditorsTab inherits Rectangle {
     }
 }
 
-component PolicyTab inherits Rectangle {
-    in property <[PolicyRow]> rows;
-    callback change-decision(string, string, string);
-    VerticalLayout {
-        spacing: Theme.gap-sm;
-        Text {
-            text: rows.length > 0 ? "Policies (" + rows.length + ")" : "No policies set";
-            color: Theme.text-secondary;
-            font-size: Theme.font-eyebrow;
-        }
-        if rows.length == 0 : EmptyState {
-            text: "Tool policies appear here as IDEs call tools (defaulted to `ask`).";
-            height: 200px;
-        }
-        for row in rows : RowCard {
-            HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: Theme.gap-md;
-                alignment: space-between;
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    Text {
-                        text: row.server + "." + row.tool;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body;
-                    }
-                    Text {
-                        text: "source: " + row.source;
-                        color: Theme.text-tertiary;
-                        font-size: Theme.font-body-sm;
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 4px;
-                    alignment: center;
-                    PillButton {
-                        label: "Allow";
-                        bg-color: row.decision == "allow" ? Theme.accent : Theme.surface-3;
-                        fg-color: row.decision == "allow" ? Theme.bg : Theme.text-secondary;
-                        clicked => { root.change-decision(row.server, row.tool, "allow"); }
-                    }
-                    PillButton {
-                        label: "Ask";
-                        bg-color: row.decision == "ask" ? Theme.warning : Theme.surface-3;
-                        fg-color: row.decision == "ask" ? Theme.bg : Theme.text-secondary;
-                        clicked => { root.change-decision(row.server, row.tool, "ask"); }
-                    }
-                    PillButton {
-                        label: "Deny";
-                        bg-color: row.decision == "deny" ? Theme.danger : Theme.surface-3;
-                        fg-color: row.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
-                        clicked => { root.change-decision(row.server, row.tool, "deny"); }
-                    }
-                }
-            }
-        }
-    }
-}
 
 component LogTab inherits Rectangle {
     in property <[AuditRow]> rows;
@@ -463,13 +707,102 @@ component LogTab inherits Rectangle {
 
 component SettingsTab inherits Rectangle {
     in property <SettingsRow> data;
+    in property <bool> open-window-at-startup;
+    in property <string> default-unknown-tool-policy;
+    callback toggle-open-window(bool);
+    callback set-default-policy(string);
+
     VerticalLayout {
-        spacing: Theme.gap-sm;
-        Text {
-            text: "Read-only view of config.toml — edit in your $EDITOR or via this tab in a later release.";
-            color: Theme.text-secondary;
-            font-size: Theme.font-eyebrow;
+        spacing: Theme.gap-md;
+
+        // Startup
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: Theme.gap-sm;
+                Text {
+                    text: "Startup";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-eyebrow;
+                }
+                Rectangle {
+                    background: transparent;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        alignment: start;
+                        Rectangle {
+                            background: root.open-window-at-startup ? Theme.accent : Theme.surface-3;
+                            border-radius: 4px;
+                            width: 18px;
+                            height: 18px;
+                            Text {
+                                text: root.open-window-at-startup ? "✓" : "";
+                                color: Theme.bg;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            ta := TouchArea {
+                                clicked => {
+                                    root.toggle-open-window(!root.open-window-at-startup);
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Open window when daemon starts";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
         }
+
+        // Approvals defaults
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: Theme.gap-sm;
+                Text {
+                    text: "When an unknown tool is called";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-eyebrow;
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    PillButton {
+                        label: "Allow";
+                        bg-color: root.default-unknown-tool-policy == "allow" ? Theme.accent : Theme.surface-3;
+                        fg-color: root.default-unknown-tool-policy == "allow" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.set-default-policy("allow"); }
+                    }
+                    PillButton {
+                        label: "Ask";
+                        bg-color: root.default-unknown-tool-policy == "ask" ? Theme.warning : Theme.surface-3;
+                        fg-color: root.default-unknown-tool-policy == "ask" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.set-default-policy("ask"); }
+                    }
+                    PillButton {
+                        label: "Deny";
+                        bg-color: root.default-unknown-tool-policy == "deny" ? Theme.danger : Theme.surface-3;
+                        fg-color: root.default-unknown-tool-policy == "deny" ? Theme.text-primary : Theme.text-secondary;
+                        clicked => { root.set-default-policy("deny"); }
+                    }
+                }
+            }
+        }
+
+        // Read-only config.toml view
         Rectangle {
             background: Theme.surface;
             border-radius: Theme.radius-md;
@@ -478,6 +811,11 @@ component SettingsTab inherits Rectangle {
             VerticalLayout {
                 padding: Theme.gap-md;
                 spacing: 4px;
+                Text {
+                    text: "From config.toml (read-only)";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-eyebrow;
+                }
                 SettingLine { label: "daemon.port"; value: root.data.port; }
                 SettingLine { label: "daemon.approval_timeout_seconds"; value: root.data.approval_timeout; }
                 SettingLine { label: "daemon.default_lifecycle_seconds"; value: root.data.default_lifecycle; }
@@ -541,6 +879,7 @@ component LabeledInput inherits VerticalLayout {
 component LabeledTextArea inherits VerticalLayout {
     in property <string> label;
     in-out property <string> text <=> input.text;
+    callback edited <=> input.edited;
     spacing: 4px;
     Text {
         text: root.label;
@@ -601,61 +940,242 @@ component ModalShell inherits Rectangle {
     }
 }
 
+component WizardStepIndicator inherits Rectangle {
+    in property <int> step;        // current 1..3
+    HorizontalLayout {
+        spacing: Theme.gap-sm;
+        alignment: start;
+        for label[i] in ["Connection", "Probing", "Permissions"] : HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                background: root.step > i ? Theme.accent
+                           : root.step == i + 1 ? Theme.warning
+                           : Theme.surface-3;
+                border-radius: 10px;
+                width: 18px;
+                height: 18px;
+                Text {
+                    text: i + 1;
+                    color: root.step >= i + 1 ? Theme.bg : Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: label;
+                color: root.step == i + 1 ? Theme.text-primary : Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
 component AddServerDialog inherits Rectangle {
     in-out property <string> name <=> name-input.text;
     in-out property <string> command <=> cmd-input.text;
     in-out property <string> args <=> args-input.text;
     in-out property <string> url <=> url-input.text;
+    in-out property <string> headers <=> headers-input.text;
     in-out property <string> transport;
     in-out property <string> paste <=> paste-input.text;
-    callback save();
+    in-out property <string> status;
+    in-out property <bool> status-is-error: false;
+    in-out property <bool> busy: false;
+    in property <int> step;
+    in property <string> phase-status;
+    in property <string> oauth-url;
+    in property <[ToolPolicyRow]> tools;
+    callback start-probe();
+    callback wizard-save();
+    callback wizard-back();
+    callback change-tool-policy(string, string);
     callback dismiss();
     callback parse();
+    callback copy-oauth-url();
 
     ModalShell {
         title: "Add MCP Server";
         dismiss => { root.dismiss(); }
 
         VerticalLayout {
-            spacing: Theme.gap-sm;
+            spacing: Theme.gap-md;
 
-            HorizontalLayout {
-                spacing: Theme.gap-sm;
-                PillButton {
-                    label: "stdio";
-                    bg-color: root.transport == "stdio" ? Theme.accent : Theme.surface-3;
-                    fg-color: root.transport == "stdio" ? Theme.bg : Theme.text-secondary;
-                    clicked => { root.transport = "stdio"; }
+            WizardStepIndicator { step: root.step; }
+
+            VerticalLayout {
+                visible: root.step == 1;
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    PillButton {
+                        label: "http";
+                        bg-color: root.transport == "http" ? Theme.accent : Theme.surface-3;
+                        fg-color: root.transport == "http" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.transport = "http"; }
+                    }
+                    PillButton {
+                        label: "stdio";
+                        bg-color: root.transport == "stdio" ? Theme.accent : Theme.surface-3;
+                        fg-color: root.transport == "stdio" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.transport = "stdio"; }
+                    }
                 }
-                PillButton {
-                    label: "http";
-                    bg-color: root.transport == "http" ? Theme.accent : Theme.surface-3;
-                    fg-color: root.transport == "http" ? Theme.bg : Theme.text-secondary;
-                    clicked => { root.transport = "http"; }
+                name-input := LabeledInput { label: "Name (letters, digits, _, -, 1–64 chars)"; }
+                cmd-input := LabeledInput {
+                    label: "Command";
+                    visible: root.transport == "stdio";
+                }
+                args-input := LabeledInput {
+                    label: "Args, space-separated";
+                    visible: root.transport == "stdio";
+                }
+                url-input := LabeledInput {
+                    label: "URL";
+                    visible: root.transport == "http";
+                }
+                headers-input := LabeledInput {
+                    label: "Headers (KEY=value, comma separated)";
+                    visible: root.transport == "http";
+                }
+                paste-input := LabeledTextArea {
+                    label: "Paste full MCP JSON to auto-fill — parses as you type";
+                    edited => { paste-debounce.running = false; paste-debounce.running = true; }
+                }
+                paste-debounce := Timer {
+                    interval: 600ms;
+                    running: false;
+                    triggered => {
+                        self.running = false;
+                        if (root.paste != "") { root.parse(); }
+                    }
+                }
+
+                if root.status != "" : Rectangle {
+                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        Text {
+                            text: root.status;
+                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        label: "Test connection";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.start-probe(); }
+                    }
                 }
             }
 
-            name-input := LabeledInput { label: "Name"; }
-            cmd-input := LabeledInput { label: "Command (stdio only)"; }
-            args-input := LabeledInput { label: "Args, space-separated (stdio only)"; }
-            url-input := LabeledInput { label: "URL (http only)"; }
-
-            paste-input := LabeledTextArea {
-                label: "Paste env vars / dotenv / MCP JSON to auto-fill";
+            // Step 2 — probing (plus OAuth sign-in state).
+            if root.step == 2 : VerticalLayout {
+                spacing: Theme.gap-md;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: start;
+                    Text { text: "⟳"; font-size: 24px; color: Theme.accent; vertical-alignment: center; }
+                    Text {
+                        text: root.phase-status != "" ? root.phase-status : "Probing upstream...";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.oauth-url == "" : Text {
+                    text: "Spawning, calling initialize, fetching tools — up to ~30 seconds per phase.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                if root.oauth-url != "" : VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Browser tab opened for sign-in. If it didn't open, copy this URL:";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-body-sm;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        background: Theme.surface-2;
+                        border-radius: Theme.radius-sm;
+                        min-height: 36px;
+                        HorizontalLayout {
+                            padding: Theme.gap-sm;
+                            spacing: Theme.gap-sm;
+                            Text {
+                                text: root.oauth-url;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body-sm;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                            PillButton {
+                                label: "Copy";
+                                clicked => { root.copy-oauth-url(); }
+                            }
+                        }
+                    }
+                }
+                if root.status != "" : Rectangle {
+                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        Text {
+                            text: root.status;
+                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        label: "← Back to edit";
+                        clicked => { root.wizard-back(); }
+                    }
+                }
             }
 
-            HorizontalLayout {
-                spacing: Theme.gap-sm;
-                alignment: end;
-                PillButton {
-                    label: "Parse paste";
-                    clicked => { root.parse(); }
+            // Step 3 — per-tool policy
+            if root.step == 3 : VerticalLayout {
+                spacing: Theme.gap-md;
+                Text {
+                    text: root.tools.length + " tools discovered. Default: Ask. Set Allow to auto-approve.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
                 }
-                PillButton {
-                    label: "Save";
-                    bg-color: Theme.accent;
-                    fg-color: Theme.bg;
-                    clicked => { root.save(); }
+                ToolPolicyTable {
+                    rows: root.tools;
+                    change-decision(tool, decision) => { root.change-tool-policy(tool, decision); }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: end;
+                    PillButton {
+                        label: "← Back";
+                        clicked => { root.wizard-back(); }
+                    }
+                    PillButton {
+                        label: "Save";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.wizard-save(); }
+                    }
                 }
             }
         }
@@ -734,17 +1254,38 @@ export component MainWindow inherits Window {
     in property <bool> daemon-healthy: true;
 
     in-out property <int> active-tab: 0;
+    in-out property <string> focused-approval: "";
     in-out property <bool> show-add-server-dialog: false;
     in-out property <bool> show-add-ide-dialog: false;
+    in-out property <bool> show-delete-server-confirm: false;
+    in-out property <string> pending-delete-server: "";
 
+    // Servers tab master-detail state
+    in-out property <string> selected-server: "";
+    in property <ServerDetail> selected-server-detail;
+    in property <[ToolPolicyRow]> selected-server-tools;
+
+    // Add Server wizard state — 1=connection form, 2=probing, 3=per-tool policy
+    in-out property <int> wizard-step: 1;
+    in-out property <string> wizard-phase-status;
+    in property <[ToolPolicyRow]> wizard-tools;
+
+    in-out property <string> add-server-status;
+    in-out property <bool> add-server-status-is-error: false;
+    in-out property <bool> add-server-busy: false;
     in-out property <string> add-server-name;
     in-out property <string> add-server-command;
     in-out property <string> add-server-args;
     in-out property <string> add-server-url;
-    in-out property <string> add-server-transport: "stdio";
+    in-out property <string> add-server-transport: "http";
     in-out property <string> add-server-paste;
+    in-out property <string> add-server-headers;
+    in-out property <string> wizard-oauth-url;
 
     in-out property <string> add-ide-selected: "Cursor";
+
+    in-out property <bool> open-window-at-startup;
+    in-out property <string> default-unknown-tool-policy: "ask";
 
     callback approve-clicked(string);
     callback deny-clicked(string);
@@ -752,17 +1293,34 @@ export component MainWindow inherits Window {
     callback remove-ide-clicked(string);
     callback change-policy(string, string, string);
     callback refresh-clicked();
-    callback submit-add-server();          // reads add-server-* properties
+    callback start-probe();                 // wizard step 1 → step 2
+    callback wizard-save();                 // wizard step 3 Save (commits with current policies)
+    callback wizard-back-to-form();         // step 2/3 Back button
+    callback wizard-change-tool-policy(string, string);   // tool, decision
+    callback select-server(string);
+    callback retest-clicked(string);
+    callback change-tool-policy(string, string, string);
     callback submit-add-ide();             // reads add-ide-selected
     callback parse-paste();                // reads add-server-paste, fills the other add-server-* fields
+    callback toggle-open-window-at-startup(bool);
+    callback set-default-unknown-tool-policy(string);
+    callback copy-error-clicked(string);
 
     public function show-add-server() {
         root.show-add-server-dialog = true;
+        root.wizard-step = 1;
+        root.add-server-transport = "http";
         root.add-server-name = "";
         root.add-server-command = "";
         root.add-server-args = "";
         root.add-server-url = "";
+        root.add-server-headers = "";
         root.add-server-paste = "";
+        root.add-server-status = "";
+        root.add-server-status-is-error = false;
+        root.add-server-busy = false;
+        root.wizard-phase-status = "";
+        root.wizard-oauth-url = "";
     }
 
     public function show-add-ide() {
@@ -822,11 +1380,14 @@ export component MainWindow inherits Window {
                 padding-right: Theme.gap-md;
                 spacing: 4px;
                 alignment: start;
-                for label[i] in ["Approvals", "Servers", "Editors", "Policy", "Log", "Settings", "Help"] : TabButton {
+                for label[i] in ["Approvals", "Servers", "Editors", "Log", "Settings", "Help"] : TabButton {
                     label: label;
                     active: root.active-tab == i;
                     badge: i == 0 ? root.approvals.length : 0;
-                    clicked => { root.active-tab = i; }
+                    clicked => {
+                        root.active-tab = i;
+                        root.focused-approval = "";
+                    }
                 }
             }
         }
@@ -840,12 +1401,25 @@ export component MainWindow inherits Window {
                 alignment: start;
                 if root.active-tab == 0 : ApprovalsTab {
                     rows: root.approvals;
+                    focused-id: root.focused-approval;
                     approve-clicked(id) => { root.approve-clicked(id); }
                     deny-clicked(id) => { root.deny-clicked(id); }
                 }
                 if root.active-tab == 1 : ServersTab {
                     rows: root.servers;
-                    remove-clicked(name) => { root.remove-server-clicked(name); }
+                    selected: root.selected-server;
+                    detail: root.selected-server-detail;
+                    tools: root.selected-server-tools;
+                    select-server(name) => { root.select-server(name); }
+                    delete-clicked(name) => {
+                        root.pending-delete-server = name;
+                        root.show-delete-server-confirm = true;
+                    }
+                    retest-clicked(name) => { root.retest-clicked(name); }
+                    change-tool-policy(server, tool, decision) => {
+                        root.change-tool-policy(server, tool, decision);
+                    }
+                    copy-error-clicked(text) => { root.copy-error-clicked(text); }
                     add-clicked => { root.show-add-server(); }
                 }
                 if root.active-tab == 2 : EditorsTab {
@@ -853,19 +1427,17 @@ export component MainWindow inherits Window {
                     remove-clicked(name) => { root.remove-ide-clicked(name); }
                     add-clicked => { root.show-add-ide(); }
                 }
-                if root.active-tab == 3 : PolicyTab {
-                    rows: root.policies;
-                    change-decision(server, tool, decision) => {
-                        root.change-policy(server, tool, decision);
-                    }
-                }
-                if root.active-tab == 4 : LogTab {
+                if root.active-tab == 3 : LogTab {
                     rows: root.audit;
                 }
-                if root.active-tab == 5 : SettingsTab {
+                if root.active-tab == 4 : SettingsTab {
                     data: root.settings;
+                    open-window-at-startup: root.open-window-at-startup;
+                    default-unknown-tool-policy: root.default-unknown-tool-policy;
+                    toggle-open-window(v) => { root.toggle-open-window-at-startup(v); }
+                    set-default-policy(p) => { root.set-default-unknown-tool-policy(p); }
                 }
-                if root.active-tab == 6 : HelpTab {}
+                if root.active-tab == 5 : HelpTab {}
             }
         }
     }
@@ -878,11 +1450,66 @@ export component MainWindow inherits Window {
         command <=> root.add-server-command;
         args <=> root.add-server-args;
         url <=> root.add-server-url;
+        headers <=> root.add-server-headers;
         transport <=> root.add-server-transport;
         paste <=> root.add-server-paste;
-        save => { root.submit-add-server(); root.show-add-server-dialog = false; }
-        dismiss => { root.show-add-server-dialog = false; }
+        status <=> root.add-server-status;
+        status-is-error <=> root.add-server-status-is-error;
+        busy <=> root.add-server-busy;
+        step: root.wizard-step;
+        phase-status: root.wizard-phase-status;
+        oauth-url: root.wizard-oauth-url;
+        tools: root.wizard-tools;
+        start-probe => { root.start-probe(); }
+        wizard-save => { root.wizard-save(); }
+        wizard-back => { root.wizard-back-to-form(); }
+        change-tool-policy(tool, decision) => {
+            root.wizard-change-tool-policy(tool, decision);
+        }
+        copy-oauth-url => { root.copy-error-clicked(root.wizard-oauth-url); }
+        dismiss => {
+            root.show-add-server-dialog = false;
+            root.add-server-status = "";
+            root.wizard-step = 1;
+        }
         parse => { root.parse-paste(); }
+    }
+    if root.show-delete-server-confirm : ModalShell {
+        title: "Remove server?";
+        dismiss => {
+            root.show-delete-server-confirm = false;
+            root.pending-delete-server = "";
+        }
+        VerticalLayout {
+            spacing: Theme.gap-md;
+            Text {
+                text: "Removing \"" + root.pending-delete-server + "\" also strips its entries from every IDE config we wrote.";
+                color: Theme.text-secondary;
+                font-size: Theme.font-body-sm;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                alignment: end;
+                PillButton {
+                    label: "Cancel";
+                    clicked => {
+                        root.show-delete-server-confirm = false;
+                        root.pending-delete-server = "";
+                    }
+                }
+                PillButton {
+                    label: "Remove";
+                    bg-color: Theme.danger;
+                    fg-color: Theme.bg;
+                    clicked => {
+                        root.remove-server-clicked(root.pending-delete-server);
+                        root.show-delete-server-confirm = false;
+                        root.pending-delete-server = "";
+                    }
+                }
+            }
+        }
     }
     if root.show-add-ide-dialog : AddIdeDialog {
         width: root.width;

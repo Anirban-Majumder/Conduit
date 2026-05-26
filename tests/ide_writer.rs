@@ -8,7 +8,10 @@
 
 use std::path::PathBuf;
 
-use mcp_router::daemon::ide_writer::{purge_uniform_mcp_servers, write_uniform_mcp_servers};
+use mcp_router::daemon::ide_writer::{
+    purge_one_server_for_ide, purge_uniform_mcp_servers, read_raw, validate_json, write_raw,
+    write_uniform_mcp_servers,
+};
 use serde_json::json;
 
 fn fresh_tmp(name: &str) -> PathBuf {
@@ -115,4 +118,107 @@ fn purge_of_missing_file_is_idempotent() {
     let dir = fresh_tmp("missing");
     let path = dir.join("mcp.json");
     purge_uniform_mcp_servers(&path, "key12345", 9876).unwrap();
+}
+
+#[test]
+fn purge_one_server_drops_just_that_entry() {
+    let dir = fresh_tmp("purge-one");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+    write_uniform_mcp_servers(
+        &path,
+        "abcd1234",
+        &["gmail".to_string(), "github".to_string()],
+        9876,
+    )
+    .unwrap();
+
+    purge_one_server_for_ide(&path, 9876, "abcd1234", "gmail").unwrap();
+
+    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(after["mcpServers"]["gmail"].is_null());
+    assert!(after["mcpServers"]["github"]["url"].is_string());
+}
+
+#[test]
+fn purge_one_keeps_top_level_settings() {
+    let dir = fresh_tmp("purge-top-level");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+    write_uniform_mcp_servers(&path, "k0000000", &["gmail".to_string()], 9876).unwrap();
+    let mut cur: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    cur["editor"] = json!({ "fontSize": 14 });
+    std::fs::write(&path, serde_json::to_vec_pretty(&cur).unwrap()).unwrap();
+
+    purge_one_server_for_ide(&path, 9876, "k0000000", "gmail").unwrap();
+
+    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(after["editor"]["fontSize"], 14);
+}
+
+#[test]
+fn purge_one_keeps_other_routers() {
+    let dir = fresh_tmp("purge-other-router");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+    write_uniform_mcp_servers(&path, "ourskey0", &["gmail".to_string()], 9876).unwrap();
+    let mut cur: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    cur["mcpServers"]["other"] = json!({
+        "url": "http://localhost:9999/other/svc/mcp"
+    });
+    std::fs::write(&path, serde_json::to_vec_pretty(&cur).unwrap()).unwrap();
+
+    purge_one_server_for_ide(&path, 9876, "ourskey0", "gmail").unwrap();
+
+    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(after["mcpServers"]["gmail"].is_null());
+    assert!(after["mcpServers"]["other"]["url"].is_string());
+}
+
+#[test]
+fn purge_one_keeps_stdio_entries() {
+    let dir = fresh_tmp("purge-stdio");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+    write_uniform_mcp_servers(&path, "k0000000", &["gmail".to_string()], 9876).unwrap();
+    let mut cur: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    cur["mcpServers"]["my-custom"] = json!({ "command": "/usr/local/bin/x" });
+    std::fs::write(&path, serde_json::to_vec_pretty(&cur).unwrap()).unwrap();
+
+    purge_one_server_for_ide(&path, 9876, "k0000000", "gmail").unwrap();
+
+    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(after["mcpServers"]["gmail"].is_null());
+    assert_eq!(after["mcpServers"]["my-custom"]["command"], "/usr/local/bin/x");
+}
+
+#[test]
+fn validate_json_rejects_trailing_comma() {
+    assert!(validate_json("{\"a\":1,}").is_err());
+}
+
+#[test]
+fn validate_json_accepts_empty_object() {
+    assert!(validate_json("{}").is_ok());
+}
+
+#[test]
+fn write_raw_round_trips_via_read_raw() {
+    let dir = fresh_tmp("raw");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+    write_raw(&path, r#"{"mcpServers":{}}"#).unwrap();
+    let got = read_raw(&path).unwrap().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&got).unwrap();
+    assert!(v["mcpServers"].is_object());
+}
+
+#[test]
+fn read_raw_returns_none_for_missing_file() {
+    let dir = fresh_tmp("read-missing");
+    let path = dir.join("does-not-exist.json");
+    assert!(read_raw(&path).unwrap().is_none());
 }

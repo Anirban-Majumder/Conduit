@@ -5,31 +5,46 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use mcp_router::daemon::approval::{spawn_timeout_sweeper, ApprovalCenter};
+use mcp_router::daemon::cascade;
 use mcp_router::daemon::config_toml::Settings;
 use mcp_router::daemon::config_watcher;
 use mcp_router::daemon::db::types::{
     ApprovalStatus, Decision, DecisionSource, EnvEntry, EnvValue, ManagedIdeConfig, Server,
-    TRANSPORT_HTTP, TRANSPORT_STDIO,
+    ToolMeta as DbToolMeta, TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
 use mcp_router::daemon::db::Db;
 use mcp_router::daemon::events::{Bus, Event};
 use mcp_router::daemon::http_server::{self, AppState};
 use mcp_router::daemon::ide_detect::IdeKind;
 use mcp_router::daemon::ide_writer;
+use mcp_router::daemon::ipc;
+use mcp_router::daemon::onboarding::{
+    check_background_hint, mark_first_run_completed, should_show_window_at_startup,
+    BackgroundHintAction,
+};
 use mcp_router::daemon::paste_parser;
+use mcp_router::daemon::server_validators;
+use mcp_router::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
 use mcp_router::daemon::upstream::manager::UpstreamManager;
-use mcp_router::gui::{hotkey, notifications as gui_notifications};
+use mcp_router::gui::{
+    hotkey, notification_router as gui_notification_router, notifications as gui_notifications,
+    tray as gui_tray,
+};
 use mcp_router::paths::Paths;
 use mcp_router::runtime::Worker;
 
 mod ui;
-use ui::{ApprovalRow, AuditRow, IdeRow, MainWindow, PolicyRow, ServerRow, SettingsRow};
+use ui::{
+    ApprovalRow, AuditRow, IdeRow, MainWindow, PolicyRow, ServerDetail, ServerRow, SettingsRow,
+    ToolPolicyRow as ToolPolicyUiRow,
+};
 
+#[expect(clippy::too_many_lines, reason = "single-binary entrypoint wires every subsystem")]
 fn main() -> Result<()> {
     init_tracing();
     tracing::info!("mcp-router starting");
@@ -43,6 +58,30 @@ fn main() -> Result<()> {
 
     let cancel = CancellationToken::new();
     let worker = Worker::spawn(cancel.clone()).context("spawn tokio worker")?;
+
+    // Single-instance IPC: bind early so re-launches fail fast and forward Show.
+    let socket = ipc::resolve_socket_path();
+    let listener = match worker.handle().block_on(ipc::try_bind(&socket)) {
+        Ok(l) => l,
+        Err(ipc::BindError::InUse) => {
+            let send_result = worker
+                .handle()
+                .block_on(ipc::send_command(&socket, &ipc::Command::Show));
+            #[expect(
+                clippy::print_stderr,
+                reason = "CLI UX: user reinvoked the binary, deserves a one-line ack"
+            )]
+            {
+                eprintln!("mcp-router: already running — opened existing window.");
+            }
+            if let Err(e) = send_result {
+                tracing::warn!(error = %e, "ipc forward show failed");
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(anyhow::Error::new(e).context("ipc bind")),
+    };
+
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
 
@@ -74,7 +113,12 @@ fn main() -> Result<()> {
 
     {
         let _guard = worker.handle().enter();
-        let _sweeper = spawn_timeout_sweeper(db.clone(), approval_timeout, cancel.clone());
+        let _sweeper = spawn_timeout_sweeper(
+            db.clone(),
+            bus.clone(),
+            approval_timeout,
+            cancel.clone(),
+        );
         let http_cancel = cancel.clone();
         tokio::spawn(async move {
             if let Err(e) = http_server::serve(app_state, http_cancel).await {
@@ -88,6 +132,7 @@ fn main() -> Result<()> {
         &window,
         &db,
         &approvals,
+        &bus,
         settings.daemon.port,
         worker.handle().clone(),
     );
@@ -100,21 +145,91 @@ fn main() -> Result<()> {
         worker.handle().clone(),
     );
 
-    // Notifications bridge — fires an OS notification on every ApprovalPending.
+    // Notifications bridge: emits OS toasts AND owns the click→dispatch loop.
     {
         let _guard = worker.handle().enter();
-        let _notif = gui_notifications::spawn(bus.subscribe(), db, settings_arc, cancel.clone());
+        let (action_tx, mut action_rx) =
+            tokio::sync::mpsc::unbounded_channel::<gui_notification_router::NotificationAction>();
+        let _notif = gui_notifications::spawn(
+            bus.subscribe(),
+            db.clone(),
+            settings_arc,
+            cancel.clone(),
+            action_tx,
+        );
+        let approvals_for_router = Arc::clone(&approvals);
+        let bus_for_router = bus.clone();
+        let db_for_router = db.clone();
+        let cancel_for_router = cancel.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = cancel_for_router.cancelled() => break,
+                    msg = action_rx.recv() => {
+                        let Some(action) = msg else { break };
+                        gui_notification_router::dispatch_action(
+                            action,
+                            &db_for_router,
+                            &approvals_for_router,
+                            &bus_for_router,
+                        )
+                        .await;
+                    }
+                }
+            }
+        });
     }
 
-    // Tray-icon deferred (its libxdo system dep is not universally available).
-    // Spec §"Open questions" already designates the global hotkey as the
-    // Wayland-no-SNI fallback; we ship it as the primary entry point in v0.
+    // IPC accept loop: needs MainWindow to be built for the show-handler.
+    {
+        let _guard = worker.handle().enter();
+        let weak = window.as_weak();
+        let on_show: ipc::ShowHandler = Arc::new(move || {
+            let weak = weak.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.window().show().ok();
+                }
+            })
+            .ok();
+        });
+        tokio::spawn(ipc::accept_loop(listener, cancel.clone(), on_show));
+    }
+
+    // Tray icon on a dedicated thread; nil if SNI host or libxdo absent.
+    let _tray = install_tray(&db, &bus, &cancel, &window, worker.handle().clone());
+
     let _hotkey = install_hotkey(&window);
 
-    let cancel_for_close = cancel.clone();
+    // First-run override: force-show on first run, otherwise honor setting.
+    match worker.handle().block_on(should_show_window_at_startup(&db)) {
+        Ok(true) => {
+            window.show().context("show main window")?;
+        }
+        Ok(false) => {
+            tracing::info!("open_window_at_startup=false; staying headless");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read open_window_at_startup; defaulting to show");
+            window.show().context("show main window (fallback)")?;
+        }
+    }
+
+    let db_for_close = db;
+    let rt_for_close = worker.handle().clone();
     window.window().on_close_requested(move || {
-        tracing::info!("window close requested");
-        cancel_for_close.cancel();
+        tracing::info!("window close requested; daemon stays running");
+        // Background hint: one-time notification on first close after onboarding.
+        let db = db_for_close.clone();
+        rt_for_close.spawn(async move {
+            match check_background_hint(&db).await {
+                Ok(BackgroundHintAction::Fire) => {
+                    fire_background_hint();
+                }
+                Ok(BackgroundHintAction::Skip) => {}
+                Err(e) => tracing::warn!(error = %e, "background-hint check failed"),
+            }
+        });
         slint::CloseRequestResponse::HideWindow
     });
 
@@ -126,6 +241,413 @@ fn main() -> Result<()> {
     drop(bus);
     drop(worker);
     Ok(())
+}
+
+#[derive(Default, Clone)]
+struct PendingWizard {
+    server: Option<Server>,
+    tools: Vec<DbToolMeta>,
+    descriptions: std::collections::HashMap<String, String>,
+    oauth_session: Option<String>,
+    oauth_authority: Option<String>,
+    oauth_client_id: Option<String>,
+}
+
+#[expect(clippy::too_many_lines, reason = "wizard wires 4 Slint callbacks in one place")]
+fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Handle) {
+    let pending: Arc<std::sync::Mutex<PendingWizard>> =
+        Arc::new(std::sync::Mutex::new(PendingWizard::default()));
+
+    let weak = window.as_weak();
+    let db_for_probe = db.clone();
+    let rt_for_probe = rt.clone();
+    let pending_for_probe = pending.clone();
+    window.on_start_probe(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let name = ui.get_add_server_name().to_string();
+        if !server_validators::is_valid_server_name(&name) {
+            ui.set_add_server_status(SharedString::from(
+                "Name must match [a-z0-9_-]{1,64}.",
+            ));
+            ui.set_add_server_status_is_error(true);
+            return;
+        }
+        let transport = ui.get_add_server_transport().to_string();
+        let command = ui.get_add_server_command().to_string();
+        let args_raw = ui.get_add_server_args().to_string();
+        let url = ui.get_add_server_url().to_string();
+        let headers_raw = ui.get_add_server_headers().to_string();
+        let args: Vec<String> = if args_raw.is_empty() {
+            Vec::new()
+        } else {
+            args_raw.split_whitespace().map(str::to_string).collect()
+        };
+
+        ui.set_wizard_step(2);
+        ui.set_wizard_phase_status(SharedString::from("Connecting + initializing..."));
+        ui.set_wizard_oauth_url(SharedString::from(""));
+        ui.set_add_server_status(SharedString::from(""));
+        ui.set_add_server_status_is_error(false);
+        ui.set_add_server_busy(true);
+
+        let draft = build_draft(&name, &transport, &command, args.clone(), &url, &headers_raw);
+        let server_row = Server {
+            name: name.clone(),
+            transport: transport.clone(),
+            command: if transport == TRANSPORT_STDIO && !command.is_empty() {
+                Some(command)
+            } else {
+                None
+            },
+            args,
+            env: Vec::<EnvEntry>::new(),
+            url: if transport == TRANSPORT_HTTP && !url.is_empty() {
+                Some(url)
+            } else {
+                None
+            },
+            lifecycle_seconds: 300,
+            last_init_duration_ms: None,
+            package_version: None,
+            mcp_self_version: None,
+            created_at: 0,
+            server_name: None,
+            server_version: None,
+            last_probed_at: None,
+            last_probe_error: None,
+        };
+
+        let weak = weak.clone();
+        let pending = pending_for_probe.clone();
+        let db = db_for_probe.clone();
+        rt_for_probe.spawn(async move {
+            let cancel = CancellationToken::new();
+            let weak_for_progress = weak.clone();
+            let progress: probe::ProgressSink = Arc::new(move |evt| match evt {
+                probe::ProbeEvent::Phase(msg) => {
+                    let weak = weak_for_progress.clone();
+                    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_wizard_phase_status(SharedString::from(msg));
+                    });
+                }
+                probe::ProbeEvent::AuthorizeUrl(url) => {
+                    let weak = weak_for_progress.clone();
+                    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_wizard_oauth_url(SharedString::from(url));
+                        ui.set_wizard_phase_status(SharedString::from(
+                            "Waiting for sign-in in your browser...",
+                        ));
+                    });
+                }
+            });
+            let result = probe::probe_with_progress(&draft, cancel, Some(progress)).await;
+            match result {
+                Ok(probed) => {
+                    let now = unix_now();
+                    let mut descriptions = std::collections::HashMap::new();
+                    let tools: Vec<DbToolMeta> = probed
+                        .tools
+                        .into_iter()
+                        .map(|t| {
+                            if let Some(d) = &t.description {
+                                descriptions.insert(t.name.clone(), d.clone());
+                            }
+                            DbToolMeta {
+                                name: t.name,
+                                description: t.description,
+                                input_schema_json: t.input_schema.to_string(),
+                                discovered_at: now,
+                            }
+                        })
+                        .collect();
+                    let tool_rows: Vec<ToolPolicyUiRow> = tools
+                        .iter()
+                        .map(|t| ToolPolicyUiRow {
+                            name: SharedString::from(t.name.clone()),
+                            description: SharedString::from(
+                                t.description.clone().unwrap_or_default(),
+                            ),
+                            decision: SharedString::from("ask"),
+                        })
+                        .collect();
+                    let mut updated_server = server_row;
+                    updated_server.server_name = Some(probed.server_name.clone());
+                    updated_server.server_version = Some(probed.server_version.clone());
+                    updated_server.last_probed_at = Some(now);
+                    updated_server.last_probe_error = None;
+                    if let Ok(mut guard) = pending.lock() {
+                        guard.server = Some(updated_server);
+                        guard.tools = tools;
+                        guard.descriptions = descriptions;
+                        guard.oauth_session = probed.oauth_session;
+                        guard.oauth_authority = probed.oauth_authority;
+                        guard.oauth_client_id = probed.oauth_client_id;
+                    }
+                    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_add_server_busy(false);
+                        ui.set_wizard_step(3);
+                        ui.set_wizard_phase_status(SharedString::from(""));
+                        ui.set_wizard_oauth_url(SharedString::from(""));
+                        ui.set_wizard_tools(ModelRc::new(VecModel::from(tool_rows)));
+                    });
+                    let _ = (name, db);
+                }
+                Err(e) => {
+                    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_add_server_busy(false);
+                        ui.set_wizard_step(1);
+                        ui.set_wizard_phase_status(SharedString::from(""));
+                        ui.set_wizard_oauth_url(SharedString::from(""));
+                        ui.set_add_server_status(SharedString::from(format!("Probe failed: {e}")));
+                        ui.set_add_server_status_is_error(true);
+                    });
+                }
+            }
+        });
+    });
+
+    let weak = window.as_weak();
+    let db_for_save = db;
+    let rt_for_save = rt;
+    let pending_for_save = pending;
+    window.on_wizard_save(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let staged = match pending_for_save.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => return,
+        };
+        let Some(server_row) = staged.server else {
+            ui.set_add_server_status(SharedString::from(
+                "No probed server staged. Click Test connection first.",
+            ));
+            ui.set_add_server_status_is_error(true);
+            return;
+        };
+
+        let tool_rows_model = ui.get_wizard_tools();
+        let mut policy_overrides: std::collections::HashMap<String, Decision> =
+            std::collections::HashMap::new();
+        for i in 0..tool_rows_model.row_count() {
+            if let Some(row) = tool_rows_model.row_data(i) {
+                if let Some(d) = Decision::from_db_str(row.decision.as_str()) {
+                    policy_overrides.insert(row.name.to_string(), d);
+                }
+            }
+        }
+
+        let weak = weak.clone();
+        let db = db_for_save.clone();
+        let pending = pending_for_save.clone();
+        let tools = staged.tools.clone();
+        let name = server_row.name.clone();
+        let oauth_session = staged.oauth_session.clone();
+        let server_to_save = server_row;
+        rt_for_save.spawn(async move {
+            // Promote OAuth tokens from draft session → canonical server name.
+            if let Some(draft) = oauth_session.as_deref() {
+                if let Err(e) = tokio::task::spawn_blocking({
+                    let draft = draft.to_string();
+                    let server = name.clone();
+                    move || mcp_router::daemon::secrets::promote_oauth_tokens(&draft, &server)
+                })
+                .await
+                {
+                    tracing::warn!(error = %e, "oauth token promotion join failed");
+                }
+            }
+            let result = db.upsert_server_with_tools(server_to_save, tools).await;
+            let outcome: Result<usize, String> = match result {
+                Ok(()) => {
+                    for (tool, decision) in &policy_overrides {
+                        if let Err(e) = db
+                            .set_policy(&name, tool, *decision, DecisionSource::User)
+                            .await
+                        {
+                            tracing::warn!(error = %e, tool = %tool, "policy override failed");
+                        }
+                    }
+                    if let Err(e) = mark_first_run_completed(&db).await {
+                        tracing::warn!(error = %e, "mark_first_run_completed failed");
+                    }
+                    Ok(policy_overrides.len())
+                }
+                Err(e) => Err(format!("DB write failed: {e}")),
+            };
+            let _ignored = weak.upgrade_in_event_loop(move |ui| match outcome {
+                Ok(n) => {
+                    ui.set_show_add_server_dialog(false);
+                    ui.set_wizard_step(1);
+                    ui.set_add_server_status(SharedString::from(""));
+                    if let Ok(mut g) = pending.lock() {
+                        *g = PendingWizard::default();
+                    }
+                    tracing::info!(policies = n, "server saved");
+                }
+                Err(msg) => {
+                    ui.set_add_server_status(SharedString::from(msg));
+                    ui.set_add_server_status_is_error(true);
+                }
+            });
+            refresh_servers(&weak, &db).await;
+        });
+    });
+
+    let weak = window.as_weak();
+    window.on_wizard_back_to_form(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        ui.set_wizard_step(1);
+        ui.set_wizard_phase_status(SharedString::from(""));
+        ui.set_add_server_status(SharedString::from(""));
+        ui.set_add_server_status_is_error(false);
+    });
+
+    let weak = window.as_weak();
+    window.on_wizard_change_tool_policy(move |tool, decision| {
+        let Some(ui) = weak.upgrade() else { return };
+        let model = ui.get_wizard_tools();
+        let tool = tool.to_string();
+        let decision = decision.to_string();
+        let mut updated: Vec<ToolPolicyUiRow> = Vec::with_capacity(model.row_count());
+        for i in 0..model.row_count() {
+            if let Some(mut row) = model.row_data(i) {
+                if tool == "*" || row.name.as_str() == tool {
+                    row.decision = SharedString::from(decision.clone());
+                }
+                updated.push(row);
+            }
+        }
+        ui.set_wizard_tools(ModelRc::new(VecModel::from(updated)));
+    });
+}
+
+fn build_draft(
+    name: &str,
+    transport: &str,
+    command: &str,
+    args: Vec<String>,
+    url: &str,
+    headers_raw: &str,
+) -> DraftServerConfig {
+    let transport = if transport == TRANSPORT_HTTP {
+        let headers = parse_headers_field(headers_raw);
+        DraftTransport::Http {
+            url: url.to_string(),
+            auth: HttpAuth::None,
+            headers,
+        }
+    } else {
+        DraftTransport::Stdio {
+            command: command.to_string(),
+            args,
+            env: vec![],
+        }
+    };
+    DraftServerConfig {
+        name: name.to_string(),
+        transport,
+        lifecycle_seconds: 300,
+        draft_session: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+fn parse_headers_field(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .filter_map(|chunk| {
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
+                return None;
+            }
+            let (k, v) = chunk.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect()
+}
+
+fn relative_time(delta_secs: i64) -> String {
+    if delta_secs < 0 {
+        return "just now".to_string();
+    }
+    if delta_secs < 60 {
+        return format!("{delta_secs}s ago");
+    }
+    let mins = delta_secs / 60;
+    if mins < 60 {
+        return format!("{mins}m ago");
+    }
+    let hours = mins / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    format!("{}d ago", hours / 24)
+}
+
+fn unix_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    i64::try_from(s).unwrap_or(i64::MAX)
+}
+
+fn fire_background_hint() {
+    let summary = "mcp-router is running in the background";
+    let body = "Click the tray icon, press Ctrl+Alt+Shift+M, or run `mcp-router` to reopen.";
+    if let Err(e) = notify_rust::Notification::new()
+        .summary(summary)
+        .body(body)
+        .show()
+    {
+        tracing::warn!(error = %e, "background-hint notification failed");
+    }
+}
+
+fn install_tray(
+    db: &Db,
+    bus: &Bus,
+    cancel: &CancellationToken,
+    window: &MainWindow,
+    rt: tokio::runtime::Handle,
+) -> Option<gui_tray::TrayHandle> {
+    let weak_show = window.as_weak();
+    let on_show = Arc::new(move || {
+        let weak = weak_show.clone();
+        slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().show().ok();
+            }
+        })
+        .ok();
+    });
+
+    let cancel_for_quit = cancel.clone();
+    let on_quit = Arc::new(move || {
+        cancel_for_quit.cancel();
+        slint::invoke_from_event_loop(|| {
+            slint::quit_event_loop().ok();
+        })
+        .ok();
+    });
+
+    let db_for_pause = db.clone();
+    let rt_for_pause = rt.clone();
+    let on_pause_toggle = Arc::new(move |paused: bool| {
+        let db = db_for_pause.clone();
+        rt_for_pause.spawn(async move {
+            let value = if paused { "true" } else { "false" };
+            if let Err(e) = db.set_settings_kv("routing_paused", value).await {
+                tracing::warn!(error = %e, "set routing_paused failed");
+            }
+        });
+    });
+
+    let callbacks = gui_tray::TrayCallbacks {
+        on_show,
+        on_quit,
+        on_pause_toggle,
+    };
+
+    gui_tray::install(db.clone(), rt, bus.subscribe(), cancel.clone(), callbacks)
 }
 
 fn install_hotkey(window: &MainWindow) -> Option<hotkey::HotkeyHandles> {
@@ -158,6 +680,7 @@ fn install_callbacks(
     window: &MainWindow,
     db: &Db,
     approvals: &Arc<ApprovalCenter>,
+    bus: &Bus,
     port: u16,
     rt: tokio::runtime::Handle,
 ) {
@@ -187,12 +710,163 @@ fn install_callbacks(
     });
 
     let db_for_remove_server = db.clone();
+    let bus_for_remove_server = bus.clone();
     let rt_for_remove_server = rt.clone();
+    let weak_for_remove_server = window.as_weak();
+    let port_for_remove = port;
     window.on_remove_server_clicked(move |name| {
         let db = db_for_remove_server.clone();
+        let bus = bus_for_remove_server.clone();
+        let weak = weak_for_remove_server.clone();
+        let name = name.to_string();
         rt_for_remove_server.spawn(async move {
-            if let Err(e) = db.delete_server(name.as_str()).await {
-                tracing::warn!(error = %e, "delete server failed");
+            match cascade::delete_server_with_cascade(&db, &bus, &name, port_for_remove, false)
+                .await
+            {
+                Ok(report) => {
+                    tracing::info!(
+                        server = %name,
+                        ides_trimmed = report.ides_trimmed.len(),
+                        ides_skipped = report.ides_skipped.len(),
+                        cancelled = report.cancelled_approvals.len(),
+                        "cascade delete complete",
+                    );
+                }
+                Err(e) => tracing::warn!(error = %e, server = %name, "cascade delete failed"),
+            }
+            let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                if ui.get_selected_server().as_str() == name {
+                    ui.set_selected_server(SharedString::from(""));
+                    ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<ToolPolicyUiRow>::new())));
+                }
+            });
+            refresh_servers(&weak, &db).await;
+        });
+    });
+
+    let db_for_select = db.clone();
+    let rt_for_select = rt.clone();
+    let weak_for_select = window.as_weak();
+    window.on_select_server(move |name| {
+        let db = db_for_select.clone();
+        let weak = weak_for_select.clone();
+        let name = name.to_string();
+        rt_for_select.spawn(async move {
+            refresh_server_detail(&weak, &db, &name).await;
+        });
+    });
+
+    let db_for_retest = db.clone();
+    let rt_for_retest = rt.clone();
+    let weak_for_retest = window.as_weak();
+    window.on_retest_clicked(move |name| {
+        let db = db_for_retest.clone();
+        let weak = weak_for_retest.clone();
+        let name = name.to_string();
+        rt_for_retest.spawn(async move {
+            let Ok(Some(server)) = db.get_server(&name).await else {
+                return;
+            };
+            let draft = build_draft(
+                &server.name,
+                &server.transport,
+                server.command.as_deref().unwrap_or(""),
+                server.args.clone(),
+                server.url.as_deref().unwrap_or(""),
+                "",
+            );
+            let cancel = CancellationToken::new();
+            match probe::probe(&draft, cancel).await {
+                Ok(result) => {
+                    let now = unix_now();
+                    let tools: Vec<DbToolMeta> = result
+                        .tools
+                        .into_iter()
+                        .map(|t| DbToolMeta {
+                            name: t.name,
+                            description: t.description,
+                            input_schema_json: t.input_schema.to_string(),
+                            discovered_at: now,
+                        })
+                        .collect();
+                    if let Err(e) = db.upsert_server_with_tools(server, tools).await {
+                        tracing::warn!(error = %e, "re-test upsert failed");
+                    }
+                    refresh_server_detail(&weak, &db, &name).await;
+                    refresh_servers(&weak, &db).await;
+                }
+                Err(e) => tracing::warn!(error = %e, server = %name, "re-test probe failed"),
+            }
+        });
+    });
+
+    let db_for_tool_policy = db.clone();
+    let rt_for_tool_policy = rt.clone();
+    let weak_for_tool_policy = window.as_weak();
+    window.on_change_tool_policy(move |server, tool, decision_str| {
+        let db = db_for_tool_policy.clone();
+        let weak = weak_for_tool_policy.clone();
+        let Some(decision) = Decision::from_db_str(decision_str.as_str()) else {
+            return;
+        };
+        let server = server.to_string();
+        let tool = tool.to_string();
+        rt_for_tool_policy.spawn(async move {
+            if tool == "*" {
+                if let Ok(tools) = db.list_server_tools(&server).await {
+                    for t in tools {
+                        if let Err(e) = db
+                            .set_policy(&server, &t.name, decision, DecisionSource::User)
+                            .await
+                        {
+                            tracing::warn!(error = %e, "set policy failed");
+                        }
+                    }
+                }
+            } else if let Err(e) = db
+                .set_policy(&server, &tool, decision, DecisionSource::User)
+                .await
+            {
+                tracing::warn!(error = %e, "set policy failed");
+            }
+            refresh_server_detail(&weak, &db, &server).await;
+        });
+    });
+
+    window.on_copy_error_clicked(move |text| {
+        if text.is_empty() {
+            return;
+        }
+        match arboard::Clipboard::new() {
+            Ok(mut cb) => {
+                if let Err(e) = cb.set_text(text.to_string()) {
+                    tracing::warn!(error = %e, "clipboard set_text failed");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "clipboard open failed"),
+        }
+    });
+
+    let db_for_open_toggle = db.clone();
+    let rt_for_open_toggle = rt.clone();
+    window.on_toggle_open_window_at_startup(move |v| {
+        let db = db_for_open_toggle.clone();
+        rt_for_open_toggle.spawn(async move {
+            let value = if v { "true" } else { "false" };
+            if let Err(e) = db.set_settings_kv("open_window_at_startup", value).await {
+                tracing::warn!(error = %e, "set open_window_at_startup failed");
+            }
+        });
+    });
+
+    let db_for_default_policy = db.clone();
+    let rt_for_default_policy = rt.clone();
+    window.on_set_default_unknown_tool_policy(move |p| {
+        let db = db_for_default_policy.clone();
+        let p = p.to_string();
+        rt_for_default_policy.spawn(async move {
+            if let Err(e) = db.set_settings_kv("default_unknown_tool_policy", &p).await {
+                tracing::warn!(error = %e, "set default_unknown_tool_policy failed");
             }
         });
     });
@@ -237,87 +911,51 @@ fn install_callbacks(
         });
     });
 
-    // Parse paste — read the textarea, run paste_parser, fill the form fields.
     let weak_for_paste = window.as_weak();
     window.on_parse_paste(move || {
         let Some(ui) = weak_for_paste.upgrade() else {
             return;
         };
         let raw = ui.get_add_server_paste().to_string();
-        match paste_parser::parse(&raw) {
-            Ok(parsed) => {
-                if let Some(n) = parsed.name {
-                    ui.set_add_server_name(SharedString::from(n));
-                }
-                if let Some(c) = parsed.command {
-                    ui.set_add_server_command(SharedString::from(c));
-                }
-                if !parsed.args.is_empty() {
-                    ui.set_add_server_args(SharedString::from(parsed.args.join(" ")));
-                }
-                // Env vars from paste aren't surfaced into the form for v0
-                // (no env grid in the dialog yet) — just log so user knows.
-                if !parsed.env.is_empty() {
-                    tracing::info!(
-                        env_count = parsed.env.len(),
-                        "paste contained env vars; env-var editor lands in a follow-up"
-                    );
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "paste parse failed"),
+        if raw.trim().is_empty() {
+            return;
+        }
+        let Ok(parsed) = paste_parser::parse(&raw) else {
+            ui.set_add_server_status(SharedString::from("Not a valid MCP JSON paste."));
+            ui.set_add_server_status_is_error(true);
+            return;
+        };
+        let transport = parsed.inferred_transport();
+        ui.set_add_server_transport(SharedString::from(transport));
+        if let Some(n) = parsed.name {
+            ui.set_add_server_name(SharedString::from(n));
+        }
+        if let Some(c) = parsed.command {
+            ui.set_add_server_command(SharedString::from(c));
+        }
+        if !parsed.args.is_empty() {
+            ui.set_add_server_args(SharedString::from(parsed.args.join(" ")));
+        }
+        if let Some(u) = parsed.url {
+            ui.set_add_server_url(SharedString::from(u));
+        }
+        if !parsed.headers.is_empty() {
+            let joined = parsed
+                .headers
+                .iter()
+                .map(|h| format!("{}={}", h.name, h.value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            ui.set_add_server_headers(SharedString::from(joined));
+        }
+        ui.set_add_server_paste(SharedString::from(""));
+        if ui.get_add_server_status_is_error() {
+            ui.set_add_server_status(SharedString::from(""));
+            ui.set_add_server_status_is_error(false);
         }
     });
 
-    let weak_for_save = window.as_weak();
-    let db_for_save = db.clone();
-    let rt_for_save = rt.clone();
-    window.on_submit_add_server(move || {
-        let Some(ui) = weak_for_save.upgrade() else {
-            return;
-        };
-        let name = ui.get_add_server_name().to_string();
-        let transport = ui.get_add_server_transport().to_string();
-        if name.is_empty() {
-            tracing::warn!("add-server: name is required");
-            return;
-        }
-        let command = ui.get_add_server_command().to_string();
-        let args_raw = ui.get_add_server_args().to_string();
-        let url = ui.get_add_server_url().to_string();
-        let server = Server {
-            name,
-            transport: transport.clone(),
-            command: if transport == TRANSPORT_STDIO && !command.is_empty() {
-                Some(command)
-            } else {
-                None
-            },
-            args: if args_raw.is_empty() {
-                Vec::new()
-            } else {
-                args_raw.split_whitespace().map(str::to_string).collect()
-            },
-            env: Vec::<EnvEntry>::new(),
-            url: if transport == TRANSPORT_HTTP && !url.is_empty() {
-                Some(url)
-            } else {
-                None
-            },
-            lifecycle_seconds: 300,
-            last_init_duration_ms: None,
-            package_version: None,
-            mcp_self_version: None,
-            created_at: 0,
-        };
-        let db = db_for_save.clone();
-        let weak = weak_for_save.clone();
-        rt_for_save.spawn(async move {
-            if let Err(e) = db.upsert_server(server).await {
-                tracing::warn!(error = %e, "upsert_server failed");
-            }
-            refresh_servers(&weak, &db).await;
-        });
-    });
+    install_wizard_callbacks(window, db.clone(), rt.clone());
 
     let weak_for_ide = window.as_weak();
     let db_for_ide = db.clone();
@@ -351,6 +989,9 @@ fn install_callbacks(
                         tracing::warn!(error = %e, "record_ide_config_write failed");
                     } else {
                         tracing::info!(ide = %selected, key = %key.key, path = %log_path, "added IDE");
+                        if let Err(e) = mark_first_run_completed(&db).await {
+                            tracing::warn!(error = %e, "mark_first_run_completed failed");
+                        }
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, ide = %selected, "ide_writer::write failed"),
@@ -392,6 +1033,24 @@ fn push_initial_models(
     let db_for_refresh = db.clone();
     rt.spawn(async move {
         refresh_all(&weak, &db_for_refresh).await;
+        // Pull settings_kv toggles into the GUI.
+        let auto = db_for_refresh
+            .get_settings_kv("open_window_at_startup")
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some("true");
+        let default_policy = db_for_refresh
+            .get_settings_kv("default_unknown_tool_policy")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "ask".to_string());
+        let _ignored = weak.upgrade_in_event_loop(move |ui| {
+            ui.set_open_window_at_startup(auto);
+            ui.set_default_unknown_tool_policy(SharedString::from(default_policy));
+        });
     });
 }
 
@@ -413,6 +1072,18 @@ fn spawn_event_bridge(
                     let row = settings_to_row(&settings);
                     weak.upgrade_in_event_loop(move |ui| ui.set_settings(row))
                         .ok();
+                }
+                Ok(Event::ServerHealthChanged { name }) => {
+                    tracing::debug!(server = %name, "health changed; consumer to refresh");
+                    refresh_servers(&weak, &db).await;
+                }
+                Ok(Event::FocusApproval { id }) => {
+                    let id_for_ui = id.clone();
+                    weak.upgrade_in_event_loop(move |ui| {
+                        ui.window().show().ok();
+                        ui.set_focused_approval(SharedString::from(id_for_ui));
+                    })
+                    .ok();
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "event bridge lagged");
@@ -457,20 +1128,101 @@ async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
 
 async fn refresh_servers(weak: &slint::Weak<MainWindow>, db: &Db) {
     let servers = db.list_servers().await.unwrap_or_default();
-    let rows: Vec<ServerRow> = servers
-        .into_iter()
-        .map(|s| ServerRow {
+    let mut rows: Vec<ServerRow> = Vec::with_capacity(servers.len());
+    for s in servers {
+        let tool_count = db.list_server_tools(&s.name).await.map(|v| v.len()).unwrap_or(0);
+        let count_label = if tool_count == 0 {
+            "no tools".to_string()
+        } else {
+            format!("{tool_count} tools")
+        };
+        rows.push(ServerRow {
             name: SharedString::from(s.name),
             transport: SharedString::from(s.transport),
             lifecycle_label: SharedString::from(lifecycle_label(s.lifecycle_seconds)),
             status: SharedString::from("idle"),
-            tool_count_label: SharedString::from("? tools"),
-        })
-        .collect();
+            tool_count_label: SharedString::from(count_label),
+        });
+    }
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_servers(ModelRc::new(VecModel::from(rows)));
     })
     .ok();
+}
+
+async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &Db, name: &str) {
+    let Ok(Some(server)) = db.get_server(name).await else {
+        let n = name.to_string();
+        let _ignored = weak.upgrade_in_event_loop(move |ui| {
+            if ui.get_selected_server().as_str() == n {
+                ui.set_selected_server(SharedString::from(""));
+                ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<ToolPolicyUiRow>::new())));
+            }
+        });
+        return;
+    };
+
+    let tools = db.list_server_tools(name).await.unwrap_or_default();
+    let mut tool_rows: Vec<ToolPolicyUiRow> = Vec::with_capacity(tools.len());
+    for t in &tools {
+        let decision = db
+            .get_policy(name, &t.name)
+            .await
+            .ok()
+            .flatten()
+            .map_or_else(|| "ask".to_string(), |p| p.decision.as_db_str().to_string());
+        tool_rows.push(ToolPolicyUiRow {
+            name: SharedString::from(t.name.clone()),
+            description: SharedString::from(t.description.clone().unwrap_or_default()),
+            decision: SharedString::from(decision),
+        });
+    }
+
+    let now = unix_now();
+    let probed_ts = server.last_probed_at;
+    let probe_error = server.last_probe_error.clone().unwrap_or_default();
+    let health_state = if !probe_error.is_empty() {
+        "down"
+    } else if probed_ts.is_some() {
+        "live"
+    } else if tools.is_empty() {
+        "unprobed"
+    } else {
+        "idle"
+    };
+    let last_probe_label = probed_ts.map_or_else(|| "—".to_string(), |ts| relative_time(now - ts));
+    let version_label = server
+        .server_version
+        .clone()
+        .or_else(|| server.package_version.clone())
+        .unwrap_or_default();
+    let detail = ServerDetail {
+        name: SharedString::from(server.name.clone()),
+        version: SharedString::from(version_label),
+        transport: SharedString::from(server.transport.clone()),
+        command_or_url: SharedString::from(if server.transport == TRANSPORT_STDIO {
+            let cmd = server.command.clone().unwrap_or_default();
+            if server.args.is_empty() {
+                cmd
+            } else {
+                format!("{cmd} {}", server.args.join(" "))
+            }
+        } else {
+            server.url.clone().unwrap_or_default()
+        }),
+        lifecycle_label: SharedString::from(lifecycle_label(server.lifecycle_seconds)),
+        health_state: SharedString::from(health_state),
+        last_probe_label: SharedString::from(last_probe_label),
+        last_error: SharedString::from(probe_error),
+        tool_count_label: SharedString::from(format!("{} tools", tool_rows.len())),
+    };
+
+    let name_owned = name.to_string();
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_selected_server(SharedString::from(name_owned));
+        ui.set_selected_server_detail(detail);
+        ui.set_selected_server_tools(ModelRc::new(VecModel::from(tool_rows)));
+    });
 }
 
 async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {

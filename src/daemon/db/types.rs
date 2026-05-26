@@ -33,6 +33,8 @@ pub enum DecisionSource {
     Default,
     User,
     ToolListChanged,
+    Probe,
+    Notification,
 }
 
 impl DecisionSource {
@@ -41,6 +43,8 @@ impl DecisionSource {
             Self::Default => "default",
             Self::User => "user",
             Self::ToolListChanged => "tool_list_changed",
+            Self::Probe => "probe",
+            Self::Notification => "notification",
         }
     }
 
@@ -49,6 +53,8 @@ impl DecisionSource {
             "default" => Some(Self::Default),
             "user" => Some(Self::User),
             "tool_list_changed" => Some(Self::ToolListChanged),
+            "probe" => Some(Self::Probe),
+            "notification" => Some(Self::Notification),
             _ => None,
         }
     }
@@ -70,6 +76,7 @@ pub enum ApprovalStatus {
     Approved,
     Denied,
     Timeout,
+    Cancelled,
 }
 
 impl ApprovalStatus {
@@ -79,6 +86,7 @@ impl ApprovalStatus {
             Self::Approved => "approved",
             Self::Denied => "denied",
             Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -88,6 +96,7 @@ impl ApprovalStatus {
             "approved" => Some(Self::Approved),
             "denied" => Some(Self::Denied),
             "timeout" => Some(Self::Timeout),
+            "cancelled" => Some(Self::Cancelled),
             _ => None,
         }
     }
@@ -189,6 +198,10 @@ pub const TRANSPORT_STDIO: &str = "stdio";
 pub const TRANSPORT_HTTP: &str = "http";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names match DB column names",
+)]
 pub struct Server {
     pub name: String,
     pub transport: String,
@@ -201,6 +214,10 @@ pub struct Server {
     pub package_version: Option<String>,
     pub mcp_self_version: Option<String>,
     pub created_at: i64,
+    pub server_name: Option<String>,
+    pub server_version: Option<String>,
+    pub last_probed_at: Option<i64>,
+    pub last_probe_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +225,14 @@ pub struct IdeKey {
     pub key: String,
     pub ide_name: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolMeta {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema_json: String,
+    pub discovered_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,6 +18,24 @@ pub struct ParsedServer {
     pub command: Option<String>,
     pub args: Vec<String>,
     pub env: Vec<ParsedEnv>,
+    /// HTTP servers use `url` instead of `command`/`args`.
+    pub url: Option<String>,
+    /// HTTP servers may carry `headers` (e.g. `Authorization`, `X-API-Key`).
+    /// Headers with secret-keyword names get `is_secret=true` like env entries.
+    pub headers: Vec<ParsedEnv>,
+}
+
+impl ParsedServer {
+    /// Inferred transport based on which fields are populated.
+    /// Returns "http" if `url` is set, "stdio" otherwise.
+    #[must_use]
+    pub const fn inferred_transport(&self) -> &'static str {
+        if self.url.is_some() {
+            "http"
+        } else {
+            "stdio"
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,8 +118,8 @@ fn parse_json(input: &str) -> Option<ParsedServer> {
         return Some(extract_server_fields(server, Some(name.clone())));
     }
 
-    // Format 2: JSON fragment with "command" key
-    if obj.contains_key("command") || obj.contains_key("args") {
+    // Format 2: JSON fragment with stdio (`command`/`args`) or http (`url`) shape.
+    if obj.contains_key("command") || obj.contains_key("args") || obj.contains_key("url") {
         return Some(extract_server_fields(obj, None));
     }
 
@@ -138,12 +156,33 @@ fn extract_server_fields(
         })
         .unwrap_or_default();
 
-    let env = obj
-        .get("env")
+    let env = extract_string_map(obj.get("env"));
+
+    // HTTP-style entries: `url` + optional `headers` map (Claude/Cline style).
+    let url = obj
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let headers = extract_string_map(obj.get("headers"));
+
+    ParsedServer {
+        name,
+        command,
+        args,
+        env,
+        url,
+        headers,
+    }
+}
+
+/// Decode a `{ key: "value" }` JSON object into the `ParsedEnv` list shape.
+/// Non-string values are stringified (matches v0 behavior for `env`). Returns
+/// an empty vec for missing / non-object input.
+fn extract_string_map(value: Option<&Value>) -> Vec<ParsedEnv> {
+    value
         .and_then(|v| v.as_object())
-        .map(|env_obj| {
-            env_obj
-                .iter()
+        .map(|obj| {
+            obj.iter()
                 .map(|(k, v)| {
                     let value = match v {
                         Value::String(s) => s.clone(),
@@ -153,14 +192,7 @@ fn extract_server_fields(
                 })
                 .collect()
         })
-        .unwrap_or_default();
-
-    ParsedServer {
-        name,
-        command,
-        args,
-        env,
-    }
+        .unwrap_or_default()
 }
 
 fn parse_dotenv(input: &str) -> Option<Vec<ParsedEnv>> {

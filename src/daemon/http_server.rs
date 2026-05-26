@@ -74,6 +74,15 @@ async fn handle_mcp(
 ) -> impl IntoResponse {
     let id = envelope.get("id").cloned().unwrap_or(Value::Null);
 
+    // routing_paused short-circuit.
+    match state.db.get_settings_kv("routing_paused").await {
+        Ok(Some(v)) if v == "true" => {
+            return rpc_error_response(id, DAEMON_PAUSED, "daemon_paused");
+        }
+        Ok(_) => {}
+        Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
+    }
+
     // 1. Validate IDE key.
     let ide_lookup = match state.db.lookup_ide_key(&key).await {
         Ok(v) => v,

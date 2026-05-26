@@ -9,7 +9,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mcp_router::daemon::approval::{
-    spawn_timeout_sweeper, ApprovalCenter, ApprovalOutcome, ApprovalRequest,
+    spawn_timeout_sweeper, sweep_and_publish_timeouts, ApprovalCenter, ApprovalOutcome,
+    ApprovalRequest,
 };
 use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
 use mcp_router::daemon::db::Db;
@@ -219,7 +220,9 @@ async fn approval_resolved_event_fires_on_resolve() {
                     resolved_seen = true;
                     break;
                 }
-                Event::ConfigReloaded { .. } => {}
+                Event::ConfigReloaded { .. }
+                | Event::ServerHealthChanged { .. }
+                | Event::FocusApproval { .. } => {}
             }
         }
         assert!(resolved_seen, "no ApprovalResolved event observed");
@@ -303,6 +306,7 @@ async fn sweeper_flips_pre_existing_stale_rows_to_timeout() {
     let cancel = CancellationToken::new();
     let handle = spawn_timeout_sweeper(
         Db::spawn_in_memory().unwrap(),
+        Bus::new(),
         Duration::from_secs(60),
         cancel.clone(),
     );
@@ -311,4 +315,42 @@ async fn sweeper_flips_pre_existing_stale_rows_to_timeout() {
         .await
         .expect("sweeper exited")
         .expect("sweeper task ok");
+}
+
+#[tokio::test]
+async fn sweep_publishes_one_resolved_event_per_swept_id() {
+    let db = Db::spawn_in_memory().unwrap();
+    let bus = Bus::new();
+    let mut rx = bus.subscribe();
+
+    for id in ["a", "b"] {
+        db.create_pending_approval(PendingApproval {
+            id: id.to_string(),
+            server: "s".into(),
+            tool: "t".into(),
+            args_json: "{}".into(),
+            ide_key: "k1234567".into(),
+            created_at: 50,
+            status: ApprovalStatus::Pending,
+        })
+        .await
+        .unwrap();
+    }
+
+    let n = sweep_and_publish_timeouts(&db, &bus, 100).await.unwrap();
+    assert_eq!(n, 2);
+
+    let mut got = std::collections::HashSet::new();
+    for _ in 0..2 {
+        match wait_for(Duration::from_secs(1), rx.recv()).await.unwrap() {
+            Ok(Event::ApprovalResolved { id, status }) => {
+                assert_eq!(status, ApprovalStatus::Timeout);
+                got.insert(id);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+    assert_eq!(got.len(), 2, "expected one event per id");
+    assert!(got.contains("a"));
+    assert!(got.contains("b"));
 }

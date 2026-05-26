@@ -9,10 +9,12 @@ use tokio::sync::{mpsc, oneshot};
 use crate::daemon::db::types::{
     fresh_ide_key, ApprovalStatus, AuditDecision, AuditEntry, AuditFilter, Decision,
     DecisionSource, EnvEntry, IdeKey, ManagedIdeConfig, PendingApproval, Policy, Server,
+    ToolMeta,
 };
 use crate::daemon::errors::DbError;
 
 const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
+const V01_SQL: &str = include_str!("migrations/0002_v01.sql");
 const CMD_CHANNEL_DEPTH: usize = 64;
 
 fn now_unix() -> i64 {
@@ -75,6 +77,12 @@ pub enum DbCmd {
         tool: String,
         reply: oneshot::Sender<Result<Option<Policy>, DbError>>,
     },
+    GetPolicyScoped {
+        server: String,
+        tool: String,
+        scope: String,
+        reply: oneshot::Sender<Result<Option<Policy>, DbError>>,
+    },
     ListPoliciesForServer {
         server: String,
         reply: oneshot::Sender<Result<Vec<Policy>, DbError>>,
@@ -104,7 +112,7 @@ pub enum DbCmd {
     },
     SweepStalePendingApprovals {
         older_than_ts: i64,
-        reply: oneshot::Sender<Result<u64, DbError>>,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
     InsertAuditEntry {
         entry: AuditEntry,
@@ -132,6 +140,52 @@ pub enum DbCmd {
     DeleteServer {
         name: String,
         reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    GetSettingsKv {
+        key: String,
+        reply: oneshot::Sender<Result<Option<String>, DbError>>,
+    },
+    ListColumns {
+        table: String,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
+    },
+    SetSettingsKv {
+        key: String,
+        value: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    UpsertServerWithTools {
+        server: Server,
+        tools: Vec<ToolMeta>,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    ListServerTools {
+        server: String,
+        reply: oneshot::Sender<Result<Vec<ToolMeta>, DbError>>,
+    },
+    RenameServer {
+        old: String,
+        new: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    RotateIdeKey {
+        old_key: String,
+        ide_name: String,
+        reply: oneshot::Sender<Result<IdeKey, DbError>>,
+    },
+    UpdateIdeKeyLabel {
+        key: String,
+        new_ide_name: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    ListAllIdeConfigs {
+        reply: oneshot::Sender<Result<Vec<ManagedIdeConfig>, DbError>>,
+    },
+    CommitCascadeDelete {
+        server_name: String,
+        trimmed: Vec<(String, String, Vec<String>)>, // (ide_name, ide_key, new managed_entries)
+        delete_audit_history: bool,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>, // cancelled approval ids
     },
 }
 
@@ -291,6 +345,47 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
+    /// Three-tier lookup: (server, tool, 'tool') → (server, '', 'server') →
+    /// `settings_kv.default_unknown_tool_policy`. Returns the first match.
+    pub async fn resolve_policy(
+        &self,
+        server: &str,
+        tool: &str,
+    ) -> Result<Decision, DbError> {
+        if let Some(p) = self.get_policy(server, tool).await? {
+            return Ok(p.decision);
+        }
+        if let Some(p) = self.get_policy_scoped(server, "", "server").await? {
+            return Ok(p.decision);
+        }
+        let global = self
+            .get_settings_kv("default_unknown_tool_policy")
+            .await?
+            .as_deref()
+            .and_then(Decision::from_db_str)
+            .unwrap_or(Decision::Ask);
+        Ok(global)
+    }
+
+    pub async fn get_policy_scoped(
+        &self,
+        server: &str,
+        tool: &str,
+        scope: &str,
+    ) -> Result<Option<Policy>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::GetPolicyScoped {
+                server: server.to_string(),
+                tool: tool.to_string(),
+                scope: scope.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
     pub async fn get_policy(&self, server: &str, tool: &str) -> Result<Option<Policy>, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -384,7 +479,13 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
-    pub async fn sweep_stale_pending_approvals(&self, older_than_ts: i64) -> Result<u64, DbError> {
+    /// Flips every `pending` row older than `older_than_ts` to `timeout`.
+    /// Returns the list of ids that were swept so the caller can publish
+    /// per-id `Event::ApprovalResolved` events.
+    pub async fn sweep_stale_pending_approvals(
+        &self,
+        older_than_ts: i64,
+    ) -> Result<Vec<String>, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(DbCmd::SweepStalePendingApprovals {
@@ -467,6 +568,158 @@ impl Db {
             .map_err(|_closed| DbError::ActorGone)?;
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
+
+    pub async fn get_settings_kv(&self, key: &str) -> Result<Option<String>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::GetSettingsKv {
+                key: key.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn table_columns(&self, table: &str) -> Result<Vec<String>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListColumns {
+                table: table.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn set_settings_kv(&self, key: &str, value: &str) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::SetSettingsKv {
+                key: key.to_string(),
+                value: value.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    /// Atomic Save for the Add Server wizard: inserts the server row, per-tool
+    /// policies (defaulting to `ask`/`probe`), the server-wide fallback policy
+    /// (`scope='server'`), and one `server_tools` row per probed tool. All in
+    /// a single transaction.
+    pub async fn upsert_server_with_tools(
+        &self,
+        server: Server,
+        tools: Vec<ToolMeta>,
+    ) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::UpsertServerWithTools {
+                server,
+                tools,
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn list_server_tools(&self, server: &str) -> Result<Vec<ToolMeta>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListServerTools {
+                server: server.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    /// Rename a server. Cascades through `policies` and `server_tools` via FK
+    /// ON UPDATE CASCADE. Caller rewrites IDE config files.
+    pub async fn rename_server(&self, old: &str, new: &str) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::RenameServer {
+                old: old.to_string(),
+                new: new.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    /// Atomically replace `old_key` with a freshly minted key under `ide_name`.
+    /// Returns the new `IdeKey`. Caller rewrites the IDE config + records the
+    /// new `managed_ide_configs` row.
+    pub async fn rotate_ide_key(&self, old_key: &str, ide_name: &str) -> Result<IdeKey, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::RotateIdeKey {
+                old_key: old_key.to_string(),
+                ide_name: ide_name.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn update_ide_key_label(
+        &self,
+        key: &str,
+        new_ide_name: &str,
+    ) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::UpdateIdeKeyLabel {
+                key: key.to_string(),
+                new_ide_name: new_ide_name.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn list_all_ide_configs(&self) -> Result<Vec<ManagedIdeConfig>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListAllIdeConfigs { reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    /// Commit phase of the cascade delete.
+    ///
+    /// Trims `managed_entries_json` on each `(ide_name, ide_key)` row, deletes
+    /// the `servers` row (FK CASCADE removes `policies` + `server_tools`), and
+    /// flips matching `pending_approvals` to `cancelled`. Returns the ids of
+    /// approvals that were cancelled.
+    pub async fn commit_cascade_delete(
+        &self,
+        server_name: &str,
+        trimmed: Vec<(String, String, Vec<String>)>,
+        delete_audit_history: bool,
+    ) -> Result<Vec<String>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::CommitCascadeDelete {
+                server_name: server_name.to_string(),
+                trimmed,
+                delete_audit_history,
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
 }
 
 fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
@@ -480,8 +733,65 @@ fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
 }
 
 fn init_conn(conn: &Connection) -> Result<(), DbError> {
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
+    )?;
     conn.execute_batch(INIT_SQL)?;
+    conn.execute_batch(V01_SQL)?;
+    ensure_column(conn, "servers", "server_name", "TEXT")?;
+    ensure_column(conn, "servers", "server_version", "TEXT")?;
+    ensure_column(conn, "servers", "last_probed_at", "INTEGER")?;
+    ensure_column(conn, "servers", "last_probe_error", "TEXT")?;
+    ensure_column(conn, "servers", "oauth_authority", "TEXT")?;
+    ensure_column(conn, "servers", "oauth_client_id", "TEXT")?;
+    ensure_column(conn, "servers", "oauth_client_secret_ref", "TEXT")?;
+    ensure_column(conn, "servers", "oauth_scopes", "TEXT")?;
+    ensure_column(conn, "policies", "scope", "TEXT NOT NULL DEFAULT 'tool'")?;
+    ensure_policies_fk(conn)?;
+    Ok(())
+}
+
+fn ensure_policies_fk(conn: &Connection) -> Result<(), DbError> {
+    let has_fk = {
+        let mut stmt = conn.prepare("PRAGMA foreign_key_list(policies)")?;
+        let mut rows = stmt.query([])?;
+        let mut found = false;
+        while let Some(r) = rows.next()? {
+            if r.get::<_, String>(2)? == "servers" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if has_fk {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         BEGIN;
+         CREATE TABLE policies_new (
+             id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+             server          TEXT NOT NULL,
+             tool            TEXT NOT NULL,
+             scope           TEXT NOT NULL DEFAULT 'tool',
+             decision        TEXT NOT NULL,
+             decision_source TEXT NOT NULL,
+             created_at      INTEGER NOT NULL,
+             UNIQUE(server, tool, scope),
+             FOREIGN KEY (server) REFERENCES servers(name) ON UPDATE CASCADE ON DELETE CASCADE
+         );
+         INSERT INTO policies_new (id, server, tool, scope, decision, decision_source, created_at)
+             SELECT id, server, tool,
+                    COALESCE(NULLIF(scope, ''), 'tool'),
+                    decision, decision_source, created_at
+               FROM policies;
+         DROP TABLE policies;
+         ALTER TABLE policies_new RENAME TO policies;
+         CREATE INDEX IF NOT EXISTS idx_policies_server ON policies(server);
+         COMMIT;
+         PRAGMA foreign_keys = ON;",
+    )?;
     Ok(())
 }
 
@@ -550,6 +860,16 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         } => {
             reply.send(query_get_policy(conn, &server, &tool)).ok();
         }
+        DbCmd::GetPolicyScoped {
+            server,
+            tool,
+            scope,
+            reply,
+        } => {
+            reply
+                .send(query_get_policy_scoped(conn, &server, &tool, &scope))
+                .ok();
+        }
         DbCmd::ListPoliciesForServer { server, reply } => {
             reply
                 .send(query_list_policies_for_server(conn, &server))
@@ -617,7 +937,316 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         DbCmd::DeleteServer { name, reply } => {
             reply.send(query_delete_server(conn, &name)).ok();
         }
+        DbCmd::GetSettingsKv { key, reply } => {
+            reply.send(query_get_settings_kv(conn, &key)).ok();
+        }
+        DbCmd::ListColumns { table, reply } => {
+            reply.send(query_list_columns(conn, &table)).ok();
+        }
+        DbCmd::SetSettingsKv { key, value, reply } => {
+            reply.send(query_set_settings_kv(conn, &key, &value)).ok();
+        }
+        DbCmd::UpsertServerWithTools {
+            server,
+            tools,
+            reply,
+        } => {
+            reply
+                .send(query_upsert_server_with_tools(conn, &server, &tools))
+                .ok();
+        }
+        DbCmd::ListServerTools { server, reply } => {
+            reply.send(query_list_server_tools(conn, &server)).ok();
+        }
+        DbCmd::RenameServer { old, new, reply } => {
+            reply.send(query_rename_server(conn, &old, &new)).ok();
+        }
+        DbCmd::RotateIdeKey {
+            old_key,
+            ide_name,
+            reply,
+        } => {
+            reply.send(query_rotate_ide_key(conn, &old_key, &ide_name)).ok();
+        }
+        DbCmd::UpdateIdeKeyLabel {
+            key,
+            new_ide_name,
+            reply,
+        } => {
+            reply
+                .send(query_update_ide_key_label(conn, &key, &new_ide_name))
+                .ok();
+        }
+        DbCmd::ListAllIdeConfigs { reply } => {
+            reply.send(query_list_all_ide_configs(conn)).ok();
+        }
+        DbCmd::CommitCascadeDelete {
+            server_name,
+            trimmed,
+            delete_audit_history,
+            reply,
+        } => {
+            reply
+                .send(query_commit_cascade_delete(
+                    conn,
+                    &server_name,
+                    &trimmed,
+                    delete_audit_history,
+                ))
+                .ok();
+        }
     }
+}
+
+fn query_list_all_ide_configs(conn: &Connection) -> Result<Vec<ManagedIdeConfig>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT ide_name, ide_key, config_path, managed_entries_json, written_at
+         FROM managed_ide_configs ORDER BY ide_name, ide_key",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let path_str: String = row.get(2)?;
+        let entries_json: String = row.get(3)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            PathBuf::from(path_str),
+            entries_json,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        let (ide_name, ide_key, config_path, entries_json, written_at) = r?;
+        let managed_entries: Vec<String> =
+            serde_json::from_str(&entries_json).map_err(|e| DbError::Encoding(e.to_string()))?;
+        out.push(ManagedIdeConfig {
+            ide_name,
+            ide_key,
+            config_path,
+            managed_entries,
+            written_at,
+        });
+    }
+    Ok(out)
+}
+
+fn query_commit_cascade_delete(
+    conn: &Connection,
+    server_name: &str,
+    trimmed: &[(String, String, Vec<String>)],
+    delete_audit_history: bool,
+) -> Result<Vec<String>, DbError> {
+    let tx = conn.unchecked_transaction()?;
+    let now = now_unix();
+    for (ide_name, ide_key, entries) in trimmed {
+        let json =
+            serde_json::to_string(entries).map_err(|e| DbError::Encoding(e.to_string()))?;
+        tx.prepare_cached(
+            "UPDATE managed_ide_configs
+             SET managed_entries_json = ?1, written_at = ?2
+             WHERE ide_name = ?3 AND ide_key = ?4",
+        )?
+        .execute(params![json, now, ide_name, ide_key])?;
+    }
+
+    let mut cancelled_ids: Vec<String> = Vec::new();
+    {
+        let mut stmt = tx.prepare_cached(
+            "SELECT id FROM pending_approvals WHERE server = ?1 AND status = 'pending'",
+        )?;
+        let rows = stmt.query_map(params![server_name], |row| row.get::<_, String>(0))?;
+        for r in rows {
+            cancelled_ids.push(r?);
+        }
+    }
+    if !cancelled_ids.is_empty() {
+        let placeholders = cancelled_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE pending_approvals SET status = 'cancelled' WHERE id IN ({placeholders})"
+        );
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(cancelled_ids.len());
+        for id in &cancelled_ids {
+            params_vec.push(id);
+        }
+        tx.prepare(&sql)?.execute(&params_vec[..])?;
+    }
+
+    if delete_audit_history {
+        tx.prepare_cached("DELETE FROM audit_log WHERE server = ?1")?
+            .execute(params![server_name])?;
+    }
+
+    tx.prepare_cached("DELETE FROM servers WHERE name = ?1")?
+        .execute(params![server_name])?;
+    tx.commit()?;
+    Ok(cancelled_ids)
+}
+
+fn query_rename_server(conn: &Connection, old: &str, new: &str) -> Result<(), DbError> {
+    conn.prepare_cached("UPDATE servers SET name = ?1 WHERE name = ?2")?
+        .execute(params![new, old])?;
+    Ok(())
+}
+
+fn query_rotate_ide_key(conn: &Connection, old_key: &str, ide_name: &str) -> Result<IdeKey, DbError> {
+    let now = now_unix();
+    let new_key = fresh_ide_key();
+    let tx = conn.unchecked_transaction()?;
+    tx.prepare_cached("INSERT INTO ide_keys (key, ide_name, created_at) VALUES (?1, ?2, ?3)")?
+        .execute(params![&new_key, ide_name, now])?;
+    tx.prepare_cached("DELETE FROM ide_keys WHERE key = ?1")?
+        .execute(params![old_key])?;
+    tx.commit()?;
+    Ok(IdeKey {
+        key: new_key,
+        ide_name: ide_name.to_string(),
+        created_at: now,
+    })
+}
+
+fn query_update_ide_key_label(
+    conn: &Connection,
+    key: &str,
+    new_ide_name: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached("UPDATE ide_keys SET ide_name = ?1 WHERE key = ?2")?
+        .execute(params![new_ide_name, key])?;
+    Ok(())
+}
+
+fn query_upsert_server_with_tools(
+    conn: &Connection,
+    server: &Server,
+    tools: &[ToolMeta],
+) -> Result<(), DbError> {
+    let tx = conn.unchecked_transaction()?;
+    query_upsert_server(&tx, server)?;
+
+    // Sync server_tools to exactly the probed set.
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    let placeholders = tool_names
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    if tool_names.is_empty() {
+        tx.prepare_cached("DELETE FROM server_tools WHERE server = ?1")?
+            .execute(params![&server.name])?;
+        tx.prepare_cached("DELETE FROM policies WHERE server = ?1 AND scope = 'tool'")?
+            .execute(params![&server.name])?;
+    } else {
+        let del_tools_sql = format!(
+            "DELETE FROM server_tools WHERE server = ? AND tool NOT IN ({placeholders})"
+        );
+        let del_pols_sql = format!(
+            "DELETE FROM policies WHERE server = ? AND scope = 'tool' AND tool NOT IN ({placeholders})"
+        );
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(tool_names.len() + 1);
+        params_vec.push(&server.name);
+        for t in &tool_names {
+            params_vec.push(t);
+        }
+        tx.prepare(&del_tools_sql)?.execute(&params_vec[..])?;
+        tx.prepare(&del_pols_sql)?.execute(&params_vec[..])?;
+    }
+
+    for tool in tools {
+        tx.prepare_cached(
+            "INSERT INTO server_tools (server, tool, description, input_schema, discovered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(server, tool) DO UPDATE SET
+                 description = excluded.description,
+                 input_schema = excluded.input_schema,
+                 discovered_at = excluded.discovered_at",
+        )?
+        .execute(params![
+            &server.name,
+            &tool.name,
+            &tool.description,
+            &tool.input_schema_json,
+            tool.discovered_at,
+        ])?;
+
+        // Default per-tool policy: 'ask' / 'probe'. ON CONFLICT preserves any
+        // existing user-set decision (Re-test must not clobber user choices).
+        tx.prepare_cached(
+            "INSERT INTO policies (server, tool, scope, decision, decision_source, created_at)
+             VALUES (?1, ?2, 'tool', 'ask', 'probe', ?3)
+             ON CONFLICT(server, tool, scope) DO NOTHING",
+        )?
+        .execute(params![&server.name, &tool.name, tool.discovered_at])?;
+    }
+
+    // Server-wide fallback row (scope='server', tool='').
+    let now = now_unix();
+    tx.prepare_cached(
+        "INSERT INTO policies (server, tool, scope, decision, decision_source, created_at)
+         VALUES (?1, '', 'server', 'ask', 'probe', ?2)
+         ON CONFLICT(server, tool, scope) DO NOTHING",
+    )?
+    .execute(params![&server.name, now])?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+fn query_list_server_tools(conn: &Connection, server: &str) -> Result<Vec<ToolMeta>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT tool, description, input_schema, discovered_at
+         FROM server_tools WHERE server = ?1 ORDER BY tool",
+    )?;
+    let rows = stmt.query_map(params![server], |row| {
+        Ok(ToolMeta {
+            name: row.get(0)?,
+            description: row.get(1)?,
+            input_schema_json: row.get(2)?,
+            discovered_at: row.get(3)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+fn query_set_settings_kv(conn: &Connection, key: &str, value: &str) -> Result<(), DbError> {
+    conn.prepare_cached(
+        "INSERT INTO settings_kv (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )?
+    .execute(params![key, value])?;
+    Ok(())
+}
+
+fn query_get_settings_kv(conn: &Connection, key: &str) -> Result<Option<String>, DbError> {
+    let row = conn
+        .prepare_cached("SELECT value FROM settings_kv WHERE key = ?1")?
+        .query_row(params![key], |row| row.get::<_, String>(0))
+        .optional()?;
+    Ok(row)
+}
+
+fn query_list_columns(conn: &Connection, table: &str) -> Result<Vec<String>, DbError> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<(), DbError> {
+    let exists = query_list_columns(conn, table)?.iter().any(|c| c == col);
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"),
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 fn query_schema_version(conn: &Connection) -> Result<i64, DbError> {
@@ -791,9 +1420,9 @@ fn query_set_policy(
     let now = now_unix();
     let id: i64 = conn
         .prepare_cached(
-            "INSERT INTO policies (server, tool, decision, decision_source, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(server, tool) DO UPDATE SET
+            "INSERT INTO policies (server, tool, scope, decision, decision_source, created_at)
+             VALUES (?1, ?2, 'tool', ?3, ?4, ?5)
+             ON CONFLICT(server, tool, scope) DO UPDATE SET
                  decision = excluded.decision,
                  decision_source = excluded.decision_source,
                  created_at = excluded.created_at
@@ -820,9 +1449,25 @@ fn query_get_policy(
     let row = conn
         .prepare_cached(
             "SELECT id, server, tool, decision, decision_source, created_at
-             FROM policies WHERE server = ?1 AND tool = ?2",
+             FROM policies WHERE server = ?1 AND tool = ?2 AND scope = 'tool'",
         )?
         .query_row(params![server, tool], decode_policy_row)
+        .optional()?;
+    Ok(row)
+}
+
+fn query_get_policy_scoped(
+    conn: &Connection,
+    server: &str,
+    tool: &str,
+    scope: &str,
+) -> Result<Option<Policy>, DbError> {
+    let row = conn
+        .prepare_cached(
+            "SELECT id, server, tool, decision, decision_source, created_at
+             FROM policies WHERE server = ?1 AND tool = ?2 AND scope = ?3",
+        )?
+        .query_row(params![server, tool, scope], decode_policy_row)
         .optional()?;
     Ok(row)
 }
@@ -939,14 +1584,27 @@ fn query_list_pending_approvals(conn: &Connection) -> Result<Vec<PendingApproval
 fn query_sweep_stale_pending_approvals(
     conn: &Connection,
     older_than_ts: i64,
-) -> Result<u64, DbError> {
-    let n = conn
-        .prepare_cached(
-            "UPDATE pending_approvals SET status = 'timeout'
-             WHERE status = 'pending' AND created_at < ?1",
-        )?
-        .execute(params![older_than_ts])?;
-    Ok(n as u64)
+) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM pending_approvals
+         WHERE status = 'pending' AND created_at < ?1",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(params![older_than_ts], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    if ids.is_empty() {
+        return Ok(ids);
+    }
+    // SQLite caps `?N` parameters at 999; pending-approval volume is well under
+    // that bound, but loop one-id-at-a-time to keep the cached prepare reusable.
+    let mut update = conn.prepare_cached(
+        "UPDATE pending_approvals SET status = 'timeout' WHERE id = ?1",
+    )?;
+    for id in &ids {
+        update.execute(params![id])?;
+    }
+    Ok(ids)
 }
 
 fn decode_audit_entry_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
@@ -1102,6 +1760,10 @@ fn decode_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
         package_version: row.get(8)?,
         mcp_self_version: row.get(9)?,
         created_at: row.get(10)?,
+        server_name: row.get(11).ok(),
+        server_version: row.get(12).ok(),
+        last_probed_at: row.get(13).ok(),
+        last_probe_error: row.get(14).ok(),
     })
 }
 
@@ -1113,8 +1775,9 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
     conn.prepare_cached(
         "INSERT INTO servers
          (name, transport, command, args_json, env_json, url, lifecycle_seconds,
-          last_init_duration_ms, package_version, mcp_self_version, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+          last_init_duration_ms, package_version, mcp_self_version, created_at,
+          server_name, server_version, last_probed_at, last_probe_error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(name) DO UPDATE SET
              transport = excluded.transport,
              command = excluded.command,
@@ -1124,7 +1787,11 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
              lifecycle_seconds = excluded.lifecycle_seconds,
              last_init_duration_ms = excluded.last_init_duration_ms,
              package_version = excluded.package_version,
-             mcp_self_version = excluded.mcp_self_version",
+             mcp_self_version = excluded.mcp_self_version,
+             server_name = excluded.server_name,
+             server_version = excluded.server_version,
+             last_probed_at = excluded.last_probed_at,
+             last_probe_error = excluded.last_probe_error",
     )?
     .execute(params![
         &server.name,
@@ -1138,30 +1805,32 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
         &server.package_version,
         &server.mcp_self_version,
         server.created_at,
+        &server.server_name,
+        &server.server_version,
+        server.last_probed_at,
+        &server.last_probe_error,
     ])?;
     Ok(())
 }
 
+const SERVERS_SELECT: &str = "SELECT name, transport, command, args_json, env_json, url,
+       lifecycle_seconds, last_init_duration_ms, package_version,
+       mcp_self_version, created_at,
+       server_name, server_version, last_probed_at, last_probe_error
+ FROM servers";
+
 fn query_get_server(conn: &Connection, name: &str) -> Result<Option<Server>, DbError> {
+    let sql = format!("{SERVERS_SELECT} WHERE name = ?1");
     let row = conn
-        .prepare_cached(
-            "SELECT name, transport, command, args_json, env_json, url,
-                    lifecycle_seconds, last_init_duration_ms, package_version,
-                    mcp_self_version, created_at
-             FROM servers WHERE name = ?1",
-        )?
+        .prepare_cached(&sql)?
         .query_row(params![name], decode_server_row)
         .optional()?;
     Ok(row)
 }
 
 fn query_list_servers(conn: &Connection) -> Result<Vec<Server>, DbError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT name, transport, command, args_json, env_json, url,
-                lifecycle_seconds, last_init_duration_ms, package_version,
-                mcp_self_version, created_at
-         FROM servers ORDER BY name",
-    )?;
+    let sql = format!("{SERVERS_SELECT} ORDER BY name");
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map([], decode_server_row)?;
     let mut out = Vec::new();
     for r in rows {

@@ -1,6 +1,9 @@
 pub mod allow_list;
+pub mod health;
 pub mod http;
 pub mod installer;
 pub mod lifecycle;
 pub mod manager;
+pub mod oauth;
+pub mod probe;
 pub mod stdio;

@@ -27,11 +27,15 @@ rmcp = { version = "~1.7", features = [
     "transport-child-process",
     "transport-streamable-http-server",
     "transport-streamable-http-client-reqwest",
+    # Without `reqwest`, rmcp's transport-streamable-http-client-reqwest brings
+    # in reqwest 0.13 WITHOUT a TLS connector, so https:// upstreams fail with
+    # "scheme is not http". Enabling `reqwest` flips on `reqwest?/rustls`.
+    "reqwest",
     "auth",
 ] }
 
 # rustls only — openssl is banned in deny.toml
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 rusqlite = { version = "0.39", features = ["bundled"] }
 
@@ -63,13 +67,39 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Notifications + GUI focus hotkey.
-# `tray-icon` dep deferred: muda (its dependency) hard-links to libxdo.so,
-# which requires xdotool to be installed system-wide on Linux. The global
-# hotkey below (Ctrl+Alt+Shift+M) is the documented Wayland-no-SNI fallback
-# per spec §"Open questions" — keeping it as the primary entry point lets
-# us ship without that system dep. When tray returns it joins this list.
 notify-rust = "4"
 global-hotkey = "0.8"
+
+# §3 health card "Copy error" button: writes the rendered error chain to the
+# system clipboard.
+arboard = "3"
+
+# §6: system tray icon with menu and badge state. muda (transitive) needs
+# libxdo at link time on Linux — install via `pacman -S xdotool` /
+# `apt install libxdo-dev`. Runtime tray uses StatusNotifierItem over DBus,
+# so Wayland desktops (Hyprland + Caelestia, etc.) display correctly.
+tray-icon = "0.24"
+
+# tray-icon's Linux backend constructs GTK menu items; gtk::init() must be
+# called from the thread that owns the menu before any of the GTK objects
+# are constructed, or muda panics with "GTK has not been initialized".
+# Version pinned to match what tray-icon's transitive `muda` already uses
+# so we share one gtk-rs instance.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+# §1: single-instance IPC over Unix sockets / Windows named pipes.
+interprocess = { version = "2", features = ["tokio"] }
+
+# §2: probe-time secret values stay zeroized in memory until step-3 Save.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# §5 OAuth: open the authorize URL in the user's default browser.
+open = "5"
+
+# §5 OAuth PKCE math: SHA-256 of the verifier, base64url encoded.
+sha2 = "0.10"
+base64 = "0.22"
 
 [build-dependencies]
 slint-build = "1"

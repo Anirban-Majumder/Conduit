@@ -201,3 +201,52 @@ fn test_empty_input_returns_parse_error() {
     let result = parse("   ");
     assert!(matches!(result, Err(ParseError::NoMatch)));
 }
+
+// ── HTTP-shape servers (url + headers) ────────────────────────────────────────
+
+#[test]
+fn test_mcp_servers_http_shape() {
+    let input = r#"{
+        "mcpServers": {
+            "context7": {
+                "url": "https://mcp.context7.com/mcp",
+                "headers": {
+                    "CONTEXT7_API_KEY": "YOUR_API_KEY"
+                }
+            }
+        }
+    }"#;
+    let r = parse(input).unwrap();
+    assert_eq!(r.name.as_deref(), Some("context7"));
+    assert_eq!(r.url.as_deref(), Some("https://mcp.context7.com/mcp"));
+    assert_eq!(r.headers.len(), 1);
+    assert_eq!(r.headers[0].name, "CONTEXT7_API_KEY");
+    assert!(
+        r.headers[0].is_secret,
+        "API_KEY should be detected as secret"
+    );
+    assert_eq!(r.inferred_transport(), "http");
+    assert!(r.command.is_none());
+    assert!(r.args.is_empty());
+}
+
+#[test]
+fn test_http_fragment_with_url_only() {
+    let input = r#"{ "url": "https://api.example.com/mcp" }"#;
+    let r = parse(input).unwrap();
+    assert_eq!(r.url.as_deref(), Some("https://api.example.com/mcp"));
+    assert_eq!(r.inferred_transport(), "http");
+}
+
+#[test]
+fn test_stdio_paste_still_infers_stdio_transport() {
+    let input = r#"{
+        "mcpServers": {
+            "fs": { "command": "npx", "args": ["-y", "fs-mcp"] }
+        }
+    }"#;
+    let r = parse(input).unwrap();
+    assert_eq!(r.inferred_transport(), "stdio");
+    assert_eq!(r.command.as_deref(), Some("npx"));
+    assert!(r.url.is_none());
+}

@@ -20,6 +20,14 @@ pub enum Event {
     ConfigReloaded {
         settings: Settings,
     },
+    /// Server's derived health state changed. Consumers re-query for fresh values.
+    ServerHealthChanged {
+        name: String,
+    },
+    /// User clicked an approval-pending toast — open the GUI on that row.
+    FocusApproval {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone)]

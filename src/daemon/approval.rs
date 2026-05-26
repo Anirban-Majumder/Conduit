@@ -119,7 +119,9 @@ impl ApprovalCenter {
                 // resolve() never sends Pending (InvalidStatus blocks it) and
                 // Timeout is owned by this branch; either means we treat it as
                 // a timeout so the handler returns -32001 rather than hanging.
-                Ok(ApprovalStatus::Pending | ApprovalStatus::Timeout) => ApprovalOutcome::Timeout,
+                Ok(ApprovalStatus::Pending | ApprovalStatus::Timeout | ApprovalStatus::Cancelled) => {
+                    ApprovalOutcome::Timeout
+                }
                 Err(_dropped) => ApprovalOutcome::Timeout,
             },
             () = tokio::time::sleep(self.timeout) => {
@@ -144,7 +146,10 @@ impl ApprovalCenter {
 
     pub async fn resolve(&self, id: &str, status: ApprovalStatus) -> Result<(), ApprovalError> {
         match status {
-            ApprovalStatus::Approved | ApprovalStatus::Denied | ApprovalStatus::Timeout => {}
+            ApprovalStatus::Approved
+            | ApprovalStatus::Denied
+            | ApprovalStatus::Timeout
+            | ApprovalStatus::Cancelled => {}
             ApprovalStatus::Pending => return Err(ApprovalError::InvalidStatus),
         }
 
@@ -154,7 +159,10 @@ impl ApprovalCenter {
         };
         match row.status {
             ApprovalStatus::Pending => {}
-            ApprovalStatus::Approved | ApprovalStatus::Denied | ApprovalStatus::Timeout => {
+            ApprovalStatus::Approved
+            | ApprovalStatus::Denied
+            | ApprovalStatus::Timeout
+            | ApprovalStatus::Cancelled => {
                 return Ok(());
             }
         }
@@ -194,8 +202,27 @@ impl ApprovalCenter {
     }
 }
 
+/// Sweeps stale approvals and publishes `Event::ApprovalResolved { status: Timeout }`
+/// for every swept id. Returns the count of swept rows.
+pub async fn sweep_and_publish_timeouts(
+    db: &Db,
+    bus: &Bus,
+    cutoff: i64,
+) -> Result<usize, DbError> {
+    let ids = db.sweep_stale_pending_approvals(cutoff).await?;
+    let n = ids.len();
+    for id in ids {
+        bus.publish(Event::ApprovalResolved {
+            id,
+            status: ApprovalStatus::Timeout,
+        });
+    }
+    Ok(n)
+}
+
 pub fn spawn_timeout_sweeper(
     db: Db,
+    bus: Bus,
     timeout: Duration,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
@@ -211,7 +238,7 @@ pub fn spawn_timeout_sweeper(
                     let cutoff = now_unix().saturating_sub(
                         i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
                     );
-                    match db.sweep_stale_pending_approvals(cutoff).await {
+                    match sweep_and_publish_timeouts(&db, &bus, cutoff).await {
                         Ok(0) => {}
                         Ok(n) => tracing::info!(swept = n, "swept stale pending approvals"),
                         Err(e) => tracing::warn!(error = %e, "sweeping stale approvals failed"),

@@ -2,4 +2,6 @@
 // §"Approval UX", §"Open questions" (Wayland fallback).
 
 pub mod hotkey;
+pub mod notification_router;
 pub mod notifications;
+pub mod tray;
