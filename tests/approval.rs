@@ -223,7 +223,9 @@ async fn approval_resolved_event_fires_on_resolve() {
                 Event::ConfigReloaded { .. }
                 | Event::ServerHealthChanged { .. }
                 | Event::FocusApproval { .. }
-                | Event::SkillsChanged => {}
+                | Event::SkillsChanged
+                | Event::AuthFailure { .. }
+                | Event::AuthCleared { .. } => {}
             }
         }
         assert!(resolved_seen, "no ApprovalResolved event observed");

@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::daemon::approval::ApprovalCenter;
 use crate::daemon::db::types::Server;
 use crate::daemon::db::Db;
+use crate::daemon::events::Bus;
 use crate::daemon::mcp_proxy::{route_tool_call, ProxyError, ProxyOutcome};
 use crate::daemon::upstream::manager::UpstreamManager;
 
@@ -26,6 +27,7 @@ pub struct AppState {
     pub db: Db,
     pub approvals: Arc<ApprovalCenter>,
     pub upstream: Arc<UpstreamManager>,
+    pub bus: Bus,
     pub port: u16,
 }
 

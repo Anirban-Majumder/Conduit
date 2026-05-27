@@ -42,6 +42,7 @@ async fn paused_router_returns_daemon_paused() {
         db,
         approvals,
         upstream,
+        bus: bus.clone(),
         port,
     };
 

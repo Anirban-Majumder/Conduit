@@ -35,8 +35,13 @@ impl std::fmt::Debug for TrayCallbacks {
     }
 }
 
+#[expect(
+    clippy::enum_variant_names,
+    reason = "all variants are imperative setters keyed by command type"
+)]
 enum TrayCmd {
     SetPendingCount(i64),
+    SetAuthFailureCount(i64),
     SetPaused(bool),
 }
 
@@ -51,6 +56,9 @@ pub struct TrayHandle {
 impl TrayHandle {
     pub fn set_pending_count(&self, n: i64) {
         let _ignored = self.cmd_tx.send(TrayCmd::SetPendingCount(n));
+    }
+    pub fn set_auth_failure_count(&self, n: i64) {
+        let _ignored = self.cmd_tx.send(TrayCmd::SetAuthFailureCount(n));
     }
     pub fn set_paused(&self, paused: bool) {
         let _ignored = self.cmd_tx.send(TrayCmd::SetPaused(paused));
@@ -105,6 +113,10 @@ pub fn install(
 #[expect(
     clippy::needless_pass_by_value,
     reason = "channels are intentionally moved into the thread"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single tray loop: menu init + event poll + command dispatch in one place"
 )]
 fn tray_thread(
     cmd_rx: mpsc::Receiver<TrayCmd>,
@@ -169,7 +181,9 @@ fn tray_thread(
     let pause_id = pause_item.id().clone();
     let quit_id = quit_item.id().clone();
 
-    let last_count = AtomicI64::new(0);
+    let last_pending = AtomicI64::new(0);
+    let last_auth = AtomicI64::new(0);
+    let last_attention = AtomicI64::new(0);
     let mut paused_local = false;
     let menu_rx = MenuEvent::receiver();
 
@@ -198,11 +212,25 @@ fn tray_thread(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TrayCmd::SetPendingCount(n) => {
-                    apply_pending_count(
-                        n,
+                    last_pending.store(n, Ordering::SeqCst);
+                    pending_item.set_text(format!("Pending approvals ({n})"));
+                    pending_item.set_enabled(n > 0);
+                    refresh_attention(
+                        &last_pending,
+                        &last_auth,
+                        &last_attention,
                         &tray,
-                        &pending_item,
-                        &last_count,
+                        &icon_idle,
+                        &icon_attention,
+                    );
+                }
+                TrayCmd::SetAuthFailureCount(n) => {
+                    last_auth.store(n, Ordering::SeqCst);
+                    refresh_attention(
+                        &last_pending,
+                        &last_auth,
+                        &last_attention,
+                        &tray,
                         &icon_idle,
                         &icon_attention,
                     );
@@ -231,11 +259,11 @@ fn spawn_badge_updater(
     cmd_tx: mpsc::Sender<TrayCmd>,
 ) {
     rt.spawn(async move {
-        // Initial sync.
         if let Ok(pending) = db.list_pending_approvals().await {
             let n = i64::try_from(pending.len()).unwrap_or(i64::MAX);
             let _ignored = cmd_tx.send(TrayCmd::SetPendingCount(n));
         }
+        let _ignored = cmd_tx.send(TrayCmd::SetAuthFailureCount(count_auth_failures(&db).await));
         if let Ok(Some(v)) = db.get_settings_kv("routing_paused").await {
             let _ignored = cmd_tx.send(TrayCmd::SetPaused(v == "true"));
         }
@@ -252,6 +280,12 @@ fn spawn_badge_updater(
                             }
                         }
                     }
+                    Ok(Event::AuthFailure { .. } | Event::AuthCleared { .. }) => {
+                        let n = count_auth_failures(&db).await;
+                        if cmd_tx.send(TrayCmd::SetAuthFailureCount(n)).is_err() {
+                            break;
+                        }
+                    }
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
@@ -260,21 +294,31 @@ fn spawn_badge_updater(
     });
 }
 
-fn apply_pending_count(
-    n: i64,
+async fn count_auth_failures(db: &Db) -> i64 {
+    let servers = db.list_servers().await.unwrap_or_default();
+    i64::try_from(
+        servers
+            .into_iter()
+            .filter(|s| s.last_auth_error_msg.is_some())
+            .count(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+fn refresh_attention(
+    last_pending: &AtomicI64,
+    last_auth: &AtomicI64,
+    last_attention: &AtomicI64,
     tray: &tray_icon::TrayIcon,
-    pending_item: &MenuItem,
-    last_count: &AtomicI64,
     icon_idle: &Icon,
     icon_attention: &Icon,
 ) {
-    pending_item.set_text(format!("Pending approvals ({n})"));
-    pending_item.set_enabled(n > 0);
-
-    let prev = last_count.swap(n, Ordering::SeqCst);
-    let crossed_threshold = (prev == 0) != (n == 0);
-    if crossed_threshold {
-        let icon = if n > 0 { icon_attention } else { icon_idle };
+    let pending = last_pending.load(Ordering::SeqCst);
+    let auth = last_auth.load(Ordering::SeqCst);
+    let want = i64::from(pending > 0 || auth > 0);
+    let prev = last_attention.swap(want, Ordering::SeqCst);
+    if prev != want {
+        let icon = if want == 1 { icon_attention } else { icon_idle };
         if let Err(e) = tray.set_icon(Some(icon.clone())) {
             tracing::warn!(error = %e, "tray set_icon failed");
         }

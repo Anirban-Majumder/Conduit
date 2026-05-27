@@ -15,8 +15,8 @@ use conduit::daemon::config_toml::Settings;
 use conduit::daemon::config_watcher;
 use conduit::daemon::db::types::SkillRepo;
 use conduit::daemon::db::types::{
-    ApprovalStatus, Decision, DecisionSource, EnvEntry, IdeKey, Server, ToolMeta as DbToolMeta,
-    TRANSPORT_HTTP, TRANSPORT_STDIO,
+    ApprovalStatus, Decision, DecisionSource, EnvEntry, EnvValue, IdeKey, Server,
+    ToolMeta as DbToolMeta, TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
@@ -119,6 +119,7 @@ fn main() -> Result<()> {
         db: db.clone(),
         approvals: approvals.clone(),
         upstream,
+        bus: bus.clone(),
         port: settings.daemon.port,
     };
 
@@ -272,7 +273,7 @@ struct PendingWizard {
     clippy::too_many_lines,
     reason = "wizard wires 4 Slint callbacks in one place"
 )]
-fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Handle) {
+fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::runtime::Handle) {
     let pending: Arc<std::sync::Mutex<PendingWizard>> =
         Arc::new(std::sync::Mutex::new(PendingWizard::default()));
 
@@ -293,6 +294,9 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
         let args_raw = ui.get_add_server_args().to_string();
         let url = ui.get_add_server_url().to_string();
         let headers_raw = ui.get_add_server_headers().to_string();
+        let lifecycle_mode = ui.get_add_server_lifecycle_mode().to_string();
+        let lifecycle_custom = ui.get_add_server_lifecycle_custom().to_string();
+        let lifecycle_seconds = lifecycle_from_picker(&lifecycle_mode, &lifecycle_custom);
         let args: Vec<String> = if args_raw.is_empty() {
             Vec::new()
         } else {
@@ -313,7 +317,20 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
             args.clone(),
             &url,
             &headers_raw,
+            lifecycle_seconds,
         );
+        let env: Vec<EnvEntry> = if transport == TRANSPORT_HTTP {
+            bearer_from_headers(&parse_headers_field(&headers_raw))
+                .map(|token| {
+                    vec![EnvEntry {
+                        name: conduit::daemon::upstream::http::BEARER_TOKEN_ENV.to_string(),
+                        value: EnvValue::Plain(token),
+                    }]
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let server_row = Server {
             name: name.clone(),
             transport: transport.clone(),
@@ -323,13 +340,13 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
                 None
             },
             args,
-            env: Vec::<EnvEntry>::new(),
+            env,
             url: if transport == TRANSPORT_HTTP && !url.is_empty() {
                 Some(url)
             } else {
                 None
             },
-            lifecycle_seconds: 300,
+            lifecycle_seconds,
             last_init_duration_ms: None,
             package_version: None,
             mcp_self_version: None,
@@ -338,6 +355,8 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
             server_version: None,
             last_probed_at: None,
             last_probe_error: None,
+            last_auth_error_msg: None,
+            last_auth_error_at: None,
         };
 
         let weak = weak.clone();
@@ -431,6 +450,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
 
     let weak = window.as_weak();
     let db_for_save = db;
+    let bus_for_save = bus;
     let rt_for_save = rt;
     let pending_for_save = pending;
     window.on_wizard_save(move || {
@@ -460,6 +480,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
 
         let weak = weak.clone();
         let db = db_for_save.clone();
+        let bus = bus_for_save.clone();
         let pending = pending_for_save.clone();
         let tools = staged.tools.clone();
         let name = server_row.name.clone();
@@ -491,6 +512,15 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
                     }
                     if let Err(e) = mark_first_run_completed(&db).await {
                         tracing::warn!(error = %e, "mark_first_run_completed failed");
+                    }
+                    match db.clear_server_auth_error(&name).await {
+                        Ok(true) => bus.publish(Event::AuthCleared {
+                            server: name.clone(),
+                        }),
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "clear_server_auth_error after save failed");
+                        }
                     }
                     Ok(policy_overrides.len())
                 }
@@ -550,6 +580,7 @@ fn build_draft(
     args: Vec<String>,
     url: &str,
     headers_raw: &str,
+    lifecycle_seconds: i32,
 ) -> DraftServerConfig {
     let transport = if transport == TRANSPORT_HTTP {
         let headers = parse_headers_field(headers_raw);
@@ -568,8 +599,26 @@ fn build_draft(
     DraftServerConfig {
         name: name.to_string(),
         transport,
-        lifecycle_seconds: 300,
+        lifecycle_seconds,
         draft_session: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+fn lifecycle_from_picker(mode: &str, custom: &str) -> i32 {
+    match mode {
+        "ephemeral" => 0,
+        "persistent" => -1,
+        "custom" => custom.trim().parse::<i32>().unwrap_or(300).max(-1),
+        _ => 300,
+    }
+}
+
+fn picker_from_lifecycle(secs: i32) -> (&'static str, String) {
+    match secs {
+        0 => ("ephemeral", String::new()),
+        -1 => ("persistent", String::new()),
+        300 => ("auto", String::new()),
+        other => ("custom", other.to_string()),
     }
 }
 
@@ -584,6 +633,26 @@ fn parse_headers_field(raw: &str) -> Vec<(String, String)> {
             Some((k.trim().to_string(), v.trim().to_string()))
         })
         .collect()
+}
+
+fn bearer_from_headers(headers: &[(String, String)]) -> Option<String> {
+    headers.iter().find_map(|(k, v)| {
+        if k.eq_ignore_ascii_case("authorization") {
+            v.strip_prefix("Bearer ").map(str::to_string)
+        } else {
+            None
+        }
+    })
+}
+
+fn headers_field_from_env(env: &[EnvEntry]) -> String {
+    env.iter()
+        .find(|e| e.name == conduit::daemon::upstream::http::BEARER_TOKEN_ENV)
+        .and_then(|e| match &e.value {
+            EnvValue::Plain(v) => Some(format!("Authorization=Bearer {v}")),
+            EnvValue::Secret(_) => None,
+        })
+        .unwrap_or_default()
 }
 
 fn relative_time(delta_secs: i64) -> String {
@@ -611,6 +680,18 @@ fn unix_now() -> i64 {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     i64::try_from(s).unwrap_or(i64::MAX)
+}
+
+fn fire_auth_failure_notification(server: &str, message: &str) {
+    let summary = format!("Conduit · {server} auth failed");
+    let body = format!("{message}\nOpen the Servers tab to edit credentials.");
+    if let Err(e) = notify_rust::Notification::new()
+        .summary(&summary)
+        .body(&body)
+        .show()
+    {
+        tracing::warn!(error = %e, "auth-failure notification failed");
+    }
 }
 
 fn fire_background_hint() {
@@ -785,10 +866,12 @@ fn install_callbacks(
     });
 
     let db_for_retest = db.clone();
+    let bus_for_retest = bus.clone();
     let rt_for_retest = rt.clone();
     let weak_for_retest = window.as_weak();
     window.on_retest_clicked(move |name| {
         let db = db_for_retest.clone();
+        let bus = bus_for_retest.clone();
         let weak = weak_for_retest.clone();
         let name = name.to_string();
         rt_for_retest.spawn(async move {
@@ -802,6 +885,7 @@ fn install_callbacks(
                 server.args.clone(),
                 server.url.as_deref().unwrap_or(""),
                 "",
+                server.lifecycle_seconds,
             );
             let cancel = CancellationToken::new();
             match probe::probe(&draft, cancel).await {
@@ -819,6 +903,13 @@ fn install_callbacks(
                         .collect();
                     if let Err(e) = db.upsert_server_with_tools(server, tools).await {
                         tracing::warn!(error = %e, "re-test upsert failed");
+                    }
+                    match db.clear_server_auth_error(&name).await {
+                        Ok(true) => bus.publish(Event::AuthCleared {
+                            server: name.clone(),
+                        }),
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(error = %e, "clear_server_auth_error after retest failed"),
                     }
                     refresh_server_detail(&weak, &db, &name).await;
                     refresh_servers(&weak, &db).await;
@@ -1184,7 +1275,46 @@ fn install_callbacks(
         }
     });
 
-    install_wizard_callbacks(window, db.clone(), rt.clone());
+    install_wizard_callbacks(window, db.clone(), bus.clone(), rt.clone());
+
+    let db_for_edit = db.clone();
+    let rt_for_edit = rt.clone();
+    let weak_for_edit = window.as_weak();
+    window.on_edit_server_clicked(move |name| {
+        let db = db_for_edit.clone();
+        let weak = weak_for_edit.clone();
+        let name = name.to_string();
+        rt_for_edit.spawn(async move {
+            let Ok(Some(server)) = db.get_server(&name).await else {
+                return;
+            };
+            let (mode, custom) = picker_from_lifecycle(server.lifecycle_seconds);
+            let headers_field = headers_field_from_env(&server.env);
+            let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_wizard_edit_mode(true);
+                ui.set_wizard_step(1);
+                ui.set_show_add_server_dialog(true);
+                ui.set_add_server_status(SharedString::default());
+                ui.set_add_server_status_is_error(false);
+                ui.set_add_server_busy(false);
+                ui.set_add_server_name(SharedString::from(server.name.clone()));
+                ui.set_add_server_transport(SharedString::from(server.transport.clone()));
+                ui.set_add_server_command(SharedString::from(
+                    server.command.clone().unwrap_or_default(),
+                ));
+                ui.set_add_server_args(SharedString::from(server.args.join(" ")));
+                ui.set_add_server_url(SharedString::from(server.url.clone().unwrap_or_default()));
+                ui.set_add_server_headers(SharedString::from(headers_field));
+                ui.set_add_server_paste(SharedString::default());
+                ui.set_add_server_lifecycle_mode(SharedString::from(mode));
+                if !custom.is_empty() {
+                    ui.set_add_server_lifecycle_custom(SharedString::from(custom));
+                }
+                ui.set_wizard_phase_status(SharedString::default());
+                ui.set_wizard_oauth_url(SharedString::default());
+            });
+        });
+    });
 
     drop(rt);
 }
@@ -1655,6 +1785,17 @@ fn spawn_event_bridge(
                 Ok(Event::SkillsChanged) => {
                     refresh_skills(&weak, &skills).await;
                 }
+                Ok(Event::AuthFailure { server, message }) => {
+                    tracing::warn!(server = %server, message = %message, "auth failure");
+                    fire_auth_failure_notification(&server, &message);
+                    refresh_servers(&weak, &db).await;
+                    refresh_server_detail(&weak, &db, &server).await;
+                }
+                Ok(Event::AuthCleared { server }) => {
+                    tracing::info!(server = %server, "auth cleared");
+                    refresh_servers(&weak, &db).await;
+                    refresh_server_detail(&weak, &db, &server).await;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "event bridge lagged");
                 }
@@ -1710,12 +1851,14 @@ async fn refresh_servers(weak: &slint::Weak<MainWindow>, db: &Db) {
         } else {
             format!("{tool_count} tools")
         };
+        let auth_failure = s.last_auth_error_msg.is_some();
         rows.push(ServerRow {
             name: SharedString::from(s.name),
             transport: SharedString::from(s.transport),
             lifecycle_label: SharedString::from(lifecycle_label(s.lifecycle_seconds)),
             status: SharedString::from("idle"),
             tool_count_label: SharedString::from(count_label),
+            auth_failure,
         });
     }
     weak.upgrade_in_event_loop(move |ui| {
@@ -1791,6 +1934,9 @@ async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &Db, name: &s
         last_probe_label: SharedString::from(last_probe_label),
         last_error: SharedString::from(probe_error),
         tool_count_label: SharedString::from(format!("{} tools", tool_rows.len())),
+        auth_failure_msg: SharedString::from(
+            server.last_auth_error_msg.clone().unwrap_or_default(),
+        ),
     };
 
     let name_owned = name.to_string();

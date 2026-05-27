@@ -34,6 +34,8 @@ fn sample_server(name: &str) -> Server {
         server_version: None,
         last_probed_at: None,
         last_probe_error: None,
+        last_auth_error_msg: None,
+        last_auth_error_at: None,
     }
 }
 

@@ -159,6 +159,15 @@ pub enum DbCmd {
         name: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
+    SetServerAuthError {
+        server: String,
+        message: String,
+        reply: oneshot::Sender<Result<bool, DbError>>,
+    },
+    ClearServerAuthError {
+        server: String,
+        reply: oneshot::Sender<Result<bool, DbError>>,
+    },
     GetSettingsKv {
         key: String,
         reply: oneshot::Sender<Result<Option<String>, DbError>>,
@@ -645,6 +654,37 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
+    /// Returns `true` if this is a transition (prior auth-error was NULL or different).
+    pub async fn set_server_auth_error(
+        &self,
+        server: &str,
+        message: &str,
+    ) -> Result<bool, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::SetServerAuthError {
+                server: server.to_string(),
+                message: message.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    /// Returns `true` if a non-null auth-error was actually cleared.
+    pub async fn clear_server_auth_error(&self, server: &str) -> Result<bool, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ClearServerAuthError {
+                server: server.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
     pub async fn get_settings_kv(&self, key: &str) -> Result<Option<String>, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -911,6 +951,8 @@ fn init_conn(conn: &Connection) -> Result<(), DbError> {
     ensure_column(conn, "servers", "oauth_client_id", "TEXT")?;
     ensure_column(conn, "servers", "oauth_client_secret_ref", "TEXT")?;
     ensure_column(conn, "servers", "oauth_scopes", "TEXT")?;
+    ensure_column(conn, "servers", "last_auth_error_msg", "TEXT")?;
+    ensure_column(conn, "servers", "last_auth_error_at", "INTEGER")?;
     ensure_column(conn, "policies", "scope", "TEXT NOT NULL DEFAULT 'tool'")?;
     ensure_policies_fk(conn)?;
     migrate_legacy_ide_tables(conn)?;
@@ -1227,6 +1269,20 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         }
         DbCmd::DeleteServer { name, reply } => {
             reply.send(query_delete_server(conn, &name)).ok();
+        }
+        DbCmd::SetServerAuthError {
+            server,
+            message,
+            reply,
+        } => {
+            reply
+                .send(query_set_server_auth_error(conn, &server, &message))
+                .ok();
+        }
+        DbCmd::ClearServerAuthError { server, reply } => {
+            reply
+                .send(query_clear_server_auth_error(conn, &server))
+                .ok();
         }
         DbCmd::GetSettingsKv { key, reply } => {
             reply.send(query_get_settings_kv(conn, &key)).ok();
@@ -2324,6 +2380,8 @@ fn decode_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
         server_version: row.get(12).ok(),
         last_probed_at: row.get(13).ok(),
         last_probe_error: row.get(14).ok(),
+        last_auth_error_msg: row.get(15).ok().flatten(),
+        last_auth_error_at: row.get(16).ok().flatten(),
     })
 }
 
@@ -2376,7 +2434,8 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
 const SERVERS_SELECT: &str = "SELECT name, transport, command, args_json, env_json, url,
        lifecycle_seconds, last_init_duration_ms, package_version,
        mcp_self_version, created_at,
-       server_name, server_version, last_probed_at, last_probe_error
+       server_name, server_version, last_probed_at, last_probe_error,
+       last_auth_error_msg, last_auth_error_at
  FROM servers";
 
 fn query_get_server(conn: &Connection, name: &str) -> Result<Option<Server>, DbError> {
@@ -2403,4 +2462,39 @@ fn query_delete_server(conn: &Connection, name: &str) -> Result<(), DbError> {
     conn.prepare_cached("DELETE FROM servers WHERE name = ?1")?
         .execute(params![name])?;
     Ok(())
+}
+
+fn query_set_server_auth_error(
+    conn: &Connection,
+    server: &str,
+    message: &str,
+) -> Result<bool, DbError> {
+    let prev: Option<String> = conn
+        .prepare_cached("SELECT last_auth_error_msg FROM servers WHERE name = ?1")?
+        .query_row(params![server], |row| row.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    let transition = prev.as_deref() != Some(message);
+    let now = now_unix();
+    conn.prepare_cached(
+        "UPDATE servers SET last_auth_error_msg = ?1, last_auth_error_at = ?2 WHERE name = ?3",
+    )?
+    .execute(params![message, now, server])?;
+    Ok(transition)
+}
+
+fn query_clear_server_auth_error(conn: &Connection, server: &str) -> Result<bool, DbError> {
+    let prev: Option<String> = conn
+        .prepare_cached("SELECT last_auth_error_msg FROM servers WHERE name = ?1")?
+        .query_row(params![server], |row| row.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten();
+    let cleared = prev.is_some();
+    if cleared {
+        conn.prepare_cached(
+            "UPDATE servers SET last_auth_error_msg = NULL, last_auth_error_at = NULL WHERE name = ?1",
+        )?
+        .execute(params![server])?;
+    }
+    Ok(cleared)
 }

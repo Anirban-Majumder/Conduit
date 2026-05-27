@@ -9,8 +9,10 @@ use thiserror::Error;
 use crate::daemon::approval::{ApprovalError, ApprovalOutcome, ApprovalRequest};
 use crate::daemon::db::types::{AuditDecision, AuditEntry, Decision, DecisionSource, Server};
 use crate::daemon::errors::DbError;
+use crate::daemon::events::Event;
 use crate::daemon::http_server::{server_to_config, AppState};
 use crate::daemon::upstream::manager::UpstreamError;
+use crate::daemon::upstream::probe::message_looks_like_auth_failure;
 
 #[derive(Debug)]
 pub enum ProxyOutcome {
@@ -219,6 +221,7 @@ async fn forward_and_audit(
                 Some(response_len),
             )
             .await;
+            maybe_clear_auth_error(state, &server.name).await;
             Ok(ProxyOutcome::Forward(result))
         }
         Err(e) => {
@@ -237,8 +240,38 @@ async fn forward_and_audit(
                 None,
             )
             .await;
+            maybe_record_auth_error(state, &server.name, &e).await;
             Err(ProxyError::Upstream(e))
         }
+    }
+}
+
+async fn maybe_record_auth_error(state: &AppState, server: &str, err: &UpstreamError) {
+    let msg = err.to_string();
+    if !message_looks_like_auth_failure(&msg) {
+        return;
+    }
+    match state.db.set_server_auth_error(server, &msg).await {
+        Ok(true) => {
+            state.bus.publish(Event::AuthFailure {
+                server: server.to_string(),
+                message: msg,
+            });
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, server, "set_server_auth_error failed"),
+    }
+}
+
+async fn maybe_clear_auth_error(state: &AppState, server: &str) {
+    match state.db.clear_server_auth_error(server).await {
+        Ok(true) => {
+            state.bus.publish(Event::AuthCleared {
+                server: server.to_string(),
+            });
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, server, "clear_server_auth_error failed"),
     }
 }
 

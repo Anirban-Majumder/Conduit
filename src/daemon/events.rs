@@ -30,6 +30,16 @@ pub enum Event {
     },
     /// Installed skills / discovery state changed — UI should re-pull.
     SkillsChanged,
+    /// Transition: a tool call on this server failed with an auth-flavoured error
+    /// and the prior state was healthy. Fires the OS notification once.
+    AuthFailure {
+        server: String,
+        message: String,
+    },
+    /// Transition: a tool call on this server succeeded after a prior auth failure.
+    AuthCleared {
+        server: String,
+    },
 }
 
 #[derive(Debug, Clone)]

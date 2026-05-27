@@ -46,7 +46,7 @@ pub enum ProbeError {
     InitRejected(String),
     #[error("tools/list failed: {0}")]
     ToolsListFailed(String),
-    #[error("oauth required but not configured")]
+    #[error("authentication required but server didn't advertise OAuth metadata — add an Authorization header (e.g. \"Authorization=Bearer <token>\") and retry")]
     OauthRequired,
     #[error("oauth flow failed: {0}")]
     OauthFlow(String),
@@ -150,12 +150,11 @@ pub async fn probe_with_progress(
                     if !needs_oauth {
                         return Err(map_connect_error(e));
                     }
-                    // Probe the URL with reqwest to read WWW-Authenticate.
                     emit(ProbeEvent::Phase(
                         "Sign in required — fetching OAuth metadata...".into(),
                     ));
                     let Some(challenge) = fetch_oauth_challenge(url, cancel.clone()).await else {
-                        return Err(map_connect_error(e));
+                        return Err(ProbeError::OauthRequired);
                     };
                     let (meta, callback_listener, redirect_uri, pkce, state, dcr) =
                         run_oauth_pre(&challenge, cancel.clone(), &emit).await?;
@@ -274,6 +273,32 @@ fn bearer_for(auth: &HttpAuth, headers: &[(String, String)]) -> Option<String> {
     })
 }
 
+const AUTH_FAILURE_PATTERNS: &[&str] = &[
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "auth required",
+    "authentication required",
+    "authentication failed",
+    "not authenticated",
+    "missing credentials",
+    "invalid credentials",
+    "api key",
+    "invalid token",
+    "invalid access token",
+    "token expired",
+    "expired token",
+    "access denied",
+];
+
+pub fn message_looks_like_auth_failure(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    AUTH_FAILURE_PATTERNS
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
 fn looks_like_auth_failure(e: &crate::daemon::upstream::manager::UpstreamError) -> bool {
     use crate::daemon::upstream::manager::UpstreamError;
     let s = match e {
@@ -281,7 +306,7 @@ fn looks_like_auth_failure(e: &crate::daemon::upstream::manager::UpstreamError) 
         UpstreamError::Rmcp(r) => r.to_string(),
         _ => return false,
     };
-    s.contains("401") || s.contains("Unauthorized")
+    message_looks_like_auth_failure(&s)
 }
 
 async fn fetch_oauth_challenge(
@@ -378,4 +403,46 @@ fn map_connect_error(e: crate::daemon::upstream::manager::UpstreamError) -> Prob
 
 fn map_tools_error(e: ServiceError) -> ProbeError {
     ProbeError::ToolsListFailed(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_failure_detector_matches_common_signals() {
+        for s in [
+            "HTTP 401",
+            "401 Unauthorized",
+            "Unauthorized",
+            "Auth required, when send initialize request",
+            "Authentication required",
+            "API key invalid",
+            "Invalid api key. Please check your API key.",
+            "Forbidden",
+            "403 Forbidden",
+            "token expired",
+            "Access Denied",
+        ] {
+            assert!(
+                message_looks_like_auth_failure(s),
+                "expected detector to match: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn auth_failure_detector_ignores_unrelated_errors() {
+        for s in [
+            "connection refused",
+            "EOF",
+            "tools/list timed out",
+            "JSON parse error at column 3",
+        ] {
+            assert!(
+                !message_looks_like_auth_failure(s),
+                "expected detector NOT to match: {s}"
+            );
+        }
+    }
 }

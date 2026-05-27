@@ -17,6 +17,7 @@ export struct ServerRow {
     lifecycle_label: string,    // "persistent" / "ephemeral" / "300s idle"
     status: string,             // "running" | "idle" | "crashed"
     tool_count_label: string,
+    auth_failure: bool,
 }
 
 export struct IdeRow {
@@ -56,6 +57,7 @@ export struct ServerDetail {
     last_probe_label: string,       // "2m ago" or "never"
     last_error: string,             // empty if no error
     tool_count_label: string,       // "12 tools"
+    auth_failure_msg: string,       // empty if no auth failure
 }
 
 
@@ -488,6 +490,7 @@ component ServersTab inherits Rectangle {
     callback select-server(string);
     callback delete-clicked(string);
     callback retest-clicked(string);
+    callback edit-clicked(string);
     callback change-tool-policy(string, string, string);   // server, tool, decision
     callback toggle-target(string, string, bool);  // server, ide_kind, enable
     callback add-clicked();
@@ -548,10 +551,30 @@ component ServersTab inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             spacing: 0px;
-                            Text {
-                                text: row.name;
-                                color: Theme.text-primary;
-                                font-size: Theme.font-body-sm;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+                                Text {
+                                    text: row.name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                }
+                                if row.auth_failure : Rectangle {
+                                    background: Theme.danger;
+                                    border-radius: 999px;
+                                    height: 16px;
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        Text {
+                                            text: "auth";
+                                            color: Theme.bg;
+                                            font-size: Theme.font-eyebrow;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
                             }
                             Text {
                                 text: row.transport + " · " + row.tool_count_label;
@@ -616,6 +639,10 @@ component ServersTab inherits Rectangle {
                                 clicked => { root.retest-clicked(root.selected); }
                             }
                             PillButton {
+                                label: "Edit";
+                                clicked => { root.edit-clicked(root.selected); }
+                            }
+                            PillButton {
                                 label: "Delete";
                                 bg-color: Theme.danger;
                                 fg-color: Theme.bg;
@@ -626,6 +653,38 @@ component ServersTab inherits Rectangle {
                     HealthCard {
                         detail: root.detail;
                         copy-error => { root.copy-error-clicked(root.detail.last-error); }
+                    }
+                    if root.detail.auth-failure-msg != "" : Rectangle {
+                        background: #4d1f1f;
+                        border-radius: Theme.radius-sm;
+                        min-height: 56px;
+                        HorizontalLayout {
+                            padding: Theme.gap-sm;
+                            spacing: Theme.gap-sm;
+                            alignment: space-between;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "Authentication failed";
+                                    color: #ffaaaa;
+                                    font-size: Theme.font-body;
+                                }
+                                Text {
+                                    text: root.detail.auth-failure-msg;
+                                    color: #ffaaaa;
+                                    font-size: Theme.font-body-sm;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            PillButton {
+                                label: "Edit";
+                                bg-color: Theme.accent;
+                                fg-color: Theme.bg;
+                                clicked => { root.edit-clicked(root.selected); }
+                            }
+                        }
                     }
                     // Per-IDE enable/disable. Same TargetToggle component as the
                     // Skills tab — bright when the server is in that IDE's MCP
@@ -1409,6 +1468,7 @@ component HelpTab inherits Rectangle {
 component LabeledInput inherits VerticalLayout {
     in property <string> label;
     in property <string> text;
+    in property <bool> read-only: false;
     callback edited(string);
     spacing: 4px;
     Text {
@@ -1418,10 +1478,11 @@ component LabeledInput inherits VerticalLayout {
     }
     input := TextInput {
         text: root.text;
-        color: Theme.text-primary;
+        color: root.read-only ? Theme.text-tertiary : Theme.text-primary;
         font-size: Theme.font-body;
         single-line: true;
         height: 32px;
+        read-only: root.read-only;
         edited => { root.edited(self.text); }
     }
     Rectangle { background: Theme.border; height: 1px; }
@@ -1535,10 +1596,13 @@ component AddServerDialog inherits Rectangle {
     in-out property <string> status;
     in-out property <bool> status-is-error: false;
     in-out property <bool> busy: false;
+    in-out property <string> lifecycle-mode: "auto";
+    in-out property <string> lifecycle-custom: "300";
     in property <int> step;
     in property <string> phase-status;
     in property <string> oauth-url;
     in property <[ToolPolicyRow]> tools;
+    in property <bool> edit-mode: false;
     callback start-probe();
     callback wizard-save();
     callback wizard-back();
@@ -1548,7 +1612,7 @@ component AddServerDialog inherits Rectangle {
     callback copy-oauth-url();
 
     ModalShell {
-        title: "Add MCP Server";
+        title: root.edit-mode ? "Edit MCP Server" : "Add MCP Server";
         dismiss => { root.dismiss(); }
 
         VerticalLayout {
@@ -1574,9 +1638,61 @@ component AddServerDialog inherits Rectangle {
                     }
                 }
                 LabeledInput {
-                    label: "Name (letters, digits, _, -, 1–64 chars)";
+                    label: root.edit-mode
+                        ? "Name (locked — delete + recreate to rename)"
+                        : "Name (letters, digits, _, -, 1–64 chars)";
                     text: root.name;
+                    read-only: root.edit-mode;
                     edited(t) => { root.name = t; }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Lifecycle";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        PillButton {
+                            label: "Auto";
+                            bg-color: root.lifecycle-mode == "auto" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "auto" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "auto"; }
+                        }
+                        PillButton {
+                            label: "Ephemeral";
+                            bg-color: root.lifecycle-mode == "ephemeral" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "ephemeral" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "ephemeral"; }
+                        }
+                        PillButton {
+                            label: "Persistent";
+                            bg-color: root.lifecycle-mode == "persistent" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "persistent" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "persistent"; }
+                        }
+                        PillButton {
+                            label: "Custom";
+                            bg-color: root.lifecycle-mode == "custom" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "custom" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "custom"; }
+                        }
+                    }
+                    if root.lifecycle-mode == "custom" : LabeledInput {
+                        label: "Idle TTL (seconds)";
+                        text: root.lifecycle-custom;
+                        edited(t) => { root.lifecycle-custom = t; }
+                    }
+                    Text {
+                        text: root.lifecycle-mode == "auto" ? "Auto-detect from allow-list (default 300s idle, can upgrade to persistent based on capabilities)"
+                            : root.lifecycle-mode == "ephemeral" ? "Spawn, single call, kill on return"
+                            : root.lifecycle-mode == "persistent" ? "Lazy spawn on first use; keep alive while daemon runs"
+                            : "Kill after N seconds of no calls";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        wrap: word-wrap;
+                    }
                 }
                 if root.transport == "stdio" : LabeledInput {
                     label: "Command";
@@ -1867,6 +1983,9 @@ export component MainWindow inherits Window {
     in-out property <string> add-server-transport: "http";
     in-out property <string> add-server-paste;
     in-out property <string> add-server-headers;
+    in-out property <string> add-server-lifecycle-mode: "auto";
+    in-out property <string> add-server-lifecycle-custom: "300";
+    in-out property <bool> wizard-edit-mode: false;
     in-out property <string> wizard-oauth-url;
 
     in-out property <bool> open-window-at-startup;
@@ -1898,6 +2017,7 @@ export component MainWindow inherits Window {
     callback wizard-change-tool-policy(string, string);
     callback select-server(string);
     callback retest-clicked(string);
+    callback edit-server-clicked(string);
     callback change-tool-policy(string, string, string);
     callback toggle-server-target(string, string, bool);  // server, ide_kind, enable
     callback parse-paste();
@@ -1922,6 +2042,7 @@ export component MainWindow inherits Window {
 
     public function show-add-server() {
         root.show-add-server-dialog = true;
+        root.wizard-edit-mode = false;
         root.wizard-step = 1;
         root.add-server-transport = "http";
         root.add-server-name = "";
@@ -1933,6 +2054,8 @@ export component MainWindow inherits Window {
         root.add-server-status = "";
         root.add-server-status-is-error = false;
         root.add-server-busy = false;
+        root.add-server-lifecycle-mode = "auto";
+        root.add-server-lifecycle-custom = "300";
         root.wizard-phase-status = "";
         root.wizard-oauth-url = "";
     }
@@ -2027,6 +2150,7 @@ export component MainWindow inherits Window {
                         root.show-delete-server-confirm = true;
                     }
                     retest-clicked(name) => { root.retest-clicked(name); }
+                    edit-clicked(name) => { root.edit-server-clicked(name); }
                     change-tool-policy(server, tool, decision) => {
                         root.change-tool-policy(server, tool, decision);
                     }
@@ -2114,6 +2238,9 @@ export component MainWindow inherits Window {
         status <=> root.add-server-status;
         status-is-error <=> root.add-server-status-is-error;
         busy <=> root.add-server-busy;
+        lifecycle-mode <=> root.add-server-lifecycle-mode;
+        lifecycle-custom <=> root.add-server-lifecycle-custom;
+        edit-mode: root.wizard-edit-mode;
         step: root.wizard-step;
         phase-status: root.wizard-phase-status;
         oauth-url: root.wizard-oauth-url;
@@ -2127,6 +2254,7 @@ export component MainWindow inherits Window {
         copy-oauth-url => { root.copy-error-clicked(root.wizard-oauth-url); }
         dismiss => {
             root.show-add-server-dialog = false;
+            root.wizard-edit-mode = false;
             root.add-server-status = "";
             root.wizard-step = 1;
         }

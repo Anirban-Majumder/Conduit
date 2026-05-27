@@ -218,6 +218,8 @@ pub struct Server {
     pub server_version: Option<String>,
     pub last_probed_at: Option<i64>,
     pub last_probe_error: Option<String>,
+    pub last_auth_error_msg: Option<String>,
+    pub last_auth_error_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
