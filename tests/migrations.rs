@@ -96,12 +96,12 @@ async fn migrations_idempotent_on_re_open() {
     {
         let db = Db::spawn_at(&path).expect("first spawn");
         db.ping().await.expect("first ping");
-        assert_eq!(db.schema_version().await.unwrap(), 2);
+        assert_eq!(db.schema_version().await.unwrap(), 3);
     }
     {
         let db = Db::spawn_at(&path).expect("second spawn re-runs migrations");
         db.ping().await.expect("second ping");
-        assert_eq!(db.schema_version().await.unwrap(), 2);
+        assert_eq!(db.schema_version().await.unwrap(), 3);
         let cols = db.table_columns("servers").await.unwrap();
         assert!(cols.iter().any(|c| c == "oauth_authority"));
     }

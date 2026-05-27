@@ -22,3 +22,20 @@ pub(crate) fn config_path() -> Option<PathBuf> {
         Some(config_path_under(&home))
     }
 }
+
+pub(crate) fn skills_dir_under(home: &Path) -> PathBuf {
+    home.join(".config").join("opencode").join("skills")
+}
+
+pub(crate) fn skills_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = dirs::config_dir()?;
+        return Some(appdata.join("opencode").join("skills"));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = dirs::home_dir()?;
+        Some(skills_dir_under(&home))
+    }
+}

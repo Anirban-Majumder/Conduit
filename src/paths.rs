@@ -43,6 +43,14 @@ impl Paths {
         self.root.join("installs")
     }
 
+    pub fn skills_root(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    pub fn skills_managed_dir(&self) -> PathBuf {
+        self.skills_root().join("managed")
+    }
+
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")
     }
@@ -59,6 +67,7 @@ impl Paths {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(self.installs_dir())?;
         std::fs::create_dir_all(self.logs_dir())?;
+        std::fs::create_dir_all(self.skills_managed_dir())?;
         Ok(())
     }
 }

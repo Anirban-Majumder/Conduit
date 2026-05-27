@@ -22,7 +22,8 @@ pub mod tabs {
     pub const APPROVALS: i32 = 0;
     pub const SERVERS: i32 = 1;
     pub const EDITORS: i32 = 2;
-    pub const LOG: i32 = 3;
-    pub const SETTINGS: i32 = 4;
-    pub const HELP: i32 = 5;
+    pub const SKILLS: i32 = 3;
+    pub const LOG: i32 = 4;
+    pub const SETTINGS: i32 = 5;
+    pub const HELP: i32 = 6;
 }

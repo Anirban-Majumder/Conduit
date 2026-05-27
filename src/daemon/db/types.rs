@@ -244,6 +244,29 @@ pub struct ManagedIdeConfig {
     pub written_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRepo {
+    pub owner: String,
+    pub name: String,
+    pub branch: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::struct_field_names, reason = "field names match DB column names")]
+pub struct Skill {
+    pub directory: String,
+    pub repo_owner: String,
+    pub repo_name: String,
+    pub repo_branch: String,
+    pub source_directory: String,
+    pub skill_name: String,
+    pub description: String,
+    pub readme_url: Option<String>,
+    pub installed_at: i64,
+    pub targets: Vec<String>,
+}
+
 /// Generates an 8-char alphanumeric key per spec §"Add IDE flow".
 ///
 /// 8 chars × 62 alphabet = ~47 bits — the IDE key is a *capability*, not a

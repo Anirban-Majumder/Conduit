@@ -28,6 +28,8 @@ pub enum Event {
     FocusApproval {
         id: String,
     },
+    /// Installed skills / discovery state changed — UI should re-pull.
+    SkillsChanged,
 }
 
 #[derive(Debug, Clone)]

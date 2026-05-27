@@ -14,4 +14,5 @@ pub mod server_validators;
 pub mod mcp_proxy;
 pub mod paste_parser;
 pub mod secrets;
+pub mod skills;
 pub mod upstream;

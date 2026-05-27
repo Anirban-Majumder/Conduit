@@ -29,6 +29,8 @@ use mcp_router::daemon::onboarding::{
 };
 use mcp_router::daemon::paste_parser;
 use mcp_router::daemon::server_validators;
+use mcp_router::daemon::skills::{SkillCandidate, SkillManager};
+use mcp_router::daemon::db::types::SkillRepo;
 use mcp_router::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
 use mcp_router::daemon::upstream::manager::UpstreamManager;
 use mcp_router::gui::{
@@ -41,7 +43,7 @@ use mcp_router::runtime::Worker;
 mod ui;
 use ui::{
     ApprovalRow, AuditRow, IdeRow, MainWindow, PolicyRow, ServerDetail, ServerRow, SettingsRow,
-    ToolPolicyRow as ToolPolicyUiRow,
+    SkillRepoRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 #[expect(clippy::too_many_lines, reason = "single-binary entrypoint wires every subsystem")]
@@ -101,7 +103,14 @@ fn main() -> Result<()> {
     // inside the worker runtime context, not the bare main thread.
     let upstream = {
         let _guard = worker.handle().enter();
-        Arc::new(UpstreamManager::new(paths, cancel.clone()))
+        Arc::new(UpstreamManager::new(paths.clone(), cancel.clone()))
+    };
+    let skill_manager = {
+        let _guard = worker.handle().enter();
+        Arc::new(
+            SkillManager::new(paths, db.clone(), bus.clone())
+                .context("build skill manager")?,
+        )
     };
 
     let app_state = AppState {
@@ -135,14 +144,22 @@ fn main() -> Result<()> {
         &bus,
         settings.daemon.port,
         worker.handle().clone(),
+        skill_manager.clone(),
     );
-    push_initial_models(&window, &db, &settings, worker.handle().clone());
+    push_initial_models(
+        &window,
+        &db,
+        &settings,
+        worker.handle().clone(),
+        skill_manager.clone(),
+    );
     let settings_arc = Arc::new(settings);
     spawn_event_bridge(
         &window,
         bus.subscribe(),
         db.clone(),
         worker.handle().clone(),
+        skill_manager,
     );
 
     // Notifications bridge: emits OS toasts AND owns the click→dispatch loop.
@@ -683,7 +700,9 @@ fn install_callbacks(
     bus: &Bus,
     port: u16,
     rt: tokio::runtime::Handle,
+    skills: Arc<SkillManager>,
 ) {
+    install_skills_callbacks(window, &rt, &skills);
     let approvals_for_approve = approvals.clone();
     let rt_for_approve = rt.clone();
     window.on_approve_clicked(move |id| {
@@ -1021,18 +1040,357 @@ fn parse_ide_kind(name: &str) -> Option<IdeKind> {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "Skills tab wires seven callbacks at once")]
+fn install_skills_callbacks(
+    window: &MainWindow,
+    rt: &tokio::runtime::Handle,
+    skills: &Arc<SkillManager>,
+) {
+    let weak = window.as_weak();
+    let rt_for_refresh = rt.clone();
+    let skills_for_refresh = skills.clone();
+    window.on_skills_refresh_clicked(move || {
+        let skills = skills_for_refresh.clone();
+        let weak = weak.clone();
+        weak.upgrade_in_event_loop(|ui| {
+            ui.set_skills_busy(true);
+            ui.set_skills_status_message(SharedString::from("Refreshing…"));
+        })
+        .ok();
+        rt_for_refresh.spawn(async move {
+            match skills.discover(true).await {
+                Ok(_) => {
+                    refresh_skills(&weak, &skills).await;
+                    weak.upgrade_in_event_loop(|ui| {
+                        ui.set_skills_busy(false);
+                        ui.set_skills_status_message(SharedString::from(""));
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    let msg = format!("Refresh failed: {e}");
+                    tracing::warn!(error = %e, "skill discover failed");
+                    weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_skills_busy(false);
+                        ui.set_skills_status_message(SharedString::from(msg));
+                    })
+                    .ok();
+                }
+            }
+        });
+    });
+
+    let weak = window.as_weak();
+    let rt_for_install = rt.clone();
+    let skills_for_install = skills.clone();
+    window.on_skills_install_clicked(
+        move |owner, name, branch, dir, readme, candidate_name| {
+            let skills = skills_for_install.clone();
+            let weak = weak.clone();
+            let candidate = SkillCandidate {
+                key: format!("{owner}/{name}:{dir}"),
+                name: candidate_name.to_string(),
+                description: String::new(),
+                directory: dir.to_string(),
+                readme_url: readme.to_string(),
+                repo_owner: owner.to_string(),
+                repo_name: name.to_string(),
+                repo_branch: branch.to_string(),
+            };
+            weak.upgrade_in_event_loop(|ui| {
+                ui.set_skills_busy(true);
+                ui.set_skills_status_message(SharedString::from("Installing…"));
+            })
+            .ok();
+            rt_for_install.spawn(async move {
+                // No targets by default — user opts in per-IDE after install.
+                let result = skills.install(candidate, Vec::new()).await;
+                match result {
+                    Ok(skill) => {
+                        let msg = format!("Installed {}", skill.skill_name);
+                        weak.upgrade_in_event_loop(move |ui| {
+                            ui.set_skills_busy(false);
+                            ui.set_skills_status_message(SharedString::from(msg));
+                        })
+                        .ok();
+                    }
+                    Err(e) => {
+                        let msg = format!("Install failed: {e}");
+                        tracing::warn!(error = %e, "skill install failed");
+                        weak.upgrade_in_event_loop(move |ui| {
+                            ui.set_skills_busy(false);
+                            ui.set_skills_status_message(SharedString::from(msg));
+                        })
+                        .ok();
+                    }
+                }
+            });
+        },
+    );
+
+    let weak = window.as_weak();
+    let rt_for_uninstall = rt.clone();
+    let skills_for_uninstall = skills.clone();
+    window.on_skills_uninstall_clicked(move |directory| {
+        let skills = skills_for_uninstall.clone();
+        let weak = weak.clone();
+        let directory = directory.to_string();
+        rt_for_uninstall.spawn(async move {
+            if let Err(e) = skills.uninstall(&directory).await {
+                let msg = format!("Uninstall failed: {e}");
+                tracing::warn!(error = %e, directory = %directory, "skill uninstall failed");
+                weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_skills_status_message(SharedString::from(msg));
+                })
+                .ok();
+            }
+        });
+    });
+
+    let rt_for_toggle = rt.clone();
+    let skills_for_toggle = skills.clone();
+    let weak = window.as_weak();
+    window.on_skills_toggle_target(move |directory, ide, enable| {
+        let skills = skills_for_toggle.clone();
+        let weak = weak.clone();
+        let directory = directory.to_string();
+        let ide = ide.to_string();
+        rt_for_toggle.spawn(async move {
+            let Ok(Some(current)) = skills.list_installed().await.map(|all| {
+                all.into_iter().find(|s| s.directory == directory)
+            }) else {
+                return;
+            };
+            let mut targets: Vec<String> = current.targets.clone();
+            targets.retain(|t| t != &ide);
+            if enable {
+                targets.push(ide.clone());
+            }
+            if let Err(e) = skills.set_targets(&directory, targets).await {
+                let msg = format!("Toggle failed: {e}");
+                tracing::warn!(error = %e, "skill set_targets failed");
+                weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_skills_status_message(SharedString::from(msg));
+                })
+                .ok();
+            }
+        });
+    });
+
+    let rt_for_add_repo = rt.clone();
+    let skills_for_add_repo = skills.clone();
+    window.on_skills_add_repo(move |owner, name, branch| {
+        let skills = skills_for_add_repo.clone();
+        let repo = SkillRepo {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            branch: branch.to_string(),
+            enabled: true,
+        };
+        rt_for_add_repo.spawn(async move {
+            if let Err(e) = skills.add_repo(repo).await {
+                tracing::warn!(error = %e, "skill add_repo failed");
+            }
+        });
+    });
+
+    let rt_for_remove_repo = rt.clone();
+    let skills_for_remove_repo = skills.clone();
+    window.on_skills_remove_repo(move |owner, name| {
+        let skills = skills_for_remove_repo.clone();
+        let owner = owner.to_string();
+        let name = name.to_string();
+        rt_for_remove_repo.spawn(async move {
+            if let Err(e) = skills.remove_repo(&owner, &name).await {
+                tracing::warn!(error = %e, "skill remove_repo failed");
+            }
+        });
+    });
+
+    let rt_for_toggle_repo = rt.clone();
+    let skills_for_toggle_repo = skills.clone();
+    window.on_skills_toggle_repo(move |owner, name, enabled| {
+        let skills = skills_for_toggle_repo.clone();
+        let owner = owner.to_string();
+        let name = name.to_string();
+        rt_for_toggle_repo.spawn(async move {
+            if let Err(e) = skills.set_repo_enabled(&owner, &name, enabled).await {
+                tracing::warn!(error = %e, "skill set_repo_enabled failed");
+            }
+        });
+    });
+
+    let rt_for_open_folder = rt.clone();
+    let skills_for_open_folder = skills.clone();
+    let weak = window.as_weak();
+    window.on_skills_open_folder_clicked(move || {
+        let skills = skills_for_open_folder.clone();
+        let weak = weak.clone();
+        rt_for_open_folder.spawn(async move {
+            let dir = skills.paths().skills_managed_dir();
+            if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+                tracing::warn!(error = %e, "create skills dir failed");
+            }
+            let dir_for_open = dir.clone();
+            let open_result =
+                tokio::task::spawn_blocking(move || open::that(&dir_for_open)).await;
+            match open_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    let msg = format!("Couldn't open folder: {e}");
+                    tracing::warn!(error = %e, path = %dir.display(), "open folder failed");
+                    weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_skills_status_message(SharedString::from(msg));
+                    })
+                    .ok();
+                }
+                Err(e) => tracing::warn!(error = %e, "open folder join failed"),
+            }
+        });
+    });
+}
+
+async fn refresh_skills(weak: &slint::Weak<MainWindow>, skills: &SkillManager) {
+    if let Err(e) = skills.register_local_skills().await {
+        tracing::warn!(error = %e, "register_local_skills failed");
+    }
+    paint_skills_from_db(weak, skills).await;
+    match skills.discover(false).await {
+        Ok(candidates) => paint_skills_with_discovery(weak, skills, candidates).await,
+        Err(e) => tracing::warn!(error = %e, "skill discover failed during refresh"),
+    }
+}
+
+async fn paint_skills_from_db(weak: &slint::Weak<MainWindow>, skills: &SkillManager) {
+    let installed = skills.list_installed().await.unwrap_or_default();
+    let repos = skills.list_repos().await.unwrap_or_default();
+    let rows = installed_skills_to_rows(&installed);
+    let repo_rows = repos_to_rows(repos);
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_skills(ModelRc::new(VecModel::from(rows)));
+        ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
+    });
+}
+
+async fn paint_skills_with_discovery(
+    weak: &slint::Weak<MainWindow>,
+    skills: &SkillManager,
+    candidates: Vec<SkillCandidate>,
+) {
+    let installed = skills.list_installed().await.unwrap_or_default();
+    let repos = skills.list_repos().await.unwrap_or_default();
+    let mut rows = installed_skills_to_rows(&installed);
+    let installed_dirs: std::collections::HashSet<String> =
+        installed.iter().map(|s| s.directory.clone()).collect();
+
+    {
+        {
+            for candidate in candidates {
+                let install_name = candidate
+                    .directory
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&candidate.directory)
+                    .to_string();
+                if installed_dirs.contains(&install_name) {
+                    continue;
+                }
+                rows.push(SkillRow {
+                    key: SharedString::from(candidate.key.clone()),
+                    directory: SharedString::from(install_name),
+                    name: SharedString::from(candidate.name),
+                    description: SharedString::from(candidate.description),
+                    repo_label: SharedString::from(format!(
+                        "{}/{} · {}",
+                        candidate.repo_owner, candidate.repo_name, candidate.repo_branch
+                    )),
+                    repo_owner: SharedString::from(candidate.repo_owner),
+                    repo_name: SharedString::from(candidate.repo_name),
+                    repo_branch: SharedString::from(candidate.repo_branch),
+                    source_directory: SharedString::from(candidate.directory),
+                    readme_url: SharedString::from(candidate.readme_url),
+                    installed: false,
+                    target_claude: false,
+                    target_openclaude: false,
+                    target_opencode: false,
+                });
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| match (a.installed, b.installed) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    let repo_rows = repos_to_rows(repos);
+
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_skills(ModelRc::new(VecModel::from(rows)));
+        ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
+    });
+}
+
+fn installed_skills_to_rows(
+    installed: &[mcp_router::daemon::db::types::Skill],
+) -> Vec<SkillRow> {
+    installed
+        .iter()
+        .map(|skill| SkillRow {
+            key: SharedString::from(format!(
+                "{}/{}:{}",
+                skill.repo_owner, skill.repo_name, skill.directory
+            )),
+            directory: SharedString::from(skill.directory.clone()),
+            name: SharedString::from(skill.skill_name.clone()),
+            description: SharedString::from(skill.description.clone()),
+            repo_label: SharedString::from(format!(
+                "{}/{} · {}",
+                skill.repo_owner, skill.repo_name, skill.repo_branch
+            )),
+            repo_owner: SharedString::from(skill.repo_owner.clone()),
+            repo_name: SharedString::from(skill.repo_name.clone()),
+            repo_branch: SharedString::from(skill.repo_branch.clone()),
+            source_directory: SharedString::from(skill.source_directory.clone()),
+            readme_url: SharedString::from(skill.readme_url.clone().unwrap_or_default()),
+            installed: true,
+            target_claude: skill.targets.iter().any(|x| x == "ClaudeCode"),
+            target_openclaude: skill.targets.iter().any(|x| x == "OpenClaude"),
+            target_opencode: skill.targets.iter().any(|x| x == "OpenCode"),
+        })
+        .collect()
+}
+
+fn repos_to_rows(repos: Vec<SkillRepo>) -> Vec<SkillRepoRow> {
+    repos
+        .into_iter()
+        .map(|r| SkillRepoRow {
+            owner: SharedString::from(r.owner),
+            name: SharedString::from(r.name),
+            branch: SharedString::from(r.branch),
+            enabled: r.enabled,
+        })
+        .collect()
+}
+
 fn push_initial_models(
     window: &MainWindow,
     db: &Db,
     settings: &Settings,
     rt: tokio::runtime::Handle,
+    skills: Arc<SkillManager>,
 ) {
     window.set_settings(settings_to_row(settings));
 
     let weak = window.as_weak();
     let db_for_refresh = db.clone();
+    let weak_for_skills = weak.clone();
     rt.spawn(async move {
+        // Drop any half-finished install scratch left over from a prior boot
+        // (no CancellationToken plumbed into install yet — see TODO).
+        skills.purge_tmp().await;
         refresh_all(&weak, &db_for_refresh).await;
+        refresh_skills(&weak_for_skills, &skills).await;
         // Pull settings_kv toggles into the GUI.
         let auto = db_for_refresh
             .get_settings_kv("open_window_at_startup")
@@ -1059,6 +1417,7 @@ fn spawn_event_bridge(
     mut rx: tokio::sync::broadcast::Receiver<Event>,
     db: Db,
     rt: tokio::runtime::Handle,
+    skills: Arc<SkillManager>,
 ) {
     let weak = window.as_weak();
     rt.spawn(async move {
@@ -1084,6 +1443,9 @@ fn spawn_event_bridge(
                         ui.set_focused_approval(SharedString::from(id_for_ui));
                     })
                     .ok();
+                }
+                Ok(Event::SkillsChanged) => {
+                    refresh_skills(&weak, &skills).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "event bridge lagged");

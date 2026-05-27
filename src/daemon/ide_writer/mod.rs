@@ -46,6 +46,47 @@ pub fn config_path_under(ide: IdeKind, home: &Path) -> PathBuf {
     }
 }
 
+/// IDE targets that natively load `<dir>/skills/*` at startup. Cursor / VS Code
+/// Copilot don't, so they're excluded from skill sync.
+pub const SKILL_TARGET_IDES: &[IdeKind] = &[
+    IdeKind::ClaudeCode,
+    IdeKind::OpenClaude,
+    IdeKind::OpenCode,
+];
+
+pub fn skills_dir_for(ide: IdeKind) -> Option<PathBuf> {
+    match ide {
+        IdeKind::ClaudeCode => claude_code::skills_dir(),
+        IdeKind::OpenClaude => openclaude::skills_dir(),
+        IdeKind::OpenCode => opencode::skills_dir(),
+        IdeKind::Cursor | IdeKind::VsCodeCopilot => None,
+    }
+}
+
+pub fn skills_dir_under(ide: IdeKind, home: &Path) -> Option<PathBuf> {
+    match ide {
+        IdeKind::ClaudeCode => Some(claude_code::skills_dir_under(home)),
+        IdeKind::OpenClaude => Some(openclaude::skills_dir_under(home)),
+        IdeKind::OpenCode => Some(opencode::skills_dir_under(home)),
+        IdeKind::Cursor | IdeKind::VsCodeCopilot => None,
+    }
+}
+
+pub const fn ide_kind_from_db_name(s: &str) -> Option<IdeKind> {
+    match s.as_bytes() {
+        b"ClaudeCode" => Some(IdeKind::ClaudeCode),
+        b"OpenClaude" => Some(IdeKind::OpenClaude),
+        b"OpenCode" => Some(IdeKind::OpenCode),
+        b"Cursor" => Some(IdeKind::Cursor),
+        b"VsCodeCopilot" => Some(IdeKind::VsCodeCopilot),
+        _ => None,
+    }
+}
+
+pub const fn ide_db_name(ide: IdeKind) -> &'static str {
+    ide_name(ide)
+}
+
 const fn ide_name(ide: IdeKind) -> &'static str {
     match ide {
         IdeKind::ClaudeCode => claude_code::IDE_NAME,

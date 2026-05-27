@@ -18,3 +18,12 @@ pub(crate) fn config_path() -> Option<PathBuf> {
         Some(config_path_under(&home))
     }
 }
+
+pub(crate) fn skills_dir_under(home: &Path) -> PathBuf {
+    home.join(".claude").join("skills")
+}
+
+pub(crate) fn skills_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(skills_dir_under(&home))
+}

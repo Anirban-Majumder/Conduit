@@ -70,6 +70,30 @@ export struct SettingsRow {
     notifications_enabled: string,
 }
 
+export struct SkillRow {
+    key: string,
+    directory: string,
+    name: string,
+    description: string,
+    repo_label: string,
+    repo_owner: string,
+    repo_name: string,
+    repo_branch: string,
+    source_directory: string,
+    readme_url: string,
+    installed: bool,
+    target_claude: bool,
+    target_openclaude: bool,
+    target_opencode: bool,
+}
+
+export struct SkillRepoRow {
+    owner: string,
+    name: string,
+    branch: string,
+    enabled: bool,
+}
+
 // ----- Reusable components (defined before use) -----
 
 component TabButton inherits Rectangle {
@@ -593,6 +617,341 @@ component ServersTab inherits Rectangle {
                         text: "No tools discovered. Click Re-test.";
                         color: Theme.text-tertiary;
                         font-size: Theme.font-body-sm;
+                    }
+                }
+            }
+        }
+    }
+}
+
+component TargetToggle inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback toggle();
+    background: root.active ? Theme.accent : Theme.surface-3;
+    border-radius: Theme.radius-sm;
+    height: 28px;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.bg : Theme.text-secondary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea { clicked => { root.toggle(); } }
+}
+
+component SkillsTab inherits Rectangle {
+    in property <[SkillRow]> rows;
+    in property <[SkillRepoRow]> repos;
+    in property <string> status-message;
+    in property <bool> busy;
+    in-out property <string> repo-add-owner;
+    in-out property <string> repo-add-name;
+    in-out property <string> repo-add-branch: "main";
+    callback refresh-clicked();
+    callback open-folder-clicked();
+    callback install-clicked(string, string, string, string, string, string);
+    callback uninstall-clicked(string);
+    callback toggle-target(string, string, bool);
+    callback add-repo-clicked(string, string, string);
+    callback remove-repo-clicked(string, string);
+    callback toggle-repo-clicked(string, string, bool);
+
+    Flickable {
+        viewport-width: self.width;
+        viewport-height: outer-vbox.preferred-height;
+        outer-vbox := VerticalLayout {
+            spacing: Theme.gap-md;
+
+            HorizontalLayout {
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "Agent skills";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-lg;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: root.status-message != "" ? root.status-message
+                            : (rows.length > 0
+                                ? rows.length + " skills · " + repos.length + " sources"
+                                : repos.length + " sources configured");
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: end;
+                    PillButton {
+                        label: "Open folder";
+                        bg-color: Theme.surface-3;
+                        fg-color: Theme.text-primary;
+                        clicked => { root.open-folder-clicked(); }
+                    }
+                    PillButton {
+                        label: root.busy ? "Refreshing…" : "Refresh";
+                        bg-color: Theme.surface-3;
+                        fg-color: Theme.text-primary;
+                        clicked => {
+                            if (!root.busy) { root.refresh-clicked(); }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-sm;
+                    Text {
+                        text: "Discovery sources";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        Rectangle {
+                            background: Theme.bg;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+                            horizontal-stretch: 1;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                owner-input := TextInput {
+                                    text <=> root.repo-add-owner;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            background: Theme.bg;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+                            horizontal-stretch: 1;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                name-input := TextInput {
+                                    text <=> root.repo-add-name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            background: Theme.bg;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+                            width: 90px;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                branch-input := TextInput {
+                                    text <=> root.repo-add-branch;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+                        PillButton {
+                            label: "+ Add";
+                            bg-color: Theme.accent;
+                            fg-color: Theme.bg;
+                            clicked => {
+                                if (root.repo-add-owner != "" && root.repo-add-name != "") {
+                                    root.add-repo-clicked(
+                                        root.repo-add-owner,
+                                        root.repo-add-name,
+                                        root.repo-add-branch == "" ? "main" : root.repo-add-branch,
+                                    );
+                                    root.repo-add-owner = "";
+                                    root.repo-add-name = "";
+                                    root.repo-add-branch = "main";
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "owner / repo / branch — e.g. anthropics / skills / main";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                    for repo in repos : Rectangle {
+                        background: Theme.bg;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        height: 36px;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: Theme.gap-sm;
+                            Text {
+                                text: repo.owner + "/" + repo.name + " @ " + repo.branch;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body-sm;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: end;
+                                TargetToggle {
+                                    label: repo.enabled ? "Enabled" : "Disabled";
+                                    active: repo.enabled;
+                                    toggle => {
+                                        root.toggle-repo-clicked(repo.owner, repo.name, !repo.enabled);
+                                    }
+                                }
+                                PillButton {
+                                    label: "Remove";
+                                    clicked => {
+                                        root.remove-repo-clicked(repo.owner, repo.name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: rows.length == 0 ? "No skills" : "Skills (" + rows.length + ")";
+                color: Theme.text-secondary;
+                font-size: Theme.font-eyebrow;
+            }
+            if rows.length == 0 : EmptyState {
+                text: "Add a discovery source above (e.g. anthropics/skills) and hit Refresh, or drop a skill folder into Open folder.";
+                height: 160px;
+            }
+            for row in rows : Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: row.installed ? Theme.accent : Theme.border;
+                min-height: 84px;
+                HorizontalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-md;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            spacing: Theme.gap-sm;
+                            alignment: start;
+                            Text {
+                                text: row.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                            if row.installed : Rectangle {
+                                background: Theme.accent;
+                                border-radius: 999px;
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    Text {
+                                        text: "Installed";
+                                        color: Theme.bg;
+                                        font-size: Theme.font-eyebrow;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: row.description;
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.repo_label;
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-eyebrow;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        if row.installed : HorizontalLayout {
+                            spacing: 4px;
+                            alignment: end;
+                            TargetToggle {
+                                label: "Claude";
+                                active: row.target_claude;
+                                toggle => {
+                                    root.toggle-target(row.directory, "ClaudeCode", !row.target_claude);
+                                }
+                            }
+                            TargetToggle {
+                                label: "OpenClaude";
+                                active: row.target_openclaude;
+                                toggle => {
+                                    root.toggle-target(row.directory, "OpenClaude", !row.target_openclaude);
+                                }
+                            }
+                            TargetToggle {
+                                label: "OpenCode";
+                                active: row.target_opencode;
+                                toggle => {
+                                    root.toggle-target(row.directory, "OpenCode", !row.target_opencode);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.gap-sm;
+                            alignment: end;
+                            if row.installed : PillButton {
+                                label: "Uninstall";
+                                clicked => { root.uninstall-clicked(row.directory); }
+                            }
+                            if !row.installed : PillButton {
+                                label: "Install";
+                                bg-color: Theme.accent;
+                                fg-color: Theme.bg;
+                                clicked => {
+                                    root.install-clicked(
+                                        row.repo_owner,
+                                        row.repo_name,
+                                        row.repo_branch,
+                                        row.source_directory,
+                                        row.readme_url,
+                                        row.name,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1253,6 +1612,14 @@ export component MainWindow inherits Window {
     in property <string> status-message: "ready";
     in property <bool> daemon-healthy: true;
 
+    in property <[SkillRow]> skills;
+    in property <[SkillRepoRow]> skill-repos;
+    in-out property <string> skills-status-message;
+    in-out property <bool> skills-busy;
+    in-out property <string> skills-repo-add-owner;
+    in-out property <string> skills-repo-add-name;
+    in-out property <string> skills-repo-add-branch: "main";
+
     in-out property <int> active-tab: 0;
     in-out property <string> focused-approval: "";
     in-out property <bool> show-add-server-dialog: false;
@@ -1305,6 +1672,15 @@ export component MainWindow inherits Window {
     callback toggle-open-window-at-startup(bool);
     callback set-default-unknown-tool-policy(string);
     callback copy-error-clicked(string);
+
+    callback skills-refresh-clicked();
+    callback skills-open-folder-clicked();
+    callback skills-install-clicked(string, string, string, string, string, string);
+    callback skills-uninstall-clicked(string);
+    callback skills-toggle-target(string, string, bool);
+    callback skills-add-repo(string, string, string);
+    callback skills-remove-repo(string, string);
+    callback skills-toggle-repo(string, string, bool);
 
     public function show-add-server() {
         root.show-add-server-dialog = true;
@@ -1380,7 +1756,7 @@ export component MainWindow inherits Window {
                 padding-right: Theme.gap-md;
                 spacing: 4px;
                 alignment: start;
-                for label[i] in ["Approvals", "Servers", "Editors", "Log", "Settings", "Help"] : TabButton {
+                for label[i] in ["Approvals", "Servers", "Editors", "Skills", "Log", "Settings", "Help"] : TabButton {
                     label: label;
                     active: root.active-tab == i;
                     badge: i == 0 ? root.approvals.length : 0;
@@ -1427,17 +1803,43 @@ export component MainWindow inherits Window {
                     remove-clicked(name) => { root.remove-ide-clicked(name); }
                     add-clicked => { root.show-add-ide(); }
                 }
-                if root.active-tab == 3 : LogTab {
+                if root.active-tab == 3 : SkillsTab {
+                    vertical-stretch: 1;
+                    rows: root.skills;
+                    repos: root.skill-repos;
+                    status-message: root.skills-status-message;
+                    busy: root.skills-busy;
+                    repo-add-owner <=> root.skills-repo-add-owner;
+                    repo-add-name <=> root.skills-repo-add-name;
+                    repo-add-branch <=> root.skills-repo-add-branch;
+                    refresh-clicked => { root.skills-refresh-clicked(); }
+                    open-folder-clicked => { root.skills-open-folder-clicked(); }
+                    install-clicked(owner, name, branch, dir, readme, candidate-name) => {
+                        root.skills-install-clicked(owner, name, branch, dir, readme, candidate-name);
+                    }
+                    uninstall-clicked(directory) => { root.skills-uninstall-clicked(directory); }
+                    toggle-target(directory, ide, enable) => {
+                        root.skills-toggle-target(directory, ide, enable);
+                    }
+                    add-repo-clicked(owner, name, branch) => {
+                        root.skills-add-repo(owner, name, branch);
+                    }
+                    remove-repo-clicked(owner, name) => { root.skills-remove-repo(owner, name); }
+                    toggle-repo-clicked(owner, name, enabled) => {
+                        root.skills-toggle-repo(owner, name, enabled);
+                    }
+                }
+                if root.active-tab == 4 : LogTab {
                     rows: root.audit;
                 }
-                if root.active-tab == 4 : SettingsTab {
+                if root.active-tab == 5 : SettingsTab {
                     data: root.settings;
                     open-window-at-startup: root.open-window-at-startup;
                     default-unknown-tool-policy: root.default-unknown-tool-policy;
                     toggle-open-window(v) => { root.toggle-open-window-at-startup(v); }
                     set-default-policy(p) => { root.set-default-unknown-tool-policy(p); }
                 }
-                if root.active-tab == 5 : HelpTab {}
+                if root.active-tab == 6 : HelpTab {}
             }
         }
     }

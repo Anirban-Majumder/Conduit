@@ -34,10 +34,10 @@ async fn ping_round_trips_through_db_actor() {
 }
 
 #[tokio::test]
-async fn schema_version_two_after_v01_migration() {
+async fn schema_version_three_after_skills_migration() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
     let version = db.schema_version().await.expect("schema version query");
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 
 #[tokio::test]
@@ -53,6 +53,9 @@ async fn all_v0_tables_created_by_migration() {
         "policies",
         "schema_version",
         "servers",
+        "skill_repos",
+        "skill_targets",
+        "skills",
     ] {
         assert!(
             tables.iter().any(|t| t == expected),

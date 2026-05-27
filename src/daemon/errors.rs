@@ -44,3 +44,40 @@ pub enum RuntimeError {
     #[error("tokio worker thread died before publishing its runtime handle")]
     WorkerDied,
 }
+
+#[derive(Debug, Error)]
+pub enum SkillError {
+    #[error("db: {0}")]
+    Db(#[from] DbError),
+
+    #[error("http: {0}")]
+    Http(#[from] reqwest::Error),
+
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("invalid skill path segment: {0}")]
+    InvalidPath(String),
+
+    #[error("SKILL.md not found in {repo} at {dir}")]
+    MissingSkillFile { repo: String, dir: String },
+
+    #[error("github rate-limited (HTTP {0})")]
+    RateLimited(u16),
+
+    #[error("github API HTTP {0}")]
+    HttpStatus(u16),
+
+    #[error("repo branch resolution failed: {0}")]
+    RepoTree(String),
+
+    #[error("skill directory {name:?} is already managed by {owner}/{repo}")]
+    DirectoryConflict {
+        name: String,
+        owner: String,
+        repo: String,
+    },
+
+    #[error("unknown target ide: {0}")]
+    UnknownTarget(String),
+}
