@@ -87,21 +87,18 @@ async fn migrations_idempotent_on_re_open() {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut path = std::env::temp_dir();
-    path.push(format!(
-        "conduit-mig-test-{}-{n}.db",
-        std::process::id()
-    ));
+    path.push(format!("conduit-mig-test-{}-{n}.db", std::process::id()));
     let _ignored = std::fs::remove_file(&path);
 
     {
         let db = Db::spawn_at(&path).expect("first spawn");
         db.ping().await.expect("first ping");
-        assert_eq!(db.schema_version().await.unwrap(), 3);
+        assert_eq!(db.schema_version().await.unwrap(), 4);
     }
     {
         let db = Db::spawn_at(&path).expect("second spawn re-runs migrations");
         db.ping().await.expect("second ping");
-        assert_eq!(db.schema_version().await.unwrap(), 3);
+        assert_eq!(db.schema_version().await.unwrap(), 4);
         let cols = db.table_columns("servers").await.unwrap();
         assert!(cols.iter().any(|c| c == "oauth_authority"));
     }

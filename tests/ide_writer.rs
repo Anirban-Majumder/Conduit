@@ -192,7 +192,10 @@ fn purge_one_keeps_stdio_entries() {
 
     let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(after["mcpServers"]["gmail"].is_null());
-    assert_eq!(after["mcpServers"]["my-custom"]["command"], "/usr/local/bin/x");
+    assert_eq!(
+        after["mcpServers"]["my-custom"]["command"],
+        "/usr/local/bin/x"
+    );
 }
 
 #[test]

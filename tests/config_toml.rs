@@ -73,10 +73,8 @@ fn invalid_toml_returns_parse_error() {
 
 #[test]
 fn load_or_default_missing_file_returns_defaults() {
-    let path = std::env::temp_dir().join(format!(
-        "conduit-cfg-missing-{}.toml",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("conduit-cfg-missing-{}.toml", std::process::id()));
     std::fs::remove_file(&path).ok();
     let s = Settings::load_or_default(&path);
     assert_eq!(s.daemon.port, 9876);
@@ -84,10 +82,8 @@ fn load_or_default_missing_file_returns_defaults() {
 
 #[test]
 fn load_or_default_present_file_parses() {
-    let path = std::env::temp_dir().join(format!(
-        "conduit-cfg-present-{}.toml",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("conduit-cfg-present-{}.toml", std::process::id()));
     std::fs::write(&path, "[daemon]\nport = 12345\n").expect("write fixture");
     let s = Settings::load_or_default(&path);
     assert_eq!(s.daemon.port, 12345);
@@ -96,10 +92,8 @@ fn load_or_default_present_file_parses() {
 
 #[test]
 fn load_or_default_garbage_file_returns_defaults() {
-    let path = std::env::temp_dir().join(format!(
-        "conduit-cfg-garbage-{}.toml",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("conduit-cfg-garbage-{}.toml", std::process::id()));
     std::fs::write(&path, "not [valid] :::").expect("write fixture");
     let s = Settings::load_or_default(&path);
     assert_eq!(s.daemon.port, 9876);

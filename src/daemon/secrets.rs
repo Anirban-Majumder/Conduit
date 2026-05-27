@@ -58,20 +58,17 @@ fn oauth_entry(account: &str) -> Result<Entry, SecretsError> {
 }
 
 pub fn store_oauth_access(account: &str, token: &str) -> Result<(), SecretsError> {
-    oauth_entry(&format!("{account}:access"))?
-        .set_password(token)?;
+    oauth_entry(&format!("{account}:access"))?.set_password(token)?;
     Ok(())
 }
 
 pub fn store_oauth_refresh(account: &str, token: &str) -> Result<(), SecretsError> {
-    oauth_entry(&format!("{account}:refresh"))?
-        .set_password(token)?;
+    oauth_entry(&format!("{account}:refresh"))?.set_password(token)?;
     Ok(())
 }
 
 pub fn store_oauth_client_secret(account: &str, secret: &str) -> Result<(), SecretsError> {
-    oauth_entry(&format!("{account}:client_secret"))?
-        .set_password(secret)?;
+    oauth_entry(&format!("{account}:client_secret"))?.set_password(secret)?;
     Ok(())
 }
 
@@ -89,8 +86,7 @@ pub fn fetch_oauth_refresh(account: &str) -> Result<String, SecretsError> {
 
 pub fn store_oauth_meta(account: &str, meta: &OauthMeta) -> Result<(), SecretsError> {
     let blob = serde_json::to_string(meta).unwrap_or_else(|_| "{}".into());
-    oauth_entry(&format!("{account}:meta"))?
-        .set_password(&blob)?;
+    oauth_entry(&format!("{account}:meta"))?.set_password(&blob)?;
     Ok(())
 }
 

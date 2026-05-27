@@ -51,7 +51,12 @@ pub async fn dispatch_action(
                 return;
             }
             if let Err(e) = db
-                .set_policy(&server, &tool, Decision::Allow, DecisionSource::Notification)
+                .set_policy(
+                    &server,
+                    &tool,
+                    Decision::Allow,
+                    DecisionSource::Notification,
+                )
                 .await
             {
                 tracing::warn!(

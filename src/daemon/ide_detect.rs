@@ -16,6 +16,51 @@ pub enum IdeKind {
     Codex,
 }
 
+impl IdeKind {
+    pub const fn as_db_kind(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "ClaudeCode",
+            Self::Cursor => "Cursor",
+            Self::VsCodeCopilot => "VsCodeCopilot",
+            Self::OpenCode => "OpenCode",
+            Self::OpenClaude => "OpenClaude",
+            Self::Codex => "Codex",
+        }
+    }
+
+    pub fn from_db_kind(s: &str) -> Option<Self> {
+        match s {
+            "ClaudeCode" => Some(Self::ClaudeCode),
+            "Cursor" => Some(Self::Cursor),
+            "VsCodeCopilot" => Some(Self::VsCodeCopilot),
+            "OpenCode" => Some(Self::OpenCode),
+            "OpenClaude" => Some(Self::OpenClaude),
+            "Codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Cursor => "Cursor",
+            Self::VsCodeCopilot => "VS Code Copilot",
+            Self::OpenCode => "OpenCode",
+            Self::OpenClaude => "OpenClaude",
+            Self::Codex => "Codex",
+        }
+    }
+
+    pub const ALL: &'static [Self] = &[
+        Self::ClaudeCode,
+        Self::Cursor,
+        Self::VsCodeCopilot,
+        Self::OpenCode,
+        Self::OpenClaude,
+        Self::Codex,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedIde {
     pub kind: IdeKind,
@@ -29,6 +74,15 @@ pub enum DetectionSource {
     Path(PathBuf),
     /// Found as a macOS application bundle.
     MacApp(PathBuf),
+}
+
+impl DetectionSource {
+    pub fn as_db_str(&self) -> String {
+        match self {
+            Self::Path(p) => format!("path:{}", p.display()),
+            Self::MacApp(p) => format!("macapp:{}", p.display()),
+        }
+    }
 }
 
 struct IdeSpec {

@@ -56,7 +56,9 @@ async fn resolve_falls_back_to_server_scope() {
     // to force fallback.
     db.delete_policies_for_server("gmail").await.unwrap();
     // Recreate just the server-scope fallback.
-    db.upsert_server_with_tools(server("gmail"), vec![]).await.unwrap();
+    db.upsert_server_with_tools(server("gmail"), vec![])
+        .await
+        .unwrap();
     let d = db.resolve_policy("gmail", "unknown_tool").await.unwrap();
     assert_eq!(d, Decision::Ask);
 }

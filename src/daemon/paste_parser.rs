@@ -159,10 +159,7 @@ fn extract_server_fields(
     let env = extract_string_map(obj.get("env"));
 
     // HTTP-style entries: `url` + optional `headers` map (Claude/Cline style).
-    let url = obj
-        .get("url")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned);
+    let url = obj.get("url").and_then(|v| v.as_str()).map(str::to_owned);
     let headers = extract_string_map(obj.get("headers"));
 
     ParsedServer {

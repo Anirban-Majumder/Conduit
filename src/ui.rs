@@ -17,7 +17,10 @@
 
 slint::include_modules!();
 
-#[allow(dead_code, reason = "constants are part of the module's public surface")]
+#[allow(
+    dead_code,
+    reason = "constants are part of the module's public surface"
+)]
 pub mod tabs {
     pub const APPROVALS: i32 = 0;
     pub const SERVERS: i32 = 1;

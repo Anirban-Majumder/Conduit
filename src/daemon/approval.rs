@@ -204,11 +204,7 @@ impl ApprovalCenter {
 
 /// Sweeps stale approvals and publishes `Event::ApprovalResolved { status: Timeout }`
 /// for every swept id. Returns the count of swept rows.
-pub async fn sweep_and_publish_timeouts(
-    db: &Db,
-    bus: &Bus,
-    cutoff: i64,
-) -> Result<usize, DbError> {
+pub async fn sweep_and_publish_timeouts(db: &Db, bus: &Bus, cutoff: i64) -> Result<usize, DbError> {
     let ids = db.sweep_stale_pending_approvals(cutoff).await?;
     let n = ids.len();
     for id in ids {

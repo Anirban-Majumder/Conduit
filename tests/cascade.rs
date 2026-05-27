@@ -10,9 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use conduit::daemon::cascade::delete_server_with_cascade;
-use conduit::daemon::db::types::{
-    ApprovalStatus, ManagedIdeConfig, PendingApproval, Server, ToolMeta,
-};
+use conduit::daemon::db::types::{ApprovalStatus, PendingApproval, Server, ToolMeta};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
 use conduit::daemon::ide_writer::write_uniform_mcp_servers;
@@ -50,13 +48,6 @@ async fn cascade_trims_ide_configs_and_deletes_server_row() {
     let dir = unique_dir("trim");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg_path = dir.join("mcp.json");
-    write_uniform_mcp_servers(
-        &cfg_path,
-        "abcd1234",
-        &["gmail".to_string(), "github".to_string()],
-        9876,
-    )
-    .unwrap();
 
     db.upsert_server_with_tools(
         server("gmail"),
@@ -72,13 +63,22 @@ async fn cascade_trims_ide_configs_and_deletes_server_row() {
     db.upsert_server_with_tools(server("github"), vec![])
         .await
         .unwrap();
-    db.record_ide_config_write(ManagedIdeConfig {
-        ide_name: "Cursor".into(),
-        ide_key: "abcd1234".into(),
-        config_path: cfg_path.clone(),
-        managed_entries: vec!["gmail".into(), "github".into()],
-        written_at: 0,
-    })
+    let ide = db
+        .upsert_detected_ide("Cursor", "Cursor", None)
+        .await
+        .unwrap();
+    write_uniform_mcp_servers(
+        &cfg_path,
+        &ide.ide_key,
+        &["gmail".to_string(), "github".to_string()],
+        9876,
+    )
+    .unwrap();
+    db.update_ide_managed_entries(
+        "Cursor",
+        cfg_path.clone(),
+        vec!["gmail".into(), "github".into()],
+    )
     .await
     .unwrap();
 
@@ -97,8 +97,8 @@ async fn cascade_trims_ide_configs_and_deletes_server_row() {
     assert!(updated["mcpServers"]["gmail"].is_null());
     assert!(updated["mcpServers"]["github"]["url"].is_string());
 
-    let stored = db.list_ide_configs_for_ide("Cursor").await.unwrap();
-    assert_eq!(stored[0].managed_entries, vec!["github".to_string()]);
+    let stored = db.get_ide_by_kind("Cursor").await.unwrap().unwrap();
+    assert_eq!(stored.managed_entries, vec!["github".to_string()]);
 
     let _ignored = std::fs::remove_dir_all(&dir);
 }
@@ -155,15 +155,12 @@ async fn cascade_skips_missing_ide_config_files() {
     db.upsert_server_with_tools(server("gmail"), vec![])
         .await
         .unwrap();
-    db.record_ide_config_write(ManagedIdeConfig {
-        ide_name: "Cursor".into(),
-        ide_key: "k0000000".into(),
-        config_path: missing.clone(),
-        managed_entries: vec!["gmail".into()],
-        written_at: 0,
-    })
-    .await
-    .unwrap();
+    db.upsert_detected_ide("Cursor", "Cursor", None)
+        .await
+        .unwrap();
+    db.update_ide_managed_entries("Cursor", missing.clone(), vec!["gmail".into()])
+        .await
+        .unwrap();
 
     let report = delete_server_with_cascade(&db, &bus, "gmail", 9876, false)
         .await

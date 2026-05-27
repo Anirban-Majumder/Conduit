@@ -9,8 +9,8 @@
 
 use std::sync::Mutex;
 
-use keyring_core::{mock, set_default_store, unset_default_store};
 use conduit::daemon::secrets;
+use keyring_core::{mock, set_default_store, unset_default_store};
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 

@@ -34,10 +34,10 @@ async fn ping_round_trips_through_db_actor() {
 }
 
 #[tokio::test]
-async fn schema_version_three_after_skills_migration() {
+async fn schema_version_four_after_ides_migration() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
     let version = db.schema_version().await.expect("schema version query");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 }
 
 #[tokio::test]
@@ -47,8 +47,7 @@ async fn all_v0_tables_created_by_migration() {
 
     for expected in [
         "audit_log",
-        "ide_keys",
-        "managed_ide_configs",
+        "ides",
         "pending_approvals",
         "policies",
         "schema_version",
@@ -62,92 +61,123 @@ async fn all_v0_tables_created_by_migration() {
             "missing table {expected}, got {tables:?}"
         );
     }
+
+    for legacy in ["ide_keys", "managed_ide_configs"] {
+        assert!(
+            !tables.iter().any(|t| t == legacy),
+            "legacy table {legacy} should be gone, got {tables:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn ide_key_create_then_lookup_round_trip() {
+async fn upsert_detected_ide_inserts_then_resurrects_stale() {
+    use conduit::daemon::db::types::IdeStatus;
+
     let db = Db::spawn_in_memory().expect("spawn");
-    let created = db.create_ide_key("Cursor").await.expect("create");
-    assert_eq!(created.key.len(), 8);
-    assert_eq!(created.ide_name, "Cursor");
+    let row = db
+        .upsert_detected_ide("Cursor", "Cursor", Some("path:/usr/bin/cursor".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(row.ide_kind, "Cursor");
+    assert_eq!(row.display_name, "Cursor");
+    assert_eq!(row.ide_key.len(), 8);
+    assert!(matches!(row.status, IdeStatus::Active));
 
-    let looked_up = db.lookup_ide_key(&created.key).await.expect("lookup");
-    assert_eq!(looked_up, Some(created));
+    db.mark_ides_stale(vec![]).await.unwrap();
+    let stale = db.get_ide_by_kind("Cursor").await.unwrap().unwrap();
+    assert!(matches!(stale.status, IdeStatus::Stale));
+
+    let resurrected = db
+        .upsert_detected_ide("Cursor", "Cursor", Some("path:/usr/bin/cursor".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(resurrected.ide_key, row.ide_key);
+    assert!(matches!(resurrected.status, IdeStatus::Active));
 }
 
 #[tokio::test]
-async fn ide_key_lookup_unknown_returns_none() {
+async fn lookup_ide_key_skips_not_tracked() {
     let db = Db::spawn_in_memory().expect("spawn");
-    let result = db.lookup_ide_key("notarealk").await.expect("lookup");
-    assert_eq!(result, None);
+    let row = db
+        .upsert_detected_ide("Cursor", "Cursor", None)
+        .await
+        .unwrap();
+    assert!(db.lookup_ide_key(&row.ide_key).await.unwrap().is_some());
+
+    db.mark_ide_not_tracked("Cursor").await.unwrap();
+    assert!(db.lookup_ide_key(&row.ide_key).await.unwrap().is_none());
+
+    db.retrack_ide("Cursor").await.unwrap();
+    assert!(db.lookup_ide_key(&row.ide_key).await.unwrap().is_some());
 }
 
 #[tokio::test]
-async fn ide_keys_list_filters_by_name() {
+async fn mark_ides_stale_preserves_not_tracked() {
+    use conduit::daemon::db::types::IdeStatus;
+
     let db = Db::spawn_in_memory().expect("spawn");
-    db.create_ide_key("Cursor").await.unwrap();
-    db.create_ide_key("Cursor").await.unwrap();
-    db.create_ide_key("Claude Code").await.unwrap();
+    db.upsert_detected_ide("Cursor", "Cursor", None)
+        .await
+        .unwrap();
+    db.upsert_detected_ide("ClaudeCode", "Claude Code", None)
+        .await
+        .unwrap();
+    db.mark_ide_not_tracked("Cursor").await.unwrap();
 
-    let cursor_keys = db.list_ide_keys_for_name("Cursor").await.unwrap();
-    let claude_keys = db.list_ide_keys_for_name("Claude Code").await.unwrap();
+    db.mark_ides_stale(vec![]).await.unwrap();
 
-    assert_eq!(cursor_keys.len(), 2);
-    assert_eq!(claude_keys.len(), 1);
-    assert!(cursor_keys.iter().all(|k| k.ide_name == "Cursor"));
+    let cursor = db.get_ide_by_kind("Cursor").await.unwrap().unwrap();
+    let claude = db.get_ide_by_kind("ClaudeCode").await.unwrap().unwrap();
+    assert!(matches!(cursor.status, IdeStatus::NotTracked));
+    assert!(matches!(claude.status, IdeStatus::Stale));
 }
 
 #[tokio::test]
-async fn ide_key_delete_removes_row() {
-    let db = Db::spawn_in_memory().expect("spawn");
-    let k = db.create_ide_key("Cursor").await.unwrap();
-    db.delete_ide_key(&k.key).await.unwrap();
-    assert_eq!(db.lookup_ide_key(&k.key).await.unwrap(), None);
-}
-
-#[tokio::test]
-async fn ide_config_write_then_list_round_trip() {
-    use conduit::daemon::db::types::ManagedIdeConfig;
+async fn update_ide_managed_entries_round_trip() {
     use std::path::PathBuf;
 
     let db = Db::spawn_in_memory().expect("spawn");
-    let cfg = ManagedIdeConfig {
-        ide_name: "Cursor".to_string(),
-        ide_key: "abcd1234".to_string(),
-        config_path: PathBuf::from("/home/u/.cursor/mcp.json"),
-        managed_entries: vec!["gmail".to_string(), "github".to_string()],
-        written_at: 1_700_000_000,
-    };
-    db.record_ide_config_write(cfg.clone()).await.unwrap();
+    db.upsert_detected_ide("Cursor", "Cursor", None)
+        .await
+        .unwrap();
 
-    let rows = db.list_ide_configs_for_ide("Cursor").await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0], cfg);
+    let path = PathBuf::from("/home/u/.cursor/mcp.json");
+    db.update_ide_managed_entries(
+        "Cursor",
+        path.clone(),
+        vec!["gmail".to_string(), "github".to_string()],
+    )
+    .await
+    .unwrap();
+
+    let row = db.get_ide_by_kind("Cursor").await.unwrap().unwrap();
+    assert_eq!(row.config_path.as_deref(), Some(path.as_path()));
+    assert_eq!(
+        row.managed_entries,
+        vec!["gmail".to_string(), "github".to_string()]
+    );
 }
 
 #[tokio::test]
-async fn ide_config_write_upserts_on_same_key() {
-    use conduit::daemon::db::types::ManagedIdeConfig;
-    use std::path::PathBuf;
-
+async fn mark_not_tracked_clears_bindings() {
     let db = Db::spawn_in_memory().expect("spawn");
-    let mut cfg = ManagedIdeConfig {
-        ide_name: "Cursor".to_string(),
-        ide_key: "abcd1234".to_string(),
-        config_path: PathBuf::from("/home/u/.cursor/mcp.json"),
-        managed_entries: vec!["gmail".to_string()],
-        written_at: 1_700_000_000,
-    };
-    db.record_ide_config_write(cfg.clone()).await.unwrap();
+    db.upsert_detected_ide("Cursor", "Cursor", None)
+        .await
+        .unwrap();
+    db.update_ide_managed_entries(
+        "Cursor",
+        std::path::PathBuf::from("/tmp/mcp.json"),
+        vec!["gmail".to_string()],
+    )
+    .await
+    .unwrap();
+    db.mark_ide_not_tracked("Cursor").await.unwrap();
 
-    cfg.managed_entries = vec!["gmail".to_string(), "github".to_string()];
-    cfg.written_at = 1_700_000_999;
-    db.record_ide_config_write(cfg.clone()).await.unwrap();
-
-    let rows = db.list_ide_configs_for_ide("Cursor").await.unwrap();
-    assert_eq!(rows.len(), 1, "should upsert, not duplicate");
-    assert_eq!(rows[0].managed_entries.len(), 2);
-    assert_eq!(rows[0].written_at, 1_700_000_999);
+    let row = db.get_ide_by_kind("Cursor").await.unwrap().unwrap();
+    assert!(row.config_path.is_none());
+    assert!(row.managed_entries.is_empty());
+    assert!(row.not_tracked_at.is_some());
 }
 
 #[tokio::test]
@@ -503,26 +533,18 @@ async fn enum_db_str_round_trips() {
 }
 
 #[tokio::test]
-async fn ide_config_delete_for_ide_clears_rows() {
-    use conduit::daemon::db::types::ManagedIdeConfig;
+async fn list_all_ide_configs_skips_not_tracked() {
     use std::path::PathBuf;
 
     let db = Db::spawn_in_memory().expect("spawn");
-    for key in ["a", "b"] {
-        db.record_ide_config_write(ManagedIdeConfig {
-            ide_name: "Cursor".to_string(),
-            ide_key: key.to_string(),
-            config_path: PathBuf::from("/x"),
-            managed_entries: vec![],
-            written_at: 0,
-        })
+    db.upsert_detected_ide("Cursor", "Cursor", None)
         .await
         .unwrap();
-    }
-    db.delete_ide_configs_for_ide("Cursor").await.unwrap();
-    assert!(db
-        .list_ide_configs_for_ide("Cursor")
+    db.update_ide_managed_entries("Cursor", PathBuf::from("/x"), vec!["gmail".into()])
         .await
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    assert_eq!(db.list_all_ide_configs().await.unwrap().len(), 1);
+
+    db.mark_ide_not_tracked("Cursor").await.unwrap();
+    assert!(db.list_all_ide_configs().await.unwrap().is_empty());
 }

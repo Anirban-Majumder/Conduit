@@ -372,10 +372,8 @@ impl SkillManager {
                 continue;
             };
             let bytes = tokio::fs::read(&skill_md).await?;
-            let meta = discover::read_skill_metadata(
-                std::str::from_utf8(&bytes).unwrap_or(""),
-                &name,
-            );
+            let meta =
+                discover::read_skill_metadata(std::str::from_utf8(&bytes).unwrap_or(""), &name);
             let now = now_unix();
             let skill = Skill {
                 directory: name.clone(),

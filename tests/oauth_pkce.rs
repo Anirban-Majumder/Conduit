@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "test ergonomics")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test ergonomics"
+)]
 
 use std::time::Duration;
 
@@ -30,7 +35,11 @@ fn non_bearer_returns_none() {
 async fn callback_state_mismatch_returns_error() {
     let (listener, port, _redirect) = bind_callback_listener().await.unwrap();
     let cancel = CancellationToken::new();
-    let handle = tokio::spawn(wait_for_callback(listener, "expected-state", cancel.clone()));
+    let handle = tokio::spawn(wait_for_callback(
+        listener,
+        "expected-state",
+        cancel.clone(),
+    ));
 
     // Hit the callback with a wrong state.
     let url = format!("http://127.0.0.1:{port}/callback?code=abc&state=wrong");
@@ -87,7 +96,10 @@ async fn refresh_coordinator_serialises_concurrent_calls() {
     let first = coord.try_acquire("gmail").await;
     let second = coord.try_acquire("gmail").await;
     assert!(first.is_some());
-    assert!(second.is_none(), "second concurrent acquire should be denied");
+    assert!(
+        second.is_none(),
+        "second concurrent acquire should be denied"
+    );
 
     // Resolve and release.
     if let Some(tx) = first {

@@ -51,11 +51,8 @@ pub fn config_path_under(ide: IdeKind, home: &Path) -> PathBuf {
 
 /// IDE targets that natively load `<dir>/skills/*` at startup. Cursor / VS Code
 /// Copilot don't, so they're excluded from skill sync.
-pub const SKILL_TARGET_IDES: &[IdeKind] = &[
-    IdeKind::ClaudeCode,
-    IdeKind::OpenClaude,
-    IdeKind::OpenCode,
-];
+pub const SKILL_TARGET_IDES: &[IdeKind] =
+    &[IdeKind::ClaudeCode, IdeKind::OpenClaude, IdeKind::OpenCode];
 
 pub fn skills_dir_for(ide: IdeKind) -> Option<PathBuf> {
     match ide {
@@ -324,7 +321,10 @@ pub fn write_toml_mcp_servers(
 
     for name in server_names {
         let mut entry = toml::value::Table::new();
-        entry.insert("url".to_string(), toml::Value::String(url_for(port, key, name)));
+        entry.insert(
+            "url".to_string(),
+            toml::Value::String(url_for(port, key, name)),
+        );
         servers.insert(name.clone(), toml::Value::Table(entry));
     }
 
@@ -366,18 +366,16 @@ fn purge_one_server_for_ide_toml(
     atomic_write_toml(path, &toml::Value::Table(root))
 }
 
-fn read_existing_toml_table(
-    path: &Path,
-) -> Result<Option<toml::value::Table>, IdeWriterError> {
+fn read_existing_toml_table(path: &Path) -> Result<Option<toml::value::Table>, IdeWriterError> {
     match fs::read_to_string(path) {
         Ok(s) if s.chars().all(char::is_whitespace) => Ok(None),
         Ok(s) => {
             let value: toml::Value = toml::from_str(&s)?;
             match value {
                 toml::Value::Table(t) => Ok(Some(t)),
-                _ => Err(IdeWriterError::TomlDe(
-                    serde::de::Error::custom("expected top-level TOML table"),
-                )),
+                _ => Err(IdeWriterError::TomlDe(serde::de::Error::custom(
+                    "expected top-level TOML table",
+                ))),
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

@@ -8,14 +8,21 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::daemon::db::types::{
     fresh_ide_key, ApprovalStatus, AuditDecision, AuditEntry, AuditFilter, Decision,
-    DecisionSource, EnvEntry, IdeKey, ManagedIdeConfig, PendingApproval, Policy, Server,
-    Skill, SkillRepo, ToolMeta,
+    DecisionSource, EnvEntry, IdeKey, IdeRecord, IdeStatus, ManagedIdeConfig, PendingApproval,
+    Policy, Server, Skill, SkillRepo, ToolMeta,
 };
 use crate::daemon::errors::DbError;
 
 const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
 const V01_SQL: &str = include_str!("migrations/0002_v01.sql");
 const SKILLS_SQL: &str = include_str!("migrations/0003_skills.sql");
+const IDES_SQL: &str = include_str!("migrations/0004_ides.sql");
+
+#[derive(Debug, Clone)]
+pub struct CascadeTrim {
+    pub ide_kind: String,
+    pub remaining: Vec<String>,
+}
 const CMD_CHANNEL_DEPTH: usize = 64;
 
 fn now_unix() -> i64 {
@@ -38,32 +45,42 @@ pub enum DbCmd {
     ListTables {
         reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
-    CreateIdeKey {
-        ide_name: String,
-        reply: oneshot::Sender<Result<IdeKey, DbError>>,
-    },
     LookupIdeKey {
         key: String,
         reply: oneshot::Sender<Result<Option<IdeKey>, DbError>>,
     },
-    ListIdeKeysForName {
-        ide_name: String,
-        reply: oneshot::Sender<Result<Vec<IdeKey>, DbError>>,
+    UpsertDetectedIde {
+        ide_kind: String,
+        display_name: String,
+        detection_source: Option<String>,
+        reply: oneshot::Sender<Result<IdeRecord, DbError>>,
     },
-    DeleteIdeKey {
-        key: String,
+    ListIdes {
+        reply: oneshot::Sender<Result<Vec<IdeRecord>, DbError>>,
+    },
+    ListActiveIdes {
+        reply: oneshot::Sender<Result<Vec<IdeRecord>, DbError>>,
+    },
+    GetIdeByKind {
+        ide_kind: String,
+        reply: oneshot::Sender<Result<Option<IdeRecord>, DbError>>,
+    },
+    MarkIdesStale {
+        kinds_present: Vec<String>,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    RecordIdeConfigWrite {
-        config: ManagedIdeConfig,
+    MarkIdeNotTracked {
+        ide_kind: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    ListIdeConfigsForIde {
-        ide_name: String,
-        reply: oneshot::Sender<Result<Vec<ManagedIdeConfig>, DbError>>,
+    RetrackIde {
+        ide_kind: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
     },
-    DeleteIdeConfigsForIde {
-        ide_name: String,
+    UpdateIdeManagedEntries {
+        ide_kind: String,
+        config_path: PathBuf,
+        managed_entries: Vec<String>,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     SetPolicy {
@@ -169,24 +186,14 @@ pub enum DbCmd {
         new: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    RotateIdeKey {
-        old_key: String,
-        ide_name: String,
-        reply: oneshot::Sender<Result<IdeKey, DbError>>,
-    },
-    UpdateIdeKeyLabel {
-        key: String,
-        new_ide_name: String,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
     ListAllIdeConfigs {
         reply: oneshot::Sender<Result<Vec<ManagedIdeConfig>, DbError>>,
     },
     CommitCascadeDelete {
         server_name: String,
-        trimmed: Vec<(String, String, Vec<String>)>, // (ide_name, ide_key, new managed_entries)
+        trimmed: Vec<CascadeTrim>,
         delete_audit_history: bool,
-        reply: oneshot::Sender<Result<Vec<String>, DbError>>, // cancelled approval ids
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
     ListSkillRepos {
         reply: oneshot::Sender<Result<Vec<SkillRepo>, DbError>>,
@@ -281,18 +288,6 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
-    pub async fn create_ide_key(&self, ide_name: &str) -> Result<IdeKey, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::CreateIdeKey {
-                ide_name: ide_name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
-    }
-
     pub async fn lookup_ide_key(&self, key: &str) -> Result<Option<IdeKey>, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -305,47 +300,18 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
-    pub async fn list_ide_keys_for_name(&self, ide_name: &str) -> Result<Vec<IdeKey>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListIdeKeysForName {
-                ide_name: ide_name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
-    }
-
-    pub async fn delete_ide_key(&self, key: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::DeleteIdeKey {
-                key: key.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
-    }
-
-    pub async fn record_ide_config_write(&self, config: ManagedIdeConfig) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::RecordIdeConfigWrite { config, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
-    }
-
-    pub async fn list_ide_configs_for_ide(
+    pub async fn upsert_detected_ide(
         &self,
-        ide_name: &str,
-    ) -> Result<Vec<ManagedIdeConfig>, DbError> {
+        ide_kind: &str,
+        display_name: &str,
+        detection_source: Option<String>,
+    ) -> Result<IdeRecord, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(DbCmd::ListIdeConfigsForIde {
-                ide_name: ide_name.to_string(),
+            .send(DbCmd::UpsertDetectedIde {
+                ide_kind: ide_kind.to_string(),
+                display_name: display_name.to_string(),
+                detection_source,
                 reply,
             })
             .await
@@ -353,11 +319,84 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
-    pub async fn delete_ide_configs_for_ide(&self, ide_name: &str) -> Result<(), DbError> {
+    pub async fn list_ides(&self) -> Result<Vec<IdeRecord>, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(DbCmd::DeleteIdeConfigsForIde {
-                ide_name: ide_name.to_string(),
+            .send(DbCmd::ListIdes { reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn list_active_ides(&self) -> Result<Vec<IdeRecord>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListActiveIdes { reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn get_ide_by_kind(&self, ide_kind: &str) -> Result<Option<IdeRecord>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::GetIdeByKind {
+                ide_kind: ide_kind.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn mark_ides_stale(&self, kinds_present: Vec<String>) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::MarkIdesStale {
+                kinds_present,
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn mark_ide_not_tracked(&self, ide_kind: &str) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::MarkIdeNotTracked {
+                ide_kind: ide_kind.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn retrack_ide(&self, ide_kind: &str) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::RetrackIde {
+                ide_kind: ide_kind.to_string(),
+                reply,
+            })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn update_ide_managed_entries(
+        &self,
+        ide_kind: &str,
+        config_path: PathBuf,
+        managed_entries: Vec<String>,
+    ) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::UpdateIdeManagedEntries {
+                ide_kind: ide_kind.to_string(),
+                config_path,
+                managed_entries,
                 reply,
             })
             .await
@@ -388,11 +427,7 @@ impl Db {
 
     /// Three-tier lookup: (server, tool, 'tool') → (server, '', 'server') →
     /// `settings_kv.default_unknown_tool_policy`. Returns the first match.
-    pub async fn resolve_policy(
-        &self,
-        server: &str,
-        tool: &str,
-    ) -> Result<Decision, DbError> {
+    pub async fn resolve_policy(&self, server: &str, tool: &str) -> Result<Decision, DbError> {
         if let Some(p) = self.get_policy(server, tool).await? {
             return Ok(p.decision);
         }
@@ -695,39 +730,6 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
-    /// Atomically replace `old_key` with a freshly minted key under `ide_name`.
-    /// Returns the new `IdeKey`. Caller rewrites the IDE config + records the
-    /// new `managed_ide_configs` row.
-    pub async fn rotate_ide_key(&self, old_key: &str, ide_name: &str) -> Result<IdeKey, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::RotateIdeKey {
-                old_key: old_key.to_string(),
-                ide_name: ide_name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
-    }
-
-    pub async fn update_ide_key_label(
-        &self,
-        key: &str,
-        new_ide_name: &str,
-    ) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpdateIdeKeyLabel {
-                key: key.to_string(),
-                new_ide_name: new_ide_name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
-    }
-
     pub async fn list_all_ide_configs(&self) -> Result<Vec<ManagedIdeConfig>, DbError> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -737,16 +739,10 @@ impl Db {
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
-    /// Commit phase of the cascade delete.
-    ///
-    /// Trims `managed_entries_json` on each `(ide_name, ide_key)` row, deletes
-    /// the `servers` row (FK CASCADE removes `policies` + `server_tools`), and
-    /// flips matching `pending_approvals` to `cancelled`. Returns the ids of
-    /// approvals that were cancelled.
     pub async fn commit_cascade_delete(
         &self,
         server_name: &str,
-        trimmed: Vec<(String, String, Vec<String>)>,
+        trimmed: Vec<CascadeTrim>,
         delete_audit_history: bool,
     ) -> Result<Vec<String>, DbError> {
         let (reply, rx) = oneshot::channel();
@@ -906,6 +902,7 @@ fn init_conn(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(INIT_SQL)?;
     conn.execute_batch(V01_SQL)?;
     conn.execute_batch(SKILLS_SQL)?;
+    conn.execute_batch(IDES_SQL)?;
     ensure_column(conn, "servers", "server_name", "TEXT")?;
     ensure_column(conn, "servers", "server_version", "TEXT")?;
     ensure_column(conn, "servers", "last_probed_at", "INTEGER")?;
@@ -916,7 +913,108 @@ fn init_conn(conn: &Connection) -> Result<(), DbError> {
     ensure_column(conn, "servers", "oauth_scopes", "TEXT")?;
     ensure_column(conn, "policies", "scope", "TEXT NOT NULL DEFAULT 'tool'")?;
     ensure_policies_fk(conn)?;
+    migrate_legacy_ide_tables(conn)?;
     Ok(())
+}
+
+struct LegacyIdeRow {
+    ide_name: String,
+    key: String,
+    created_at: i64,
+    config_path: Option<String>,
+    entries_json: Option<String>,
+    written_at: Option<i64>,
+}
+
+fn migrate_legacy_ide_tables(conn: &Connection) -> Result<(), DbError> {
+    let legacy_present: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ide_keys'")?
+        .query_row([], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !legacy_present {
+        return Ok(());
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    let mut select = tx.prepare(
+        "SELECT k.ide_name, k.key, k.created_at, m.config_path, m.managed_entries_json, m.written_at
+         FROM ide_keys k
+         LEFT JOIN managed_ide_configs m
+           ON m.ide_name = k.ide_name AND m.ide_key = k.key
+         ORDER BY k.created_at DESC",
+    )?;
+    let rows: Vec<LegacyIdeRow> = select
+        .query_map([], |r| {
+            Ok(LegacyIdeRow {
+                ide_name: r.get::<_, String>(0)?,
+                key: r.get::<_, String>(1)?,
+                created_at: r.get::<_, i64>(2)?,
+                config_path: r.get::<_, Option<String>>(3)?,
+                entries_json: r.get::<_, Option<String>>(4)?,
+                written_at: r.get::<_, Option<i64>>(5)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(select);
+
+    let mut seen_kinds = std::collections::HashSet::<String>::new();
+    for row in rows {
+        let Some(kind) = legacy_ide_name_to_kind(&row.ide_name) else {
+            continue;
+        };
+        if !seen_kinds.insert(kind.to_string()) {
+            continue;
+        }
+        let display = legacy_ide_name_to_display(&row.ide_name).to_string();
+        let last_seen = row.written_at.unwrap_or(row.created_at);
+        tx.prepare_cached(
+            "INSERT OR IGNORE INTO ides
+                (ide_kind, display_name, ide_key, status, detection_source,
+                 config_path, managed_entries_json, first_seen_at, last_seen_at, not_tracked_at)
+             VALUES (?1, ?2, ?3, 'active', NULL, ?4, ?5, ?6, ?7, NULL)",
+        )?
+        .execute(params![
+            kind,
+            display,
+            row.key,
+            row.config_path,
+            row.entries_json.unwrap_or_else(|| "[]".to_string()),
+            row.created_at,
+            last_seen,
+        ])?;
+    }
+
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS managed_ide_configs;
+         DROP TABLE IF EXISTS ide_keys;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+const fn legacy_ide_name_to_kind(name: &str) -> Option<&'static str> {
+    match name.as_bytes() {
+        b"ClaudeCode" | b"Claude Code" => Some("ClaudeCode"),
+        b"Cursor" => Some("Cursor"),
+        b"VsCodeCopilot" | b"VS Code Copilot" | b"VS Code" => Some("VsCodeCopilot"),
+        b"OpenCode" => Some("OpenCode"),
+        b"OpenClaude" => Some("OpenClaude"),
+        b"Codex" => Some("Codex"),
+        _ => None,
+    }
+}
+
+const fn legacy_ide_name_to_display(name: &str) -> &'static str {
+    match name.as_bytes() {
+        b"ClaudeCode" | b"Claude Code" => "Claude Code",
+        b"Cursor" => "Cursor",
+        b"VsCodeCopilot" | b"VS Code Copilot" | b"VS Code" => "VS Code Copilot",
+        b"OpenCode" => "OpenCode",
+        b"OpenClaude" => "OpenClaude",
+        b"Codex" => "Codex",
+        _ => "Unknown",
+    }
 }
 
 fn ensure_policies_fk(conn: &Connection) -> Result<(), DbError> {
@@ -975,33 +1073,58 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         DbCmd::ListTables { reply } => {
             reply.send(query_list_tables(conn)).ok();
         }
-        DbCmd::CreateIdeKey { ide_name, reply } => {
-            reply.send(query_create_ide_key(conn, &ide_name)).ok();
-        }
         DbCmd::LookupIdeKey { key, reply } => {
             reply.send(query_lookup_ide_key(conn, &key)).ok();
         }
-        DbCmd::ListIdeKeysForName { ide_name, reply } => {
+        DbCmd::UpsertDetectedIde {
+            ide_kind,
+            display_name,
+            detection_source,
+            reply,
+        } => {
             reply
-                .send(query_list_ide_keys_for_name(conn, &ide_name))
+                .send(query_upsert_detected_ide(
+                    conn,
+                    &ide_kind,
+                    &display_name,
+                    detection_source.as_deref(),
+                ))
                 .ok();
         }
-        DbCmd::DeleteIdeKey { key, reply } => {
-            reply.send(query_delete_ide_key(conn, &key)).ok();
+        DbCmd::ListIdes { reply } => {
+            reply.send(query_list_ides(conn)).ok();
         }
-        DbCmd::RecordIdeConfigWrite { config, reply } => {
-            reply
-                .send(query_record_ide_config_write(conn, &config))
-                .ok();
+        DbCmd::ListActiveIdes { reply } => {
+            reply.send(query_list_active_ides(conn)).ok();
         }
-        DbCmd::ListIdeConfigsForIde { ide_name, reply } => {
-            reply
-                .send(query_list_ide_configs_for_ide(conn, &ide_name))
-                .ok();
+        DbCmd::GetIdeByKind { ide_kind, reply } => {
+            reply.send(query_get_ide_by_kind(conn, &ide_kind)).ok();
         }
-        DbCmd::DeleteIdeConfigsForIde { ide_name, reply } => {
+        DbCmd::MarkIdesStale {
+            kinds_present,
+            reply,
+        } => {
+            reply.send(query_mark_ides_stale(conn, &kinds_present)).ok();
+        }
+        DbCmd::MarkIdeNotTracked { ide_kind, reply } => {
+            reply.send(query_mark_ide_not_tracked(conn, &ide_kind)).ok();
+        }
+        DbCmd::RetrackIde { ide_kind, reply } => {
+            reply.send(query_retrack_ide(conn, &ide_kind)).ok();
+        }
+        DbCmd::UpdateIdeManagedEntries {
+            ide_kind,
+            config_path,
+            managed_entries,
+            reply,
+        } => {
             reply
-                .send(query_delete_ide_configs_for_ide(conn, &ide_name))
+                .send(query_update_ide_managed_entries(
+                    conn,
+                    &ide_kind,
+                    &config_path,
+                    &managed_entries,
+                ))
                 .ok();
         }
         DbCmd::SetPolicy {
@@ -1129,22 +1252,6 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         DbCmd::RenameServer { old, new, reply } => {
             reply.send(query_rename_server(conn, &old, &new)).ok();
         }
-        DbCmd::RotateIdeKey {
-            old_key,
-            ide_name,
-            reply,
-        } => {
-            reply.send(query_rotate_ide_key(conn, &old_key, &ide_name)).ok();
-        }
-        DbCmd::UpdateIdeKeyLabel {
-            key,
-            new_ide_name,
-            reply,
-        } => {
-            reply
-                .send(query_update_ide_key_label(conn, &key, &new_ide_name))
-                .ok();
-        }
         DbCmd::ListAllIdeConfigs { reply } => {
             reply.send(query_list_all_ide_configs(conn)).ok();
         }
@@ -1170,7 +1277,9 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
             reply.send(query_upsert_skill_repo(conn, &repo)).ok();
         }
         DbCmd::DeleteSkillRepo { owner, name, reply } => {
-            reply.send(query_delete_skill_repo(conn, &owner, &name)).ok();
+            reply
+                .send(query_delete_skill_repo(conn, &owner, &name))
+                .ok();
         }
         DbCmd::SetSkillRepoEnabled {
             owner,
@@ -1183,7 +1292,9 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
                 .ok();
         }
         DbCmd::UpsertSkillWithTargets { skill, reply } => {
-            reply.send(query_upsert_skill_with_targets(conn, &skill)).ok();
+            reply
+                .send(query_upsert_skill_with_targets(conn, &skill))
+                .ok();
         }
         DbCmd::SetSkillTargets {
             directory,
@@ -1386,8 +1497,10 @@ fn query_list_skills(conn: &Connection) -> Result<Vec<Skill>, DbError> {
 
 fn query_list_all_ide_configs(conn: &Connection) -> Result<Vec<ManagedIdeConfig>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT ide_name, ide_key, config_path, managed_entries_json, written_at
-         FROM managed_ide_configs ORDER BY ide_name, ide_key",
+        "SELECT ide_kind, ide_key, config_path, managed_entries_json, last_seen_at
+         FROM ides
+         WHERE config_path IS NOT NULL AND status != 'not_tracked'
+         ORDER BY ide_kind",
     )?;
     let rows = stmt.query_map([], |row| {
         let path_str: String = row.get(2)?;
@@ -1402,15 +1515,15 @@ fn query_list_all_ide_configs(conn: &Connection) -> Result<Vec<ManagedIdeConfig>
     })?;
     let mut out = Vec::new();
     for r in rows {
-        let (ide_name, ide_key, config_path, entries_json, written_at) = r?;
+        let (ide_kind, ide_key, config_path, entries_json, last_seen_at) = r?;
         let managed_entries: Vec<String> =
             serde_json::from_str(&entries_json).map_err(|e| DbError::Encoding(e.to_string()))?;
         out.push(ManagedIdeConfig {
-            ide_name,
+            ide_name: ide_kind,
             ide_key,
             config_path,
             managed_entries,
-            written_at,
+            written_at: last_seen_at,
         });
     }
     Ok(out)
@@ -1419,20 +1532,20 @@ fn query_list_all_ide_configs(conn: &Connection) -> Result<Vec<ManagedIdeConfig>
 fn query_commit_cascade_delete(
     conn: &Connection,
     server_name: &str,
-    trimmed: &[(String, String, Vec<String>)],
+    trimmed: &[CascadeTrim],
     delete_audit_history: bool,
 ) -> Result<Vec<String>, DbError> {
     let tx = conn.unchecked_transaction()?;
     let now = now_unix();
-    for (ide_name, ide_key, entries) in trimmed {
+    for trim in trimmed {
         let json =
-            serde_json::to_string(entries).map_err(|e| DbError::Encoding(e.to_string()))?;
+            serde_json::to_string(&trim.remaining).map_err(|e| DbError::Encoding(e.to_string()))?;
         tx.prepare_cached(
-            "UPDATE managed_ide_configs
-             SET managed_entries_json = ?1, written_at = ?2
-             WHERE ide_name = ?3 AND ide_key = ?4",
+            "UPDATE ides
+             SET managed_entries_json = ?1, last_seen_at = ?2
+             WHERE ide_kind = ?3",
         )?
-        .execute(params![json, now, ide_name, ide_key])?;
+        .execute(params![json, now, trim.ide_kind])?;
     }
 
     let mut cancelled_ids: Vec<String> = Vec::new();
@@ -1446,7 +1559,11 @@ fn query_commit_cascade_delete(
         }
     }
     if !cancelled_ids.is_empty() {
-        let placeholders = cancelled_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = cancelled_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "UPDATE pending_approvals SET status = 'cancelled' WHERE id IN ({placeholders})"
         );
@@ -1474,32 +1591,6 @@ fn query_rename_server(conn: &Connection, old: &str, new: &str) -> Result<(), Db
     Ok(())
 }
 
-fn query_rotate_ide_key(conn: &Connection, old_key: &str, ide_name: &str) -> Result<IdeKey, DbError> {
-    let now = now_unix();
-    let new_key = fresh_ide_key();
-    let tx = conn.unchecked_transaction()?;
-    tx.prepare_cached("INSERT INTO ide_keys (key, ide_name, created_at) VALUES (?1, ?2, ?3)")?
-        .execute(params![&new_key, ide_name, now])?;
-    tx.prepare_cached("DELETE FROM ide_keys WHERE key = ?1")?
-        .execute(params![old_key])?;
-    tx.commit()?;
-    Ok(IdeKey {
-        key: new_key,
-        ide_name: ide_name.to_string(),
-        created_at: now,
-    })
-}
-
-fn query_update_ide_key_label(
-    conn: &Connection,
-    key: &str,
-    new_ide_name: &str,
-) -> Result<(), DbError> {
-    conn.prepare_cached("UPDATE ide_keys SET ide_name = ?1 WHERE key = ?2")?
-        .execute(params![new_ide_name, key])?;
-    Ok(())
-}
-
 fn query_upsert_server_with_tools(
     conn: &Connection,
     server: &Server,
@@ -1521,9 +1612,8 @@ fn query_upsert_server_with_tools(
         tx.prepare_cached("DELETE FROM policies WHERE server = ?1 AND scope = 'tool'")?
             .execute(params![&server.name])?;
     } else {
-        let del_tools_sql = format!(
-            "DELETE FROM server_tools WHERE server = ? AND tool NOT IN ({placeholders})"
-        );
+        let del_tools_sql =
+            format!("DELETE FROM server_tools WHERE server = ? AND tool NOT IN ({placeholders})");
         let del_pols_sql = format!(
             "DELETE FROM policies WHERE server = ? AND scope = 'tool' AND tool NOT IN ({placeholders})"
         );
@@ -1627,10 +1717,7 @@ fn query_list_columns(conn: &Connection, table: &str) -> Result<Vec<String>, DbE
 fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<(), DbError> {
     let exists = query_list_columns(conn, table)?.iter().any(|c| c == col);
     if !exists {
-        conn.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"),
-            [],
-        )?;
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
     }
     Ok(())
 }
@@ -1652,21 +1739,11 @@ fn query_list_tables(conn: &Connection) -> Result<Vec<String>, DbError> {
     Ok(out)
 }
 
-fn query_create_ide_key(conn: &Connection, ide_name: &str) -> Result<IdeKey, DbError> {
-    let now = now_unix();
-    let key = fresh_ide_key();
-    conn.prepare_cached("INSERT INTO ide_keys (key, ide_name, created_at) VALUES (?1, ?2, ?3)")?
-        .execute(params![&key, ide_name, now])?;
-    Ok(IdeKey {
-        key,
-        ide_name: ide_name.to_string(),
-        created_at: now,
-    })
-}
-
 fn query_lookup_ide_key(conn: &Connection, key: &str) -> Result<Option<IdeKey>, DbError> {
-    let mut stmt =
-        conn.prepare_cached("SELECT key, ide_name, created_at FROM ide_keys WHERE key = ?1")?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT ide_key, display_name, last_seen_at FROM ides
+         WHERE ide_key = ?1 AND status != 'not_tracked'",
+    )?;
     let row = stmt
         .query_row(params![key], |row| {
             Ok(IdeKey {
@@ -1679,17 +1756,46 @@ fn query_lookup_ide_key(conn: &Connection, key: &str) -> Result<Option<IdeKey>, 
     Ok(row)
 }
 
-fn query_list_ide_keys_for_name(conn: &Connection, ide_name: &str) -> Result<Vec<IdeKey>, DbError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT key, ide_name, created_at FROM ide_keys WHERE ide_name = ?1 ORDER BY created_at DESC",
-    )?;
-    let rows = stmt.query_map(params![ide_name], |row| {
-        Ok(IdeKey {
-            key: row.get(0)?,
-            ide_name: row.get(1)?,
-            created_at: row.get(2)?,
-        })
+fn decode_ide_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdeRecord> {
+    let status_str: String = row.get(3)?;
+    let status = IdeStatus::from_db_str(&status_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            format!("unknown ide status: {status_str}").into(),
+        )
     })?;
+    let entries_json: String = row.get(6)?;
+    let managed_entries: Vec<String> = serde_json::from_str(&entries_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Text,
+            format!("decode managed_entries_json: {e}").into(),
+        )
+    })?;
+    let config_path: Option<String> = row.get(5)?;
+    Ok(IdeRecord {
+        ide_kind: row.get(0)?,
+        display_name: row.get(1)?,
+        ide_key: row.get(2)?,
+        status,
+        detection_source: row.get(4)?,
+        config_path: config_path.map(PathBuf::from),
+        managed_entries,
+        first_seen_at: row.get(7)?,
+        last_seen_at: row.get(8)?,
+        not_tracked_at: row.get(9)?,
+    })
+}
+
+const IDE_SELECT_COLUMNS: &str =
+    "ide_kind, display_name, ide_key, status, detection_source, config_path,
+     managed_entries_json, first_seen_at, last_seen_at, not_tracked_at";
+
+fn query_list_ides(conn: &Connection) -> Result<Vec<IdeRecord>, DbError> {
+    let sql = format!("SELECT {IDE_SELECT_COLUMNS} FROM ides ORDER BY display_name");
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map([], decode_ide_record)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -1697,75 +1803,144 @@ fn query_list_ide_keys_for_name(conn: &Connection, ide_name: &str) -> Result<Vec
     Ok(out)
 }
 
-fn query_delete_ide_key(conn: &Connection, key: &str) -> Result<(), DbError> {
-    conn.prepare_cached("DELETE FROM ide_keys WHERE key = ?1")?
-        .execute(params![key])?;
-    Ok(())
-}
-
-fn query_record_ide_config_write(conn: &Connection, cfg: &ManagedIdeConfig) -> Result<(), DbError> {
-    let entries_json = serde_json::to_string(&cfg.managed_entries)
-        .map_err(|e| DbError::Encoding(e.to_string()))?;
-    let path_str = cfg
-        .config_path
-        .to_str()
-        .ok_or_else(|| DbError::Encoding("non-utf8 config_path".to_string()))?;
-    conn.prepare_cached(
-        "INSERT INTO managed_ide_configs (ide_name, ide_key, config_path, managed_entries_json, written_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(ide_name, ide_key) DO UPDATE SET
-             config_path = excluded.config_path,
-             managed_entries_json = excluded.managed_entries_json,
-             written_at = excluded.written_at",
-    )?
-    .execute(params![
-        &cfg.ide_name,
-        &cfg.ide_key,
-        path_str,
-        entries_json,
-        cfg.written_at,
-    ])?;
-    Ok(())
-}
-
-fn query_list_ide_configs_for_ide(
-    conn: &Connection,
-    ide_name: &str,
-) -> Result<Vec<ManagedIdeConfig>, DbError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT ide_name, ide_key, config_path, managed_entries_json, written_at
-         FROM managed_ide_configs WHERE ide_name = ?1 ORDER BY written_at DESC",
-    )?;
-    let rows = stmt.query_map(params![ide_name], |row| {
-        let path_str: String = row.get(2)?;
-        let entries_json: String = row.get(3)?;
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            PathBuf::from(path_str),
-            entries_json,
-            row.get::<_, i64>(4)?,
-        ))
-    })?;
+fn query_list_active_ides(conn: &Connection) -> Result<Vec<IdeRecord>, DbError> {
+    let sql = format!(
+        "SELECT {IDE_SELECT_COLUMNS} FROM ides WHERE status = 'active' ORDER BY display_name"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map([], decode_ide_record)?;
     let mut out = Vec::new();
     for r in rows {
-        let (ide_name, ide_key, config_path, entries_json, written_at) = r?;
-        let managed_entries: Vec<String> =
-            serde_json::from_str(&entries_json).map_err(|e| DbError::Encoding(e.to_string()))?;
-        out.push(ManagedIdeConfig {
-            ide_name,
-            ide_key,
-            config_path,
-            managed_entries,
-            written_at,
-        });
+        out.push(r?);
     }
     Ok(out)
 }
 
-fn query_delete_ide_configs_for_ide(conn: &Connection, ide_name: &str) -> Result<(), DbError> {
-    conn.prepare_cached("DELETE FROM managed_ide_configs WHERE ide_name = ?1")?
-        .execute(params![ide_name])?;
+fn query_get_ide_by_kind(conn: &Connection, ide_kind: &str) -> Result<Option<IdeRecord>, DbError> {
+    let sql = format!("SELECT {IDE_SELECT_COLUMNS} FROM ides WHERE ide_kind = ?1");
+    let row = conn
+        .prepare_cached(&sql)?
+        .query_row(params![ide_kind], decode_ide_record)
+        .optional()?;
+    Ok(row)
+}
+
+fn query_upsert_detected_ide(
+    conn: &Connection,
+    ide_kind: &str,
+    display_name: &str,
+    detection_source: Option<&str>,
+) -> Result<IdeRecord, DbError> {
+    let now = now_unix();
+    let tx = conn.unchecked_transaction()?;
+    let existing = {
+        let sql = format!("SELECT {IDE_SELECT_COLUMNS} FROM ides WHERE ide_kind = ?1");
+        tx.prepare_cached(&sql)?
+            .query_row(params![ide_kind], decode_ide_record)
+            .optional()?
+    };
+
+    if let Some(mut row) = existing {
+        row.last_seen_at = now;
+        row.display_name = display_name.to_string();
+        row.detection_source = detection_source.map(str::to_string);
+        if matches!(row.status, IdeStatus::Stale) {
+            row.status = IdeStatus::Active;
+        }
+        tx.prepare_cached(
+            "UPDATE ides SET display_name = ?1, detection_source = ?2,
+                             last_seen_at = ?3,
+                             status = CASE WHEN status = 'stale' THEN 'active' ELSE status END
+             WHERE ide_kind = ?4",
+        )?
+        .execute(params![display_name, detection_source, now, ide_kind])?;
+        tx.commit()?;
+        return Ok(row);
+    }
+
+    let key = fresh_ide_key();
+    tx.prepare_cached(
+        "INSERT INTO ides
+            (ide_kind, display_name, ide_key, status, detection_source,
+             config_path, managed_entries_json, first_seen_at, last_seen_at, not_tracked_at)
+         VALUES (?1, ?2, ?3, 'active', ?4, NULL, '[]', ?5, ?5, NULL)",
+    )?
+    .execute(params![ide_kind, display_name, key, detection_source, now])?;
+    tx.commit()?;
+    Ok(IdeRecord {
+        ide_kind: ide_kind.to_string(),
+        display_name: display_name.to_string(),
+        ide_key: key,
+        status: IdeStatus::Active,
+        detection_source: detection_source.map(str::to_string),
+        config_path: None,
+        managed_entries: Vec::new(),
+        first_seen_at: now,
+        last_seen_at: now,
+        not_tracked_at: None,
+    })
+}
+
+fn query_mark_ides_stale(conn: &Connection, kinds_present: &[String]) -> Result<(), DbError> {
+    let placeholders = if kinds_present.is_empty() {
+        "''".to_string()
+    } else {
+        kinds_present
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let sql = format!(
+        "UPDATE ides SET status = 'stale'
+         WHERE status = 'active' AND ide_kind NOT IN ({placeholders})"
+    );
+    let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(kinds_present.len());
+    for kind in kinds_present {
+        params_vec.push(kind);
+    }
+    conn.prepare(&sql)?.execute(&params_vec[..])?;
+    Ok(())
+}
+
+fn query_mark_ide_not_tracked(conn: &Connection, ide_kind: &str) -> Result<(), DbError> {
+    let now = now_unix();
+    conn.prepare_cached(
+        "UPDATE ides SET status = 'not_tracked', config_path = NULL,
+                         managed_entries_json = '[]', not_tracked_at = ?1
+         WHERE ide_kind = ?2",
+    )?
+    .execute(params![now, ide_kind])?;
+    Ok(())
+}
+
+fn query_retrack_ide(conn: &Connection, ide_kind: &str) -> Result<(), DbError> {
+    let now = now_unix();
+    conn.prepare_cached(
+        "UPDATE ides SET status = 'active', not_tracked_at = NULL, last_seen_at = ?1
+         WHERE ide_kind = ?2 AND status = 'not_tracked'",
+    )?
+    .execute(params![now, ide_kind])?;
+    Ok(())
+}
+
+fn query_update_ide_managed_entries(
+    conn: &Connection,
+    ide_kind: &str,
+    config_path: &Path,
+    managed_entries: &[String],
+) -> Result<(), DbError> {
+    let json =
+        serde_json::to_string(managed_entries).map_err(|e| DbError::Encoding(e.to_string()))?;
+    let path_str = config_path
+        .to_str()
+        .ok_or_else(|| DbError::Encoding("non-utf8 config_path".to_string()))?;
+    let now = now_unix();
+    conn.prepare_cached(
+        "UPDATE ides SET config_path = ?1, managed_entries_json = ?2, last_seen_at = ?3
+         WHERE ide_kind = ?4",
+    )?
+    .execute(params![path_str, json, now, ide_kind])?;
     Ok(())
 }
 
@@ -1984,9 +2159,8 @@ fn query_sweep_stale_pending_approvals(
     }
     // SQLite caps `?N` parameters at 999; pending-approval volume is well under
     // that bound, but loop one-id-at-a-time to keep the cached prepare reusable.
-    let mut update = conn.prepare_cached(
-        "UPDATE pending_approvals SET status = 'timeout' WHERE id = ?1",
-    )?;
+    let mut update =
+        conn.prepare_cached("UPDATE pending_approvals SET status = 'timeout' WHERE id = ?1")?;
     for id in &ids {
         update.execute(params![id])?;
     }

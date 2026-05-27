@@ -4,9 +4,10 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::daemon::db::types::{ApprovalStatus, ManagedIdeConfig};
-use crate::daemon::db::Db;
+use crate::daemon::db::{CascadeTrim, Db};
 use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
+use crate::daemon::ide_writer::ide_kind_from_db_name;
 use crate::daemon::ide_writer::{self, IdeWriterError};
 
 const APPLY_PARALLELISM: usize = 4;
@@ -71,10 +72,15 @@ pub async fn delete_server_with_cascade(
         }
     }
 
-    let trimmed_for_commit: Vec<(String, String, Vec<String>)> = report
+    let trimmed_for_commit: Vec<CascadeTrim> = report
         .ides_trimmed
         .iter()
-        .map(|t| (t.ide_name.clone(), t.ide_key.clone(), t.remaining.clone()))
+        .filter_map(|t| {
+            ide_kind_from_db_name(&t.ide_name).map(|kind| CascadeTrim {
+                ide_kind: kind.as_db_kind().to_string(),
+                remaining: t.remaining.clone(),
+            })
+        })
         .collect();
     let cancelled = db
         .commit_cascade_delete(server_name, trimmed_for_commit, delete_audit_history)
@@ -123,4 +129,3 @@ fn describe(err: &IdeWriterError) -> String {
         other => other.to_string(),
     }
 }
-

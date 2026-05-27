@@ -13,9 +13,10 @@ use conduit::daemon::approval::{spawn_timeout_sweeper, ApprovalCenter};
 use conduit::daemon::cascade;
 use conduit::daemon::config_toml::Settings;
 use conduit::daemon::config_watcher;
+use conduit::daemon::db::types::SkillRepo;
 use conduit::daemon::db::types::{
-    ApprovalStatus, Decision, DecisionSource, EnvEntry, EnvValue, IdeKey, ManagedIdeConfig, Server,
-    ToolMeta as DbToolMeta, TRANSPORT_HTTP, TRANSPORT_STDIO,
+    ApprovalStatus, Decision, DecisionSource, EnvEntry, IdeKey, Server, ToolMeta as DbToolMeta,
+    TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
@@ -30,9 +31,8 @@ use conduit::daemon::onboarding::{
 use conduit::daemon::paste_parser;
 use conduit::daemon::server_validators;
 use conduit::daemon::skills::{SkillCandidate, SkillManager};
-use conduit::daemon::db::types::SkillRepo;
-use conduit::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
 use conduit::daemon::upstream::manager::UpstreamManager;
+use conduit::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
 use conduit::gui::{
     hotkey, notification_router as gui_notification_router, notifications as gui_notifications,
     tray as gui_tray,
@@ -46,7 +46,10 @@ use ui::{
     SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
-#[expect(clippy::too_many_lines, reason = "single-binary entrypoint wires every subsystem")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-binary entrypoint wires every subsystem"
+)]
 fn main() -> Result<()> {
     init_tracing();
     tracing::info!("conduit starting");
@@ -109,10 +112,7 @@ fn main() -> Result<()> {
     };
     let skill_manager = {
         let _guard = worker.handle().enter();
-        Arc::new(
-            SkillManager::new(paths, db.clone(), bus.clone())
-                .context("build skill manager")?,
-        )
+        Arc::new(SkillManager::new(paths, db.clone(), bus.clone()).context("build skill manager")?)
     };
 
     let app_state = AppState {
@@ -124,12 +124,8 @@ fn main() -> Result<()> {
 
     {
         let _guard = worker.handle().enter();
-        let _sweeper = spawn_timeout_sweeper(
-            db.clone(),
-            bus.clone(),
-            approval_timeout,
-            cancel.clone(),
-        );
+        let _sweeper =
+            spawn_timeout_sweeper(db.clone(), bus.clone(), approval_timeout, cancel.clone());
         let http_cancel = cancel.clone();
         tokio::spawn(async move {
             if let Err(e) = http_server::serve(app_state, http_cancel).await {
@@ -272,7 +268,10 @@ struct PendingWizard {
     oauth_client_id: Option<String>,
 }
 
-#[expect(clippy::too_many_lines, reason = "wizard wires 4 Slint callbacks in one place")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "wizard wires 4 Slint callbacks in one place"
+)]
 fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Handle) {
     let pending: Arc<std::sync::Mutex<PendingWizard>> =
         Arc::new(std::sync::Mutex::new(PendingWizard::default()));
@@ -285,9 +284,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
         let Some(ui) = weak.upgrade() else { return };
         let name = ui.get_add_server_name().to_string();
         if !server_validators::is_valid_server_name(&name) {
-            ui.set_add_server_status(SharedString::from(
-                "Name must match [a-z0-9_-]{1,64}.",
-            ));
+            ui.set_add_server_status(SharedString::from("Name must match [a-z0-9_-]{1,64}."));
             ui.set_add_server_status_is_error(true);
             return;
         }
@@ -309,7 +306,14 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
         ui.set_add_server_status_is_error(false);
         ui.set_add_server_busy(true);
 
-        let draft = build_draft(&name, &transport, &command, args.clone(), &url, &headers_raw);
+        let draft = build_draft(
+            &name,
+            &transport,
+            &command,
+            args.clone(),
+            &url,
+            &headers_raw,
+        );
         let server_row = Server {
             name: name.clone(),
             transport: transport.clone(),
@@ -758,7 +762,10 @@ fn install_callbacks(
             let _ignored = weak.upgrade_in_event_loop(move |ui| {
                 if ui.get_selected_server().as_str() == name {
                     ui.set_selected_server(SharedString::from(""));
-                    ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<ToolPolicyUiRow>::new())));
+                    ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<
+                        ToolPolicyUiRow,
+                    >::new(
+                    ))));
                 }
             });
             refresh_servers(&weak, &db).await;
@@ -858,22 +865,13 @@ fn install_callbacks(
     let rt_for_toggle_target = rt.clone();
     let weak_for_toggle_target = window.as_weak();
     let port_for_toggle_target = port;
-    window.on_toggle_server_target(move |server, ide_name, ide_key, enable| {
+    window.on_toggle_server_target(move |server, ide_kind, enable| {
         let db = db_for_toggle_target.clone();
         let weak = weak_for_toggle_target.clone();
         let server = server.to_string();
-        let ide_name = ide_name.to_string();
-        let ide_key = ide_key.to_string();
+        let ide_kind = ide_kind.to_string();
         rt_for_toggle_target.spawn(async move {
-            toggle_server_for_ide(
-                &db,
-                port_for_toggle_target,
-                &server,
-                &ide_name,
-                &ide_key,
-                enable,
-            )
-            .await;
+            toggle_server_for_ide(&db, port_for_toggle_target, &server, &ide_kind, enable).await;
             refresh_server_detail(&weak, &db, &server).await;
         });
     });
@@ -920,25 +918,29 @@ fn install_callbacks(
         let db = db.clone();
         let rt = rt.clone();
         let weak = window.as_weak();
-        window.on_select_ide(move |name| {
+        window.on_select_ide(move |kind_str| {
             let db = db.clone();
             let weak = weak.clone();
-            let name = name.to_string();
+            let kind_str = kind_str.to_string();
             rt.spawn(async move {
-                let path = db
-                    .list_ide_configs_for_ide(&name)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .next()
-                    .map(|c| c.config_path);
+                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                let path = resolve_ide_config_path(record.as_ref());
+                let status = record.as_ref().map_or_else(
+                    || "active".to_string(),
+                    |r| r.status.as_db_str().to_string(),
+                );
+                let display = record
+                    .as_ref()
+                    .map_or_else(|| kind_str.clone(), |r| r.display_name.clone());
                 let text = match path.as_deref().map(ide_writer::read_raw) {
                     Some(Ok(Some(s))) => s,
                     Some(Ok(None)) | None => String::new(),
                     Some(Err(e)) => format!("// read error: {e}"),
                 };
                 let _ignored = weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_selected_editor(SharedString::from(name));
+                    ui.set_selected_editor(SharedString::from(kind_str));
+                    ui.set_selected_editor_display(SharedString::from(display));
+                    ui.set_selected_editor_status_label(SharedString::from(status));
                     ui.set_selected_editor_text(SharedString::from(text));
                     ui.set_selected_editor_status(SharedString::default());
                     ui.set_selected_editor_status_is_error(false);
@@ -978,28 +980,23 @@ fn install_callbacks(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let name = ui.get_selected_editor().to_string();
+            let kind_str = ui.get_selected_editor().to_string();
             let text = ui.get_selected_editor_text().to_string();
-            if name.is_empty() {
+            if kind_str.is_empty() {
                 return;
             }
             let db = db.clone();
             let weak = weak.clone();
             rt.spawn(async move {
-                let Some(cfg) = db
-                    .list_ide_configs_for_ide(&name)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .next()
-                else {
+                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                let Some(path) = resolve_ide_config_path(record.as_ref()) else {
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_selected_editor_status(SharedString::from("no config path"));
                         ui.set_selected_editor_status_is_error(true);
                     });
                     return;
                 };
-                let result = ide_writer::write_raw(&cfg.config_path, &text);
+                let result = ide_writer::write_raw(&path, &text);
                 let _ignored = weak.upgrade_in_event_loop(move |ui| match result {
                     Ok(()) => {
                         ui.set_selected_editor_status(SharedString::from("saved"));
@@ -1023,20 +1020,15 @@ fn install_callbacks(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let name = ui.get_selected_editor().to_string();
-            if name.is_empty() {
+            let kind_str = ui.get_selected_editor().to_string();
+            if kind_str.is_empty() {
                 return;
             }
             let db = db.clone();
             let weak = weak.clone();
             rt.spawn(async move {
-                let path = db
-                    .list_ide_configs_for_ide(&name)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .next()
-                    .map(|c| c.config_path);
+                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                let path = resolve_ide_config_path(record.as_ref());
                 let text = match path.as_deref().map(ide_writer::read_raw) {
                     Some(Ok(Some(s))) => s,
                     Some(Ok(None)) | None => String::new(),
@@ -1055,38 +1047,73 @@ fn install_callbacks(
     {
         let db = db.clone();
         let rt = rt.clone();
-        window.on_reveal_ide_config(move |name| {
+        window.on_reveal_ide_config(move |kind_str| {
             let db = db.clone();
-            let name = name.to_string();
+            let kind_str = kind_str.to_string();
             rt.spawn(async move {
-                let Some(cfg) = db
-                    .list_ide_configs_for_ide(&name)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .next()
-                else {
-                    return;
-                };
-                reveal_in_file_manager(&cfg.config_path);
+                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                if let Some(path) = resolve_ide_config_path(record.as_ref()) {
+                    reveal_in_file_manager(&path);
+                }
             });
         });
     }
 
     let db_for_remove_ide = db.clone();
     let rt_for_remove_ide = rt.clone();
-    window.on_remove_ide_clicked(move |name| {
+    let weak_for_remove_ide = window.as_weak();
+    let port_for_remove_ide = port;
+    window.on_remove_ide_clicked(move |kind_str| {
         let db = db_for_remove_ide.clone();
+        let weak = weak_for_remove_ide.clone();
+        let kind_str = kind_str.to_string();
         rt_for_remove_ide.spawn(async move {
-            let keys = db
-                .list_ide_keys_for_name(name.as_str())
-                .await
-                .unwrap_or_default();
-            for k in keys {
-                if let Err(e) = db.delete_ide_key(&k.key).await {
-                    tracing::warn!(error = %e, "delete ide key failed");
-                }
+            remove_ide(&db, port_for_remove_ide, &kind_str).await;
+            refresh_ides(&weak, &db).await;
+            refresh_active_ide_targets(&weak, &db).await;
+            if let Some(server) = current_selected_server(&weak).await {
+                refresh_server_targets(&weak, &db, &server).await;
             }
+        });
+    });
+
+    let db_for_retrack = db.clone();
+    let rt_for_retrack = rt.clone();
+    let weak_for_retrack = window.as_weak();
+    window.on_retrack_ide_clicked(move |kind_str| {
+        let db = db_for_retrack.clone();
+        let weak = weak_for_retrack.clone();
+        let kind_str = kind_str.to_string();
+        rt_for_retrack.spawn(async move {
+            if let Err(e) = db.retrack_ide(&kind_str).await {
+                tracing::warn!(error = %e, kind = %kind_str, "retrack failed");
+                return;
+            }
+            refresh_ides(&weak, &db).await;
+            refresh_active_ide_targets(&weak, &db).await;
+            if let Some(server) = current_selected_server(&weak).await {
+                refresh_server_targets(&weak, &db, &server).await;
+            }
+        });
+    });
+
+    let db_for_refresh_ides = db.clone();
+    let rt_for_refresh_ides = rt.clone();
+    let weak_for_refresh_ides = window.as_weak();
+    window.on_refresh_ides_clicked(move || {
+        let db = db_for_refresh_ides.clone();
+        let weak = weak_for_refresh_ides.clone();
+        weak.upgrade_in_event_loop(|ui| ui.set_ides_refreshing(true))
+            .ok();
+        rt_for_refresh_ides.spawn(async move {
+            run_ide_detection(&db).await;
+            refresh_ides(&weak, &db).await;
+            refresh_active_ide_targets(&weak, &db).await;
+            if let Some(server) = current_selected_server(&weak).await {
+                refresh_server_targets(&weak, &db, &server).await;
+            }
+            weak.upgrade_in_event_loop(|ui| ui.set_ides_refreshing(false))
+                .ok();
         });
     });
 
@@ -1159,72 +1186,72 @@ fn install_callbacks(
 
     install_wizard_callbacks(window, db.clone(), rt.clone());
 
-    let weak_for_ide = window.as_weak();
-    let db_for_ide = db.clone();
-    let rt_for_ide = rt;
-    window.on_submit_add_ide(move || {
-        let Some(ui) = weak_for_ide.upgrade() else { return; };
-        let selected = ui.get_add_ide_selected().to_string();
-        let Some(kind) = parse_ide_kind(&selected) else {
-            tracing::warn!(ide = %selected, "unknown ide name");
-            return;
-        };
-        let db = db_for_ide.clone();
-        let weak = weak_for_ide.clone();
-        rt_for_ide.spawn(async move {
-            // 1. Generate key in the DB.
-            let key = match db.create_ide_key(&selected).await {
-                Ok(k) => k,
-                Err(e) => {
-                    tracing::warn!(error = %e, "create_ide_key failed");
-                    return;
-                }
-            };
-            // 2. Pull current server names so we can list them in the IDE config.
-            let servers = db.list_servers().await.unwrap_or_default();
-            let server_names: Vec<String> = servers.into_iter().map(|s| s.name).collect();
-            // 3. Auto-write the IDE config (or skip if we lack a path for this OS).
-            match ide_writer::write(kind, &key, &server_names, port) {
-                Ok(managed) => {
-                    let log_path = managed.config_path.display().to_string();
-                    if let Err(e) = db.record_ide_config_write(managed).await {
-                        tracing::warn!(error = %e, "record_ide_config_write failed");
-                    } else {
-                        tracing::info!(ide = %selected, key = %key.key, path = %log_path, "added IDE");
-                        if let Err(e) = mark_first_run_completed(&db).await {
-                            tracing::warn!(error = %e, "mark_first_run_completed failed");
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!(error = %e, ide = %selected, "ide_writer::write failed"),
-            }
-            refresh_ides(&weak, &db).await;
-        });
-    });
-
-    let _ = EnvValue::Plain(String::new());
-    let _ = ManagedIdeConfig {
-        ide_name: String::new(),
-        ide_key: String::new(),
-        config_path: std::path::PathBuf::new(),
-        managed_entries: Vec::new(),
-        written_at: 0,
-    };
+    drop(rt);
 }
 
-fn parse_ide_kind(name: &str) -> Option<IdeKind> {
-    match name {
-        "Claude Code" | "ClaudeCode" => Some(IdeKind::ClaudeCode),
-        "Cursor" => Some(IdeKind::Cursor),
-        "VsCodeCopilot" | "VS Code Copilot" | "VS Code" => Some(IdeKind::VsCodeCopilot),
-        "OpenCode" => Some(IdeKind::OpenCode),
-        "OpenClaude" => Some(IdeKind::OpenClaude),
-        "Codex" => Some(IdeKind::Codex),
-        _ => None,
+fn resolve_ide_config_path(
+    record: Option<&conduit::daemon::db::types::IdeRecord>,
+) -> Option<std::path::PathBuf> {
+    if let Some(rec) = record {
+        if let Some(p) = rec.config_path.clone() {
+            return Some(p);
+        }
+        if let Some(kind) = IdeKind::from_db_kind(&rec.ide_kind) {
+            return ide_writer::config_path_for(kind);
+        }
+    }
+    None
+}
+
+async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        let s = ui.get_selected_server().to_string();
+        tx.send(s).ok();
+    });
+    rx.await.ok().filter(|s| !s.is_empty())
+}
+
+async fn remove_ide(db: &Db, port: u16, ide_kind: &str) {
+    let Some(record) = db.get_ide_by_kind(ide_kind).await.ok().flatten() else {
+        return;
+    };
+    let Some(kind) = IdeKind::from_db_kind(&record.ide_kind) else {
+        return;
+    };
+    if let Err(e) = ide_writer::purge(kind, &record.ide_key, port) {
+        tracing::warn!(error = %e, kind = %record.ide_kind, "ide purge failed");
+    }
+    if let Err(e) = db.mark_ide_not_tracked(&record.ide_kind).await {
+        tracing::warn!(error = %e, kind = %record.ide_kind, "mark_ide_not_tracked failed");
     }
 }
 
-#[expect(clippy::too_many_lines, reason = "Skills tab wires seven callbacks at once")]
+async fn run_ide_detection(db: &Db) {
+    let detected = tokio::task::spawn_blocking(conduit::daemon::ide_detect::detect_installed)
+        .await
+        .unwrap_or_default();
+    let mut seen_kinds: Vec<String> = Vec::with_capacity(detected.len());
+    for d in &detected {
+        let kind_str = d.kind.as_db_kind().to_string();
+        seen_kinds.push(kind_str.clone());
+        let source_str = d.source.as_db_str();
+        if let Err(e) = db
+            .upsert_detected_ide(&kind_str, d.kind.display_name(), Some(source_str))
+            .await
+        {
+            tracing::warn!(error = %e, kind = %kind_str, "upsert_detected_ide failed");
+        }
+    }
+    if let Err(e) = db.mark_ides_stale(seen_kinds).await {
+        tracing::warn!(error = %e, "mark_ides_stale failed");
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "Skills tab wires seven callbacks at once"
+)]
 fn install_skills_callbacks(
     window: &MainWindow,
     rt: &tokio::runtime::Handle,
@@ -1267,50 +1294,48 @@ fn install_skills_callbacks(
     let weak = window.as_weak();
     let rt_for_install = rt.clone();
     let skills_for_install = skills.clone();
-    window.on_skills_install_clicked(
-        move |owner, name, branch, dir, readme, candidate_name| {
-            let skills = skills_for_install.clone();
-            let weak = weak.clone();
-            let candidate = SkillCandidate {
-                key: format!("{owner}/{name}:{dir}"),
-                name: candidate_name.to_string(),
-                description: String::new(),
-                directory: dir.to_string(),
-                readme_url: readme.to_string(),
-                repo_owner: owner.to_string(),
-                repo_name: name.to_string(),
-                repo_branch: branch.to_string(),
-            };
-            weak.upgrade_in_event_loop(|ui| {
-                ui.set_skills_busy(true);
-                ui.set_skills_status_message(SharedString::from("Installing…"));
-            })
-            .ok();
-            rt_for_install.spawn(async move {
-                // No targets by default — user opts in per-IDE after install.
-                let result = skills.install(candidate, Vec::new()).await;
-                match result {
-                    Ok(skill) => {
-                        let msg = format!("Installed {}", skill.skill_name);
-                        weak.upgrade_in_event_loop(move |ui| {
-                            ui.set_skills_busy(false);
-                            ui.set_skills_status_message(SharedString::from(msg));
-                        })
-                        .ok();
-                    }
-                    Err(e) => {
-                        let msg = format!("Install failed: {e}");
-                        tracing::warn!(error = %e, "skill install failed");
-                        weak.upgrade_in_event_loop(move |ui| {
-                            ui.set_skills_busy(false);
-                            ui.set_skills_status_message(SharedString::from(msg));
-                        })
-                        .ok();
-                    }
+    window.on_skills_install_clicked(move |owner, name, branch, dir, readme, candidate_name| {
+        let skills = skills_for_install.clone();
+        let weak = weak.clone();
+        let candidate = SkillCandidate {
+            key: format!("{owner}/{name}:{dir}"),
+            name: candidate_name.to_string(),
+            description: String::new(),
+            directory: dir.to_string(),
+            readme_url: readme.to_string(),
+            repo_owner: owner.to_string(),
+            repo_name: name.to_string(),
+            repo_branch: branch.to_string(),
+        };
+        weak.upgrade_in_event_loop(|ui| {
+            ui.set_skills_busy(true);
+            ui.set_skills_status_message(SharedString::from("Installing…"));
+        })
+        .ok();
+        rt_for_install.spawn(async move {
+            // No targets by default — user opts in per-IDE after install.
+            let result = skills.install(candidate, Vec::new()).await;
+            match result {
+                Ok(skill) => {
+                    let msg = format!("Installed {}", skill.skill_name);
+                    weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_skills_busy(false);
+                        ui.set_skills_status_message(SharedString::from(msg));
+                    })
+                    .ok();
                 }
-            });
-        },
-    );
+                Err(e) => {
+                    let msg = format!("Install failed: {e}");
+                    tracing::warn!(error = %e, "skill install failed");
+                    weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_skills_busy(false);
+                        ui.set_skills_status_message(SharedString::from(msg));
+                    })
+                    .ok();
+                }
+            }
+        });
+    });
 
     let weak = window.as_weak();
     let rt_for_uninstall = rt.clone();
@@ -1340,9 +1365,11 @@ fn install_skills_callbacks(
         let directory = directory.to_string();
         let ide = ide.to_string();
         rt_for_toggle.spawn(async move {
-            let Ok(Some(current)) = skills.list_installed().await.map(|all| {
-                all.into_iter().find(|s| s.directory == directory)
-            }) else {
+            let Ok(Some(current)) = skills
+                .list_installed()
+                .await
+                .map(|all| all.into_iter().find(|s| s.directory == directory))
+            else {
                 return;
             };
             let mut targets: Vec<String> = current.targets.clone();
@@ -1416,8 +1443,7 @@ fn install_skills_callbacks(
                 tracing::warn!(error = %e, "create skills dir failed");
             }
             let dir_for_open = dir.clone();
-            let open_result =
-                tokio::task::spawn_blocking(move || open::that(&dir_for_open)).await;
+            let open_result = tokio::task::spawn_blocking(move || open::that(&dir_for_open)).await;
             match open_result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
@@ -1515,9 +1541,7 @@ async fn paint_skills_with_discovery(
     });
 }
 
-fn installed_skills_to_rows(
-    installed: &[conduit::daemon::db::types::Skill],
-) -> Vec<SkillRow> {
+fn installed_skills_to_rows(installed: &[conduit::daemon::db::types::Skill]) -> Vec<SkillRow> {
     installed
         .iter()
         .map(|skill| SkillRow {
@@ -1570,10 +1594,10 @@ fn push_initial_models(
     let db_for_refresh = db.clone();
     let weak_for_skills = weak.clone();
     rt.spawn(async move {
-        // Drop any half-finished install scratch left over from a prior boot
-        // (no CancellationToken plumbed into install yet — see TODO).
         skills.purge_tmp().await;
+        run_ide_detection(&db_for_refresh).await;
         refresh_all(&weak, &db_for_refresh).await;
+        refresh_active_ide_targets(&weak, &db_for_refresh).await;
         refresh_skills(&weak_for_skills, &skills).await;
         // Pull settings_kv toggles into the GUI.
         let auto = db_for_refresh
@@ -1676,7 +1700,11 @@ async fn refresh_servers(weak: &slint::Weak<MainWindow>, db: &Db) {
     let servers = db.list_servers().await.unwrap_or_default();
     let mut rows: Vec<ServerRow> = Vec::with_capacity(servers.len());
     for s in servers {
-        let tool_count = db.list_server_tools(&s.name).await.map(|v| v.len()).unwrap_or(0);
+        let tool_count = db
+            .list_server_tools(&s.name)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
         let count_label = if tool_count == 0 {
             "no tools".to_string()
         } else {
@@ -1702,7 +1730,9 @@ async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &Db, name: &s
         let _ignored = weak.upgrade_in_event_loop(move |ui| {
             if ui.get_selected_server().as_str() == n {
                 ui.set_selected_server(SharedString::from(""));
-                ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<ToolPolicyUiRow>::new())));
+                ui.set_selected_server_tools(ModelRc::new(VecModel::from(
+                    Vec::<ToolPolicyUiRow>::new(),
+                )));
             }
         });
         return;
@@ -1773,19 +1803,15 @@ async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &Db, name: &s
     refresh_server_targets(weak, db, name).await;
 }
 
-/// Per-IDE enable/disable chips for the currently selected server. One chip
-/// per `managed_ide_configs` row — active when the server appears in that
-/// IDE's `managed_entries`.
 async fn refresh_server_targets(weak: &slint::Weak<MainWindow>, db: &Db, server_name: &str) {
-    let cfgs = db.list_all_ide_configs().await.unwrap_or_default();
-    let rows: Vec<ServerIdeTarget> = cfgs
+    let actives = db.list_active_ides().await.unwrap_or_default();
+    let rows: Vec<ServerIdeTarget> = actives
         .into_iter()
-        .map(|c| {
-            let active = c.managed_entries.iter().any(|n| n == server_name);
+        .map(|r| {
+            let active = r.managed_entries.iter().any(|n| n == server_name);
             ServerIdeTarget {
-                ide_name: SharedString::from(c.ide_name.clone()),
-                ide_key: SharedString::from(c.ide_key),
-                label: SharedString::from(ide_display_label(&c.ide_name)),
+                ide_kind: SharedString::from(r.ide_kind),
+                label: SharedString::from(r.display_name),
                 active,
             }
         })
@@ -1795,110 +1821,105 @@ async fn refresh_server_targets(weak: &slint::Weak<MainWindow>, db: &Db, server_
     });
 }
 
-/// Add or remove `server_name` from one IDE's MCP config, then persist the
-/// updated `managed_entries` to the DB. Add path uses `ide_writer::write`
-/// (idempotent merge); remove path uses `purge_one_server_for_ide` (URL match).
 async fn toggle_server_for_ide(
     db: &Db,
     port: u16,
     server_name: &str,
-    ide_name: &str,
-    ide_key: &str,
+    ide_kind_str: &str,
     enable: bool,
 ) {
-    let cfgs = match db.list_all_ide_configs().await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "list_all_ide_configs failed");
-            return;
-        }
-    };
-    let Some(cfg) = cfgs
-        .into_iter()
-        .find(|c| c.ide_name == ide_name && c.ide_key == ide_key)
-    else {
-        tracing::warn!(ide = %ide_name, key = %ide_key, "no managed config for ide");
+    let Some(record) = db.get_ide_by_kind(ide_kind_str).await.ok().flatten() else {
+        tracing::warn!(kind = %ide_kind_str, "no ide row for kind");
         return;
     };
-    let Some(kind) = parse_ide_kind(ide_name) else {
-        tracing::warn!(ide = %ide_name, "unknown ide name");
+    if !matches!(record.status, conduit::daemon::db::types::IdeStatus::Active) {
+        tracing::warn!(kind = %ide_kind_str, "ide is not active; ignoring toggle");
+        return;
+    }
+    let Some(kind) = IdeKind::from_db_kind(&record.ide_kind) else {
+        tracing::warn!(kind = %record.ide_kind, "unknown ide kind");
         return;
     };
 
-    let mut entries = cfg.managed_entries.clone();
+    let mut entries = record.managed_entries.clone();
     let already_present = entries.iter().any(|n| n == server_name);
-    if enable {
+    let config_path = if enable {
         if !already_present {
             entries.push(server_name.to_string());
         }
         let key_handle = IdeKey {
-            key: ide_key.to_string(),
-            ide_name: ide_name.to_string(),
-            created_at: 0,
+            key: record.ide_key.clone(),
+            ide_name: record.display_name.clone(),
+            created_at: record.first_seen_at,
         };
-        if let Err(e) = ide_writer::write(kind, &key_handle, &entries, port) {
-            tracing::warn!(error = %e, ide = %ide_name, server = %server_name, "ide_writer::write failed");
-            return;
+        match ide_writer::write(kind, &key_handle, &entries, port) {
+            Ok(managed) => managed.config_path,
+            Err(e) => {
+                tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "ide_writer::write failed");
+                return;
+            }
         }
     } else {
         if already_present {
             entries.retain(|n| n != server_name);
         }
-        if let Err(e) = ide_writer::purge_one_server_for_ide(&cfg.config_path, port, ide_key, server_name) {
-            tracing::warn!(error = %e, ide = %ide_name, server = %server_name, "purge_one_server_for_ide failed");
+        let Some(existing_path) = record
+            .config_path
+            .clone()
+            .or_else(|| ide_writer::config_path_for(kind))
+        else {
+            tracing::warn!(kind = %record.ide_kind, "no config path for ide; skipping purge");
+            return;
+        };
+        if let Err(e) =
+            ide_writer::purge_one_server_for_ide(&existing_path, port, &record.ide_key, server_name)
+        {
+            tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "purge_one_server_for_ide failed");
             return;
         }
-    }
-
-    let updated = ManagedIdeConfig {
-        ide_name: cfg.ide_name,
-        ide_key: cfg.ide_key,
-        config_path: cfg.config_path,
-        managed_entries: entries,
-        written_at: unix_now(),
+        existing_path
     };
-    if let Err(e) = db.record_ide_config_write(updated).await {
-        tracing::warn!(error = %e, "record_ide_config_write failed");
-    }
-}
 
-/// Friendly label for a `managed_ide_configs.ide_name`. Falls back to the
-/// raw string when we don't recognise it.
-fn ide_display_label(db_name: &str) -> String {
-    match db_name {
-        "ClaudeCode" | "Claude Code" => "Claude Code",
-        "OpenClaude" => "OpenClaude",
-        "OpenCode" => "OpenCode",
-        "Cursor" => "Cursor",
-        "VsCodeCopilot" | "VS Code Copilot" | "VS Code" => "VS Code",
-        "Codex" => "Codex",
-        other => other,
+    if let Err(e) = db
+        .update_ide_managed_entries(&record.ide_kind, config_path, entries)
+        .await
+    {
+        tracing::warn!(error = %e, "update_ide_managed_entries failed");
     }
-    .to_string()
 }
 
 async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
-    // No list-all in DB; cross-reference managed_ide_configs to surface IDE names.
-    let mut rows = Vec::new();
-    for ide in [
-        "Claude Code",
-        "Cursor",
-        "VsCodeCopilot",
-        "OpenCode",
-        "OpenClaude",
-        "Codex",
-    ] {
-        let cfgs = db.list_ide_configs_for_ide(ide).await.unwrap_or_default();
-        for c in cfgs {
-            rows.push(IdeRow {
-                name: SharedString::from(c.ide_name.clone()),
-                key: SharedString::from(c.ide_key),
-                config_path: SharedString::from(c.config_path.display().to_string()),
-            });
-        }
-    }
+    let records = db.list_ides().await.unwrap_or_default();
+    let rows: Vec<IdeRow> = records
+        .into_iter()
+        .map(|r| IdeRow {
+            kind: SharedString::from(r.ide_kind),
+            display_name: SharedString::from(r.display_name),
+            key: SharedString::from(r.ide_key),
+            status: SharedString::from(r.status.as_db_str()),
+            config_path: SharedString::from(
+                r.config_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+            ),
+        })
+        .collect();
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_ides(ModelRc::new(VecModel::from(rows)));
+    })
+    .ok();
+}
+
+async fn refresh_active_ide_targets(weak: &slint::Weak<MainWindow>, db: &Db) {
+    let actives = db.list_active_ides().await.unwrap_or_default();
+    let claude = actives.iter().any(|r| r.ide_kind == "ClaudeCode");
+    let openclaude = actives.iter().any(|r| r.ide_kind == "OpenClaude");
+    let opencode = actives.iter().any(|r| r.ide_kind == "OpenCode");
+    weak.upgrade_in_event_loop(move |ui| {
+        ui.set_ide_target_claude_code_active(claude);
+        ui.set_ide_target_openclaude_active(openclaude);
+        ui.set_ide_target_opencode_active(opencode);
     })
     .ok();
 }
@@ -1982,7 +2003,10 @@ fn settings_to_row(s: &Settings) -> SettingsRow {
 
 fn reveal_in_file_manager(path: &std::path::Path) {
     let result: std::io::Result<std::process::Child> = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(path).spawn()
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
     } else if cfg!(target_os = "windows") {
         let mut arg = std::ffi::OsString::from("/select,");
         arg.push(path);
@@ -1995,4 +2019,3 @@ fn reveal_in_file_manager(path: &std::path::Path) {
         tracing::warn!(path = %path.display(), error = %e, "reveal in file manager failed");
     }
 }
-

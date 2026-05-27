@@ -83,7 +83,9 @@ async fn show_command_round_trip_fires_handler() {
     let cancel = CancellationToken::new();
     let task = tokio::spawn(accept_loop(listener, cancel.clone(), on_show));
 
-    let resp = send_command(&addr, &Command::Show).await.expect("send_command");
+    let resp = send_command(&addr, &Command::Show)
+        .await
+        .expect("send_command");
     assert!(resp.ok, "response: {resp:?}");
     assert!(flag.load(Ordering::SeqCst), "on_show should fire");
 

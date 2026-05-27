@@ -194,9 +194,7 @@ pub async fn send_command(addr: &SocketAddr, cmd: &Command) -> Result<Response, 
     let name = addr.to_name()?;
     let stream = tokio::time::timeout(Duration::from_secs(2), Stream::connect(name))
         .await
-        .map_err(|_elapsed| {
-            IpcError::ClientConnect(std::io::Error::other("connect timed out"))
-        })?
+        .map_err(|_elapsed| IpcError::ClientConnect(std::io::Error::other("connect timed out")))?
         .map_err(IpcError::ClientConnect)?;
 
     let mut reader = BufReader::new(&stream);
@@ -329,9 +327,7 @@ fn dispatch(line: &str, on_show: &ShowHandler) -> Response {
             Response::ok()
         }
         // Approve/Deny/Status: future CLI work — accept but defer.
-        Command::Approve { .. } | Command::Deny { .. } => {
-            Response::err("not_implemented")
-        }
+        Command::Approve { .. } | Command::Deny { .. } => Response::err("not_implemented"),
         Command::Status => Response::ok(),
     }
 }

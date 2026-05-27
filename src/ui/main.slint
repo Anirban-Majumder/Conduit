@@ -20,8 +20,10 @@ export struct ServerRow {
 }
 
 export struct IdeRow {
-    name: string,
+    kind: string,
+    display_name: string,
     key: string,
+    status: string,
     config_path: string,
 }
 
@@ -38,12 +40,8 @@ export struct ToolPolicyRow {
     decision: string,           // "allow" | "ask" | "deny"
 }
 
-// Per-IDE enablement chip for the currently selected server. `ide_name` and
-// `ide_key` round-trip back to Rust so the callback can locate the
-// `managed_ide_configs` row; `label` is what's shown to the user.
 export struct ServerIdeTarget {
-    ide_name: string,
-    ide_key: string,
+    ide_kind: string,
     label: string,
     active: bool,
 }
@@ -491,7 +489,7 @@ component ServersTab inherits Rectangle {
     callback delete-clicked(string);
     callback retest-clicked(string);
     callback change-tool-policy(string, string, string);   // server, tool, decision
-    callback toggle-target(string, string, string, bool);  // server, ide_name, ide_key, enable
+    callback toggle-target(string, string, bool);  // server, ide_kind, enable
     callback add-clicked();
     callback copy-error-clicked(string);
 
@@ -647,7 +645,7 @@ component ServersTab inherits Rectangle {
                                 label: t.label;
                                 active: t.active;
                                 toggle => {
-                                    root.toggle-target(root.selected, t.ide-name, t.ide-key, !t.active);
+                                    root.toggle-target(root.selected, t.ide-kind, !t.active);
                                 }
                             }
                         }
@@ -680,6 +678,9 @@ component SkillsTab inherits Rectangle {
     in property <[SkillRepoRow]> repos;
     in property <string> status-message;
     in property <bool> busy;
+    in property <bool> target-claude-code-active;
+    in property <bool> target-openclaude-active;
+    in property <bool> target-opencode-active;
     in-out property <string> repo-add-owner;
     in-out property <string> repo-add-name;
     in-out property <string> repo-add-branch: "main";
@@ -937,21 +938,21 @@ component SkillsTab inherits Rectangle {
                         if row.installed : HorizontalLayout {
                             spacing: 4px;
                             alignment: end;
-                            TargetToggle {
+                            if root.target-claude-code-active : TargetToggle {
                                 label: "Claude";
                                 active: row.target_claude;
                                 toggle => {
                                     root.toggle-target(row.directory, "ClaudeCode", !row.target_claude);
                                 }
                             }
-                            TargetToggle {
+                            if root.target-openclaude-active : TargetToggle {
                                 label: "OpenClaude";
                                 active: row.target_openclaude;
                                 toggle => {
                                     root.toggle-target(row.directory, "OpenClaude", !row.target_openclaude);
                                 }
                             }
-                            TargetToggle {
+                            if root.target-opencode-active : TargetToggle {
                                 label: "OpenCode";
                                 active: row.target_opencode;
                                 toggle => {
@@ -992,12 +993,16 @@ component SkillsTab inherits Rectangle {
 component EditorsTab inherits Rectangle {
     in property <[IdeRow]> rows;
     in-out property <string> selected;
+    in property <string> selected-status;
+    in property <string> selected-display;
     in property <string> selected-config-text;
     in property <string> selected-config-status;
     in property <bool> selected-config-status-is-error;
     in property <bool> selected-config-dirty;
+    in property <bool> refreshing;
     callback remove-clicked(string);
-    callback add-clicked();
+    callback retrack-clicked(string);
+    callback refresh-clicked();
     callback reveal-clicked(string);
     callback select(string);
     callback edit-text(string);
@@ -1008,44 +1013,81 @@ component EditorsTab inherits Rectangle {
         spacing: Theme.gap-md;
 
         VerticalLayout {
-            width: 280px;
+            width: 300px;
             spacing: Theme.gap-sm;
             alignment: start;
             HorizontalLayout {
                 alignment: space-between;
                 Text {
-                    text: rows.length > 0 ? "IDEs (" + rows.length + ")" : "No IDEs connected";
+                    text: rows.length > 0 ? "IDEs (" + rows.length + ")" : "No IDEs detected";
                     color: Theme.text-secondary;
                     font-size: Theme.font-eyebrow;
                     vertical-alignment: center;
                 }
                 PillButton {
-                    label: "+ Add";
-                    bg-color: Theme.accent;
-                    fg-color: Theme.bg;
-                    clicked => { root.add-clicked(); }
+                    label: root.refreshing ? "Scanning…" : "Refresh";
+                    bg-color: Theme.surface-3;
+                    fg-color: Theme.text-primary;
+                    clicked => {
+                        if (!root.refreshing) { root.refresh-clicked(); }
+                    }
                 }
             }
             if rows.length == 0 : EmptyState {
-                text: "Connect an IDE via Add.";
+                text: "No supported IDEs found on this machine. Install one and click Refresh.";
                 height: 160px;
             }
             for row in rows : Rectangle {
-                background: row.name == root.selected ? Theme.surface-2 : Theme.surface;
+                background: row.kind == root.selected ? Theme.surface-2 : Theme.surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
-                border-color: row.name == root.selected ? Theme.accent : Theme.border;
-                height: 64px;
+                border-color: row.kind == root.selected ? Theme.accent : Theme.border;
+                height: 72px;
                 TouchArea {
-                    clicked => { root.select(row.name); }
+                    clicked => { root.select(row.kind); }
                 }
                 VerticalLayout {
                     padding: Theme.gap-sm;
                     spacing: 2px;
-                    Text {
-                        text: row.name;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        Text {
+                            text: row.display_name;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                        }
+                        if row.status == "stale" : Rectangle {
+                            background: Theme.warning;
+                            border-radius: 999px;
+                            height: 16px;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "removed?";
+                                    color: Theme.bg;
+                                    font-size: Theme.font-eyebrow;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if row.status == "not_tracked" : Rectangle {
+                            background: Theme.text-tertiary;
+                            border-radius: 999px;
+                            height: 16px;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "not tracked";
+                                    color: Theme.bg;
+                                    font-size: Theme.font-eyebrow;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
                     }
                     Text {
                         text: "key " + row.key;
@@ -1077,30 +1119,36 @@ component EditorsTab inherits Rectangle {
                     alignment: space-between;
                     spacing: Theme.gap-sm;
                     Text {
-                        text: root.selected;
+                        text: root.selected-display;
                         color: Theme.text-primary;
                         font-size: Theme.font-h3;
                         vertical-alignment: center;
                     }
                     HorizontalLayout {
                         spacing: 6px;
-                        PillButton {
+                        if root.selected-status == "active" : PillButton {
                             label: "Reveal";
                             clicked => { root.reveal-clicked(root.selected); }
                         }
-                        PillButton {
+                        if root.selected-status == "active" : PillButton {
                             label: "Reload";
                             clicked => { root.reload(); }
                         }
-                        PillButton {
+                        if root.selected-status == "active" : PillButton {
                             label: root.selected-config-dirty ? "Save *" : "Save";
                             bg-color: root.selected-config-dirty ? Theme.accent : Theme.surface-3;
                             fg-color: root.selected-config-dirty ? Theme.bg : Theme.text-secondary;
                             clicked => { root.save(); }
                         }
-                        PillButton {
+                        if root.selected-status != "not_tracked" : PillButton {
                             label: "Remove";
                             clicked => { root.remove-clicked(root.selected); }
+                        }
+                        if root.selected-status == "not_tracked" : PillButton {
+                            label: "Track this IDE";
+                            bg-color: Theme.accent;
+                            fg-color: Theme.bg;
+                            clicked => { root.retrack-clicked(root.selected); }
                         }
                     }
                 }
@@ -1118,7 +1166,7 @@ component EditorsTab inherits Rectangle {
                         }
                     }
                 }
-                if root.selected != "" : Rectangle {
+                if root.selected != "" && root.selected-status == "active" : Rectangle {
                     background: Theme.bg;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
@@ -1136,6 +1184,18 @@ component EditorsTab inherits Rectangle {
                             edited => { root.edit-text(self.text); }
                         }
                     }
+                }
+                if root.selected != "" && root.selected-status == "stale" : Text {
+                    text: "This IDE is no longer on disk. Its bindings are preserved; reinstall + Refresh to bring it back.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                if root.selected != "" && root.selected-status == "not_tracked" : Text {
+                    text: "Conduit has purged its MCP entries from this IDE. Click Track this IDE to start managing it again.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
                 }
             }
         }
@@ -1752,58 +1812,6 @@ component AddServerDialog inherits Rectangle {
     }
 }
 
-component AddIdeDialog inherits Rectangle {
-    in-out property <string> selected;
-    callback save();
-    callback dismiss();
-
-    ModalShell {
-        title: "Add IDE";
-        dismiss => { root.dismiss(); }
-
-        VerticalLayout {
-            spacing: Theme.gap-sm;
-            Text {
-                text: "Generate a new 8-char IDE key and auto-write the MCP config for:";
-                color: Theme.text-secondary;
-                font-size: Theme.font-body-sm;
-                wrap: word-wrap;
-            }
-            for ide in ["Claude Code", "Cursor", "VsCodeCopilot", "OpenCode", "OpenClaude", "Codex"] : Rectangle {
-                background: root.selected == ide ? Theme.surface-2 : Theme.surface;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: root.selected == ide ? Theme.accent : Theme.border;
-                height: 40px;
-                HorizontalLayout {
-                    padding-left: Theme.gap-md;
-                    padding-right: Theme.gap-md;
-                    alignment: start;
-                    Text {
-                        text: ide;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body;
-                        vertical-alignment: center;
-                    }
-                }
-                TouchArea {
-                    clicked => { root.selected = ide; }
-                }
-            }
-            HorizontalLayout {
-                spacing: Theme.gap-sm;
-                alignment: end;
-                PillButton {
-                    label: "Generate + Write";
-                    bg-color: Theme.accent;
-                    fg-color: Theme.bg;
-                    clicked => { root.save(); }
-                }
-            }
-        }
-    }
-}
-
 // ----- Root window -----
 
 export component MainWindow inherits Window {
@@ -1834,9 +1842,9 @@ export component MainWindow inherits Window {
     in-out property <int> active-tab: 0;
     in-out property <string> focused-approval: "";
     in-out property <bool> show-add-server-dialog: false;
-    in-out property <bool> show-add-ide-dialog: false;
     in-out property <bool> show-delete-server-confirm: false;
     in-out property <string> pending-delete-server: "";
+    in-out property <bool> ides-refreshing: false;
 
     // Servers tab master-detail state
     in-out property <string> selected-server: "";
@@ -1861,33 +1869,38 @@ export component MainWindow inherits Window {
     in-out property <string> add-server-headers;
     in-out property <string> wizard-oauth-url;
 
-    in-out property <string> add-ide-selected: "Cursor";
-
     in-out property <bool> open-window-at-startup;
     in-out property <string> default-unknown-tool-policy: "ask";
 
     in-out property <string> selected-editor: "";
+    in-out property <string> selected-editor-display: "";
+    in-out property <string> selected-editor-status-label: "active";
     in-out property <string> selected-editor-text: "";
     in-out property <string> selected-editor-status: "";
     in-out property <bool> selected-editor-status-is-error: false;
     in-out property <bool> selected-editor-dirty: false;
 
+    in property <bool> ide-target-claude-code-active: false;
+    in property <bool> ide-target-openclaude-active: false;
+    in property <bool> ide-target-opencode-active: false;
+
     callback approve-clicked(string);
     callback deny-clicked(string);
     callback remove-server-clicked(string);
     callback remove-ide-clicked(string);
+    callback retrack-ide-clicked(string);
+    callback refresh-ides-clicked();
     callback change-policy(string, string, string);
     callback refresh-clicked();
-    callback start-probe();                 // wizard step 1 → step 2
-    callback wizard-save();                 // wizard step 3 Save (commits with current policies)
-    callback wizard-back-to-form();         // step 2/3 Back button
-    callback wizard-change-tool-policy(string, string);   // tool, decision
+    callback start-probe();
+    callback wizard-save();
+    callback wizard-back-to-form();
+    callback wizard-change-tool-policy(string, string);
     callback select-server(string);
     callback retest-clicked(string);
     callback change-tool-policy(string, string, string);
-    callback toggle-server-target(string, string, string, bool);  // server, ide_name, ide_key, enable
-    callback submit-add-ide();             // reads add-ide-selected
-    callback parse-paste();                // reads add-server-paste, fills the other add-server-* fields
+    callback toggle-server-target(string, string, bool);  // server, ide_kind, enable
+    callback parse-paste();
     callback toggle-open-window-at-startup(bool);
     callback set-default-unknown-tool-policy(string);
     callback copy-error-clicked(string);
@@ -1922,10 +1935,6 @@ export component MainWindow inherits Window {
         root.add-server-busy = false;
         root.wizard-phase-status = "";
         root.wizard-oauth-url = "";
-    }
-
-    public function show-add-ide() {
-        root.show-add-ide-dialog = true;
     }
 
     VerticalLayout {
@@ -2021,8 +2030,8 @@ export component MainWindow inherits Window {
                     change-tool-policy(server, tool, decision) => {
                         root.change-tool-policy(server, tool, decision);
                     }
-                    toggle-target(server, ide-name, ide-key, enable) => {
-                        root.toggle-server-target(server, ide-name, ide-key, enable);
+                    toggle-target(server, ide-kind, enable) => {
+                        root.toggle-server-target(server, ide-kind, enable);
                     }
                     copy-error-clicked(text) => { root.copy-error-clicked(text); }
                     add-clicked => { root.show-add-server(); }
@@ -2031,14 +2040,18 @@ export component MainWindow inherits Window {
                     vertical-stretch: 1;
                     rows: root.ides;
                     selected: root.selected-editor;
+                    selected-display: root.selected-editor-display;
+                    selected-status: root.selected-editor-status-label;
                     selected-config-text: root.selected-editor-text;
                     selected-config-status: root.selected-editor-status;
                     selected-config-status-is-error: root.selected-editor-status-is-error;
                     selected-config-dirty: root.selected-editor-dirty;
-                    remove-clicked(name) => { root.remove-ide-clicked(name); }
-                    add-clicked => { root.show-add-ide(); }
-                    reveal-clicked(name) => { root.reveal-ide-config(name); }
-                    select(name) => { root.select-ide(name); }
+                    refreshing: root.ides-refreshing;
+                    remove-clicked(kind) => { root.remove-ide-clicked(kind); }
+                    retrack-clicked(kind) => { root.retrack-ide-clicked(kind); }
+                    refresh-clicked => { root.refresh-ides-clicked(); }
+                    reveal-clicked(kind) => { root.reveal-ide-config(kind); }
+                    select(kind) => { root.select-ide(kind); }
                     edit-text(t) => { root.edit-ide-config(t); }
                     save => { root.save-ide-config(); }
                     reload => { root.reload-ide-config(); }
@@ -2049,6 +2062,9 @@ export component MainWindow inherits Window {
                     repos: root.skill-repos;
                     status-message: root.skills-status-message;
                     busy: root.skills-busy;
+                    target-claude-code-active: root.ide-target-claude-code-active;
+                    target-openclaude-active: root.ide-target-openclaude-active;
+                    target-opencode-active: root.ide-target-opencode-active;
                     repo-add-owner <=> root.skills-repo-add-owner;
                     repo-add-name <=> root.skills-repo-add-name;
                     repo-add-branch <=> root.skills-repo-add-branch;
@@ -2152,12 +2168,5 @@ export component MainWindow inherits Window {
                 }
             }
         }
-    }
-    if root.show-add-ide-dialog : AddIdeDialog {
-        width: root.width;
-        height: root.height;
-        selected <=> root.add-ide-selected;
-        save => { root.submit-add-ide(); root.show-add-ide-dialog = false; }
-        dismiss => { root.show-add-ide-dialog = false; }
     }
 }

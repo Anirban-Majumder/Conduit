@@ -127,16 +127,22 @@ fn invalid_server_names_rejected() {
         "",
         "linear:access",
         "../foo",
-        "Foo",        // uppercase
+        "Foo", // uppercase
         "name with space",
-        "naïve",      // non-ascii
+        "naïve", // non-ascii
         "x\0null",
         &"a".repeat(65),
     ] {
         assert!(!is_valid_server_name(bad), "should reject {bad:?}");
     }
 
-    for good in ["a", "github", "linear-mcp", "server_1", "x".repeat(64).as_str()] {
+    for good in [
+        "a",
+        "github",
+        "linear-mcp",
+        "server_1",
+        "x".repeat(64).as_str(),
+    ] {
         assert!(is_valid_server_name(good), "should accept {good:?}");
     }
 }
@@ -154,7 +160,10 @@ fn lifecycle_idle_clamped_to_1_to_86400() {
     assert_eq!(clamp_idle_lifecycle(86_400), 86_400);
 
     assert_eq!(lifecycle_from_wizard("ephemeral", 99), LIFECYCLE_EPHEMERAL);
-    assert_eq!(lifecycle_from_wizard("persistent", 99), LIFECYCLE_PERSISTENT);
+    assert_eq!(
+        lifecycle_from_wizard("persistent", 99),
+        LIFECYCLE_PERSISTENT
+    );
     assert_eq!(lifecycle_from_wizard("idle", 300), 300);
     assert_eq!(lifecycle_from_wizard("idle", -5), 1);
 }
@@ -172,9 +181,14 @@ async fn rename_server_cascades_to_policies_and_server_tools() {
         discovered_at: 1,
     }];
     db.upsert_server_with_tools(s, tools).await.unwrap();
-    db.set_policy("github", "create_issue", Decision::Allow, DecisionSource::User)
-        .await
-        .unwrap();
+    db.set_policy(
+        "github",
+        "create_issue",
+        Decision::Allow,
+        DecisionSource::User,
+    )
+    .await
+    .unwrap();
 
     db.rename_server("github", "github-org").await.unwrap();
 
@@ -189,28 +203,6 @@ async fn rename_server_cascades_to_policies_and_server_tools() {
     assert_eq!(tools.len(), 1);
     assert!(db.get_server("github").await.unwrap().is_none());
     assert!(db.get_server("github-org").await.unwrap().is_some());
-}
-
-#[tokio::test]
-async fn rotate_ide_key_swaps_atomically() {
-    let db = Db::spawn_in_memory().unwrap();
-    let old = db.create_ide_key("Cursor").await.unwrap();
-    let new = db.rotate_ide_key(&old.key, "Cursor").await.unwrap();
-
-    assert_ne!(old.key, new.key);
-    assert!(db.lookup_ide_key(&old.key).await.unwrap().is_none());
-    assert!(db.lookup_ide_key(&new.key).await.unwrap().is_some());
-}
-
-#[tokio::test]
-async fn update_ide_key_label_renames_display_name() {
-    let db = Db::spawn_in_memory().unwrap();
-    let k = db.create_ide_key("Cursor").await.unwrap();
-    db.update_ide_key_label(&k.key, "Cursor (laptop)")
-        .await
-        .unwrap();
-    let got = db.lookup_ide_key(&k.key).await.unwrap().unwrap();
-    assert_eq!(got.ide_name, "Cursor (laptop)");
 }
 
 #[tokio::test]
@@ -275,7 +267,9 @@ async fn re_probe_drops_vanished_tools_and_their_policies() {
             discovered_at: 1,
         },
     ];
-    db.upsert_server_with_tools(s.clone(), tools_v1).await.unwrap();
+    db.upsert_server_with_tools(s.clone(), tools_v1)
+        .await
+        .unwrap();
 
     let tools_v2 = vec![ToolMeta {
         name: "a".into(),
@@ -295,7 +289,10 @@ async fn re_probe_drops_vanished_tools_and_their_policies() {
     assert_eq!(names, vec!["a".to_string()]);
 
     let pol_b = db.get_policy("github", "b").await.unwrap();
-    assert!(pol_b.is_none(), "policy for vanished tool 'b' should be gone");
+    assert!(
+        pol_b.is_none(),
+        "policy for vanished tool 'b' should be gone"
+    );
 }
 
 #[tokio::test]

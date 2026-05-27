@@ -1,8 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test ergonomics"
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
 use conduit::daemon::db::Db;
 use conduit::daemon::onboarding::{

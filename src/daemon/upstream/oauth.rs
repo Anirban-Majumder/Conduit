@@ -96,7 +96,11 @@ pub fn build_authorize_url(
         push_url_encoded(&mut query, v);
     }
 
-    let sep = if authorization_endpoint.contains('?') { '&' } else { '?' };
+    let sep = if authorization_endpoint.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
     format!("{authorization_endpoint}{sep}{query}")
 }
 
@@ -169,9 +173,14 @@ pub fn parse_www_authenticate(value: &str) -> Option<OauthChallenge> {
     }
     let mut realm = None;
     let mut resource_metadata_url = None;
-    for raw in value.trim_start_matches(|c: char| c.is_ascii_alphabetic()).split(',') {
+    for raw in value
+        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+        .split(',')
+    {
         let raw = raw.trim();
-        let Some((k, v)) = raw.split_once('=') else { continue };
+        let Some((k, v)) = raw.split_once('=') else {
+            continue;
+        };
         let k = k.trim().to_ascii_lowercase();
         let v = v.trim().trim_matches('"');
         if k == "realm" {
@@ -267,11 +276,7 @@ pub async fn register_client(
     redirect_uri: &str,
 ) -> Result<DcrResponse, OauthError> {
     let body = DcrRequest::public_pkce_client(redirect_uri.to_string());
-    let resp = http
-        .post(registration_endpoint)
-        .json(&body)
-        .send()
-        .await?;
+    let resp = http.post(registration_endpoint).json(&body).send().await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
@@ -350,7 +355,9 @@ fn parse_callback_query(request_line: &str) -> Option<HashMap<String, String>> {
     let query = path.split_once('?')?.1;
     let mut out = HashMap::new();
     for kv in query.split('&') {
-        let Some((k, v)) = kv.split_once('=') else { continue };
+        let Some((k, v)) = kv.split_once('=') else {
+            continue;
+        };
         out.insert(url_decode(k), url_decode(v));
     }
     Some(out)
@@ -450,8 +457,7 @@ pub struct RefreshCoordinator {
 
 impl std::fmt::Debug for RefreshCoordinator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RefreshCoordinator")
-            .finish_non_exhaustive()
+        f.debug_struct("RefreshCoordinator").finish_non_exhaustive()
     }
 }
 
@@ -476,7 +482,10 @@ impl RefreshCoordinator {
 
     /// Subscribe to the current in-flight refresh for `server`. Returns Err
     /// if no refresh is currently in flight.
-    pub async fn wait_for(&self, server: &str) -> Option<broadcast::Receiver<Result<String, String>>> {
+    pub async fn wait_for(
+        &self,
+        server: &str,
+    ) -> Option<broadcast::Receiver<Result<String, String>>> {
         let map = self.inflight.lock().await;
         map.get(server).map(broadcast::Sender::subscribe)
     }
@@ -512,7 +521,10 @@ mod tests {
         assert_eq!(p.verifier.len(), 86);
         // base64url alphabet: A-Z a-z 0-9 - _
         for c in p.verifier.chars() {
-            assert!(c.is_ascii_alphanumeric() || c == '-' || c == '_', "got '{c}'");
+            assert!(
+                c.is_ascii_alphanumeric() || c == '-' || c == '_',
+                "got '{c}'"
+            );
         }
     }
 

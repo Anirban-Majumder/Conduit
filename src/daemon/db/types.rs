@@ -200,7 +200,7 @@ pub const TRANSPORT_HTTP: &str = "http";
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
     clippy::struct_field_names,
-    reason = "field names match DB column names",
+    reason = "field names match DB column names"
 )]
 pub struct Server {
     pub name: String,
@@ -225,6 +225,46 @@ pub struct IdeKey {
     pub key: String,
     pub ide_name: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdeStatus {
+    Active,
+    Stale,
+    NotTracked,
+}
+
+impl IdeStatus {
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Stale => "stale",
+            Self::NotTracked => "not_tracked",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "stale" => Some(Self::Stale),
+            "not_tracked" => Some(Self::NotTracked),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdeRecord {
+    pub ide_kind: String,
+    pub display_name: String,
+    pub ide_key: String,
+    pub status: IdeStatus,
+    pub detection_source: Option<String>,
+    pub config_path: Option<PathBuf>,
+    pub managed_entries: Vec<String>,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+    pub not_tracked_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,7 +293,10 @@ pub struct SkillRepo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(clippy::struct_field_names, reason = "field names match DB column names")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names match DB column names"
+)]
 pub struct Skill {
     pub directory: String,
     pub repo_owner: String,

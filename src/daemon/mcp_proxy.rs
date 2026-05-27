@@ -75,7 +75,10 @@ pub async fn route_tool_call(
 
     let (decision, source) = match state.db.get_policy(&server.name, &tool_name).await? {
         Some(p) => (p.decision, p.decision_source),
-        None => (state.db.resolve_policy(&server.name, &tool_name).await?, DecisionSource::Default),
+        None => (
+            state.db.resolve_policy(&server.name, &tool_name).await?,
+            DecisionSource::Default,
+        ),
     };
 
     let start = Instant::now();

@@ -104,7 +104,10 @@ pub async fn probe(
     probe_with_progress(cfg, cancel, None).await
 }
 
-#[expect(clippy::too_many_lines, reason = "OAuth pivot inlined for one-shot flow")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "OAuth pivot inlined for one-shot flow"
+)]
 pub async fn probe_with_progress(
     cfg: &DraftServerConfig,
     cancel: CancellationToken,
@@ -148,9 +151,10 @@ pub async fn probe_with_progress(
                         return Err(map_connect_error(e));
                     }
                     // Probe the URL with reqwest to read WWW-Authenticate.
-                    emit(ProbeEvent::Phase("Sign in required — fetching OAuth metadata...".into()));
-                    let Some(challenge) = fetch_oauth_challenge(url, cancel.clone()).await
-                    else {
+                    emit(ProbeEvent::Phase(
+                        "Sign in required — fetching OAuth metadata...".into(),
+                    ));
+                    let Some(challenge) = fetch_oauth_challenge(url, cancel.clone()).await else {
                         return Err(map_connect_error(e));
                     };
                     let (meta, callback_listener, redirect_uri, pkce, state, dcr) =
@@ -167,9 +171,10 @@ pub async fn probe_with_progress(
                     if let Err(open_err) = open::that(&authorize_url) {
                         tracing::warn!(error = %open_err, "browser launch failed");
                     }
-                    let code = oauth::wait_for_callback(callback_listener, state.as_str(), cancel.clone())
-                        .await
-                        .map_err(|err| ProbeError::OauthFlow(err.to_string()))?;
+                    let code =
+                        oauth::wait_for_callback(callback_listener, state.as_str(), cancel.clone())
+                            .await
+                            .map_err(|err| ProbeError::OauthFlow(err.to_string()))?;
                     emit(ProbeEvent::Phase("Exchanging code for tokens...".into()));
                     let tokens = oauth::exchange_code_for_tokens(
                         &reqwest::Client::new(),
@@ -195,8 +200,11 @@ pub async fn probe_with_progress(
                     oauth_authority = Some(meta.authorization_endpoint.clone());
                     oauth_client_id = Some(dcr.client_id.clone());
                     // Retry rmcp with the freshly-minted bearer.
-                    emit(ProbeEvent::Phase("Re-initializing with OAuth token...".into()));
-                    let retry = http::connect(url, Some(&tokens.access_token), cancel.clone()).await;
+                    emit(ProbeEvent::Phase(
+                        "Re-initializing with OAuth token...".into(),
+                    ));
+                    let retry =
+                        http::connect(url, Some(&tokens.access_token), cancel.clone()).await;
                     spawn_done(retry.map_err(map_connect_error)?, cancel.clone()).await?
                 }
             }
@@ -308,12 +316,13 @@ async fn run_oauth_pre(
     cancel: CancellationToken,
     emit: &(dyn Fn(ProbeEvent) + Send + Sync),
 ) -> Result<OauthPre, ProbeError> {
-    let resource = challenge
-        .resource_metadata_url
-        .as_deref()
-        .ok_or_else(|| ProbeError::OauthFlow("server did not advertise resource_metadata".into()))?;
+    let resource = challenge.resource_metadata_url.as_deref().ok_or_else(|| {
+        ProbeError::OauthFlow("server did not advertise resource_metadata".into())
+    })?;
     let http = reqwest::Client::new();
-    emit(ProbeEvent::Phase("Resolving authorization server...".into()));
+    emit(ProbeEvent::Phase(
+        "Resolving authorization server...".into(),
+    ));
     let meta = oauth::fetch_authorization_server_metadata(&http, resource)
         .await
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
@@ -336,10 +345,7 @@ async fn run_oauth_pre(
     Ok((meta, listener, redirect_uri, pkce, state, dcr))
 }
 
-async fn spawn_with_phase_timeout<F, T>(
-    fut: F,
-    cancel: CancellationToken,
-) -> Result<T, ProbeError>
+async fn spawn_with_phase_timeout<F, T>(fut: F, cancel: CancellationToken) -> Result<T, ProbeError>
 where
     F: std::future::Future<Output = Result<T, crate::daemon::upstream::manager::UpstreamError>>,
 {

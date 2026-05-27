@@ -14,9 +14,8 @@ pub fn is_valid_server_name(name: &str) -> bool {
     if name.is_empty() || name.len() > NAME_MAX_LEN {
         return false;
     }
-    name.bytes().all(|b| {
-        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
-    })
+    name.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 /// Clamp the wizard's "idle TTL" stepper to `[1, 86400]` seconds. The wizard
