@@ -5,7 +5,7 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::db::{types::Server, Db};
+use conduit::daemon::db::{types::Server, Db};
 
 fn server_row(name: &str) -> Server {
     Server {
@@ -107,7 +107,7 @@ async fn ide_key_delete_removes_row() {
 
 #[tokio::test]
 async fn ide_config_write_then_list_round_trip() {
-    use mcp_router::daemon::db::types::ManagedIdeConfig;
+    use conduit::daemon::db::types::ManagedIdeConfig;
     use std::path::PathBuf;
 
     let db = Db::spawn_in_memory().expect("spawn");
@@ -127,7 +127,7 @@ async fn ide_config_write_then_list_round_trip() {
 
 #[tokio::test]
 async fn ide_config_write_upserts_on_same_key() {
-    use mcp_router::daemon::db::types::ManagedIdeConfig;
+    use conduit::daemon::db::types::ManagedIdeConfig;
     use std::path::PathBuf;
 
     let db = Db::spawn_in_memory().expect("spawn");
@@ -152,7 +152,7 @@ async fn ide_config_write_upserts_on_same_key() {
 
 #[tokio::test]
 async fn policy_set_then_get_round_trip() {
-    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+    use conduit::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
     db.upsert_server(server_row("gmail")).await.unwrap();
@@ -176,7 +176,7 @@ async fn policy_set_then_get_round_trip() {
 
 #[tokio::test]
 async fn policy_set_twice_upserts() {
-    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+    use conduit::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
     db.upsert_server(server_row("gmail")).await.unwrap();
@@ -208,7 +208,7 @@ async fn policy_get_unknown_returns_none() {
 
 #[tokio::test]
 async fn policy_list_for_server_filters() {
-    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+    use conduit::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
     db.upsert_server(server_row("gmail")).await.unwrap();
@@ -236,7 +236,7 @@ async fn policy_list_for_server_filters() {
 
 #[tokio::test]
 async fn policy_delete_for_server_clears() {
-    use mcp_router::daemon::db::types::{Decision, DecisionSource};
+    use conduit::daemon::db::types::{Decision, DecisionSource};
 
     let db = Db::spawn_in_memory().expect("spawn");
     db.upsert_server(server_row("gmail")).await.unwrap();
@@ -253,7 +253,7 @@ async fn policy_delete_for_server_clears() {
 
 #[tokio::test]
 async fn pending_approval_create_get_resolve() {
-    use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
+    use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
 
     let db = Db::spawn_in_memory().expect("spawn");
     let approval = PendingApproval {
@@ -279,7 +279,7 @@ async fn pending_approval_create_get_resolve() {
 
 #[tokio::test]
 async fn pending_approval_list_only_returns_pending() {
-    use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
+    use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
 
     let db = Db::spawn_in_memory().expect("spawn");
     for (id, status) in [
@@ -309,7 +309,7 @@ async fn pending_approval_list_only_returns_pending() {
 
 #[tokio::test]
 async fn pending_approval_sweep_stale_flips_old_to_timeout() {
-    use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
+    use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
 
     let db = Db::spawn_in_memory().expect("spawn");
     db.create_pending_approval(PendingApproval {
@@ -358,7 +358,7 @@ async fn pending_approval_sweep_stale_flips_old_to_timeout() {
 
 #[tokio::test]
 async fn audit_insert_then_query_round_trip() {
-    use mcp_router::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+    use conduit::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
 
     let db = Db::spawn_in_memory().expect("spawn");
     let entry = AuditEntry {
@@ -387,7 +387,7 @@ async fn audit_insert_then_query_round_trip() {
 
 #[tokio::test]
 async fn audit_query_filters_by_ide_and_server() {
-    use mcp_router::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+    use conduit::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
 
     let db = Db::spawn_in_memory().expect("spawn");
     for (ide, server) in [("k1", "gmail"), ("k2", "gmail"), ("k1", "github")] {
@@ -431,7 +431,7 @@ async fn audit_query_filters_by_ide_and_server() {
 
 #[tokio::test]
 async fn audit_purge_old_removes_pre_cutoff() {
-    use mcp_router::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+    use conduit::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
 
     let db = Db::spawn_in_memory().expect("spawn");
     for ts in [100, 200, 300] {
@@ -463,7 +463,7 @@ async fn audit_purge_old_removes_pre_cutoff() {
 
 #[tokio::test]
 async fn enum_db_str_round_trips() {
-    use mcp_router::daemon::db::types::{ApprovalStatus, AuditDecision, Decision, DecisionSource};
+    use conduit::daemon::db::types::{ApprovalStatus, AuditDecision, Decision, DecisionSource};
 
     for d in [Decision::Allow, Decision::Deny, Decision::Ask] {
         assert_eq!(Decision::from_db_str(d.as_db_str()), Some(d));
@@ -504,7 +504,7 @@ async fn enum_db_str_round_trips() {
 
 #[tokio::test]
 async fn ide_config_delete_for_ide_clears_rows() {
-    use mcp_router::daemon::db::types::ManagedIdeConfig;
+    use conduit::daemon::db::types::ManagedIdeConfig;
     use std::path::PathBuf;
 
     let db = Db::spawn_in_memory().expect("spawn");

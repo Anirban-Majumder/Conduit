@@ -9,36 +9,36 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-use mcp_router::daemon::approval::{spawn_timeout_sweeper, ApprovalCenter};
-use mcp_router::daemon::cascade;
-use mcp_router::daemon::config_toml::Settings;
-use mcp_router::daemon::config_watcher;
-use mcp_router::daemon::db::types::{
+use conduit::daemon::approval::{spawn_timeout_sweeper, ApprovalCenter};
+use conduit::daemon::cascade;
+use conduit::daemon::config_toml::Settings;
+use conduit::daemon::config_watcher;
+use conduit::daemon::db::types::{
     ApprovalStatus, Decision, DecisionSource, EnvEntry, EnvValue, ManagedIdeConfig, Server,
     ToolMeta as DbToolMeta, TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
-use mcp_router::daemon::db::Db;
-use mcp_router::daemon::events::{Bus, Event};
-use mcp_router::daemon::http_server::{self, AppState};
-use mcp_router::daemon::ide_detect::IdeKind;
-use mcp_router::daemon::ide_writer;
-use mcp_router::daemon::ipc;
-use mcp_router::daemon::onboarding::{
+use conduit::daemon::db::Db;
+use conduit::daemon::events::{Bus, Event};
+use conduit::daemon::http_server::{self, AppState};
+use conduit::daemon::ide_detect::IdeKind;
+use conduit::daemon::ide_writer;
+use conduit::daemon::ipc;
+use conduit::daemon::onboarding::{
     check_background_hint, mark_first_run_completed, should_show_window_at_startup,
     BackgroundHintAction,
 };
-use mcp_router::daemon::paste_parser;
-use mcp_router::daemon::server_validators;
-use mcp_router::daemon::skills::{SkillCandidate, SkillManager};
-use mcp_router::daemon::db::types::SkillRepo;
-use mcp_router::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
-use mcp_router::daemon::upstream::manager::UpstreamManager;
-use mcp_router::gui::{
+use conduit::daemon::paste_parser;
+use conduit::daemon::server_validators;
+use conduit::daemon::skills::{SkillCandidate, SkillManager};
+use conduit::daemon::db::types::SkillRepo;
+use conduit::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
+use conduit::daemon::upstream::manager::UpstreamManager;
+use conduit::gui::{
     hotkey, notification_router as gui_notification_router, notifications as gui_notifications,
     tray as gui_tray,
 };
-use mcp_router::paths::Paths;
-use mcp_router::runtime::Worker;
+use conduit::paths::Paths;
+use conduit::runtime::Worker;
 
 mod ui;
 use ui::{
@@ -49,9 +49,9 @@ use ui::{
 #[expect(clippy::too_many_lines, reason = "single-binary entrypoint wires every subsystem")]
 fn main() -> Result<()> {
     init_tracing();
-    tracing::info!("mcp-router starting");
+    tracing::info!("conduit starting");
 
-    let paths = Paths::from_user_dirs().context("resolve mcp-router config dir")?;
+    let paths = Paths::from_user_dirs().context("resolve conduit config dir")?;
     paths.ensure_created().context("create state dirs")?;
     tracing::info!(root = %paths.root().display(), "state root ready");
 
@@ -74,7 +74,7 @@ fn main() -> Result<()> {
                 reason = "CLI UX: user reinvoked the binary, deserves a one-line ack"
             )]
             {
-                eprintln!("mcp-router: already running — opened existing window.");
+                eprintln!("conduit: already running — opened existing window.");
             }
             if let Err(e) = send_result {
                 tracing::warn!(error = %e, "ipc forward show failed");
@@ -254,7 +254,7 @@ fn main() -> Result<()> {
     window.run().context("slint event loop")?;
 
     cancel.cancel();
-    tracing::info!("mcp-router stopped");
+    tracing::info!("conduit stopped");
     drop(bus);
     drop(worker);
     Ok(())
@@ -465,7 +465,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, rt: tokio::runtime::Han
                 if let Err(e) = tokio::task::spawn_blocking({
                     let draft = draft.to_string();
                     let server = name.clone();
-                    move || mcp_router::daemon::secrets::promote_oauth_tokens(&draft, &server)
+                    move || conduit::daemon::secrets::promote_oauth_tokens(&draft, &server)
                 })
                 .await
                 {
@@ -608,8 +608,8 @@ fn unix_now() -> i64 {
 }
 
 fn fire_background_hint() {
-    let summary = "mcp-router is running in the background";
-    let body = "Click the tray icon, press Ctrl+Alt+Shift+M, or run `mcp-router` to reopen.";
+    let summary = "Conduit is running in the background";
+    let body = "Click the tray icon, press Ctrl+Alt+Shift+M, or run `conduit` to reopen.";
     if let Err(e) = notify_rust::Notification::new()
         .summary(summary)
         .body(body)
@@ -1332,7 +1332,7 @@ async fn paint_skills_with_discovery(
 }
 
 fn installed_skills_to_rows(
-    installed: &[mcp_router::daemon::db::types::Skill],
+    installed: &[conduit::daemon::db::types::Skill],
 ) -> Vec<SkillRow> {
     installed
         .iter()
@@ -1630,7 +1630,7 @@ async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
 }
 
 async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
-    let filter = mcp_router::daemon::db::types::AuditFilter {
+    let filter = conduit::daemon::db::types::AuditFilter {
         limit: Some(100),
         ..Default::default()
     };

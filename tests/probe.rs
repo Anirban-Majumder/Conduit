@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use mcp_router::daemon::upstream::probe::{
+use conduit::daemon::upstream::probe::{
     probe, DraftServerConfig, DraftTransport, HttpAuth, ProbeError,
 };
 use tokio_util::sync::CancellationToken;

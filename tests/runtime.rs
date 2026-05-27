@@ -3,7 +3,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mcp_router::runtime::Worker;
+use conduit::runtime::Worker;
 use tokio_util::sync::CancellationToken;
 
 #[test]

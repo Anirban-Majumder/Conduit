@@ -5,7 +5,7 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::events::{Bus, Event};
+use conduit::daemon::events::{Bus, Event};
 
 fn sample_pending(id: &str) -> Event {
     Event::ApprovalPending {

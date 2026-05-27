@@ -2,10 +2,10 @@
 
 use std::path::Path;
 
-use mcp_router::daemon::ide_writer::{
+use conduit::daemon::ide_writer::{
     ide_db_name, ide_kind_from_db_name, skills_dir_under, SKILL_TARGET_IDES,
 };
-use mcp_router::paths::Paths;
+use conduit::paths::Paths;
 
 #[test]
 fn ide_db_name_round_trips_through_kind_lookup() {
@@ -41,7 +41,7 @@ fn skills_dir_under_returns_none_for_non_agentic_ides() {
 
 #[test]
 fn paths_skills_root_under_state_root() {
-    let dir = std::env::temp_dir().join("mcp-router-skills-root-paths-test");
+    let dir = std::env::temp_dir().join("conduit-skills-root-paths-test");
     let _ignored = std::fs::remove_dir_all(&dir);
     let paths = Paths::under(&dir);
     assert_eq!(paths.skills_root(), dir.join("skills"));

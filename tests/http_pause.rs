@@ -9,12 +9,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mcp_router::daemon::approval::ApprovalCenter;
-use mcp_router::daemon::db::Db;
-use mcp_router::daemon::events::Bus;
-use mcp_router::daemon::http_server::{serve, AppState};
-use mcp_router::daemon::upstream::manager::UpstreamManager;
-use mcp_router::paths::Paths;
+use conduit::daemon::approval::ApprovalCenter;
+use conduit::daemon::db::Db;
+use conduit::daemon::events::Bus;
+use conduit::daemon::http_server::{serve, AppState};
+use conduit::daemon::upstream::manager::UpstreamManager;
+use conduit::paths::Paths;
 use tokio_util::sync::CancellationToken;
 
 fn pick_free_port() -> u16 {

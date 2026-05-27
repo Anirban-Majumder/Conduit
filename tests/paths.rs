@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use mcp_router::paths::Paths;
+use conduit::paths::Paths;
 
 #[test]
 fn under_composes_paths_from_root() {
@@ -24,7 +24,7 @@ fn under_composes_paths_from_root() {
 
 #[test]
 fn ensure_created_makes_root_installs_and_logs() {
-    let tmp = std::env::temp_dir().join(format!("mcp-router-paths-test-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("conduit-paths-test-{}", std::process::id()));
     std::fs::remove_dir_all(&tmp).ok();
     let paths = Paths::under(&tmp);
 
@@ -40,5 +40,5 @@ fn ensure_created_makes_root_installs_and_logs() {
 #[test]
 fn from_user_dirs_lives_under_config_dir() {
     let paths = Paths::from_user_dirs().expect("user dirs resolvable");
-    assert!(paths.root().ends_with("mcp-router"));
+    assert!(paths.root().ends_with("conduit"));
 }

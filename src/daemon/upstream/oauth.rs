@@ -324,7 +324,7 @@ pub async fn wait_for_callback(
     } else {
         (
             "200 OK",
-            "<h1>Signed in</h1><p>You can close this tab and return to mcp-router.</p>",
+            "<h1>Signed in</h1><p>You can close this tab and return to Conduit.</p>",
         )
     };
     let response = format!(

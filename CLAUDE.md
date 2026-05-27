@@ -1,6 +1,6 @@
-# mcp-router
+# Conduit
 
-Polished MCP proxy + policy enforcer for IDEs. Single Rust binary using Slint for the GUI. See [docs/mcp-router-v0.md](docs/mcp-router-v0.md) for the full spec.
+MCPs and skills, synced to every IDE. Single Rust binary using Slint for the GUI. See [specs/conduit-v0.md](specs/conduit-v0.md) for the full spec.
 
 # Tech
 
@@ -9,7 +9,7 @@ Polished MCP proxy + policy enforcer for IDEs. Single Rust binary using Slint fo
 - HTTP server: axum on tokio.
 - MCP wire: `rmcp = "~1.7"` (tilde — pin minor, allow patches).
 - Storage: rusqlite (single `state.db` w/ audit table inside), OS keyring for secrets, `config.toml` for user-tunable settings.
-- pnpm/npm/uv are used at runtime to install Node/Python MCP *upstreams* into `<config_dir>/mcp-router/installs/`. They are NOT used to build mcp-router itself.
+- pnpm/npm/uv are used at runtime to install Node/Python MCP *upstreams* into `<config_dir>/conduit/installs/`. They are NOT used to build Conduit itself.
 
 # Build & verify
 
@@ -129,7 +129,7 @@ Shutdown sequence: Slint `app.run()` returns → fire token → `runtime.shutdow
 
 # Cross-OS
 
-- Paths: use `dirs::config_dir().join("mcp-router")` — never hardcode `~/.config/...`, `~/Library/...`, `%APPDATA%\...`.
+- Paths: use `dirs::config_dir().join("conduit")` — never hardcode `~/.config/...`, `~/Library/...`, `%APPDATA%\...`.
 - Windows subprocess spawns: set `CommandExt::creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)`. Wrap in a helper used everywhere we spawn.
 - Child MCP servers: process group on Unix (`setsid` via `nix` or `process-wrap` crate), Job Object on Windows. `kill_on_drop(true)` alone does NOT kill grandchildren (Node/Python workers leak).
 - One task reading child stdout, one reading stderr — pipe buffers (~64KB) fill and deadlock the child if unread.

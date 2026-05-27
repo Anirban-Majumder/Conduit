@@ -1333,6 +1333,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "conduit"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "axum",
+ "base64",
+ "dirs",
+ "global-hotkey",
+ "gtk",
+ "interprocess",
+ "keyring",
+ "keyring-core",
+ "notify",
+ "notify-rust",
+ "open",
+ "rand 0.9.4",
+ "reqwest 0.12.28",
+ "rmcp",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "slint",
+ "slint-build",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.2",
+ "tracing",
+ "tracing-subscriber",
+ "tray-icon",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "const-field-offset"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4353,43 +4390,6 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
-]
-
-[[package]]
-name = "mcp-router"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "arboard",
- "axum",
- "base64",
- "dirs",
- "global-hotkey",
- "gtk",
- "interprocess",
- "keyring",
- "keyring-core",
- "notify",
- "notify-rust",
- "open",
- "rand 0.9.4",
- "reqwest 0.12.28",
- "rmcp",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "slint",
- "slint-build",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "toml 0.8.2",
- "tracing",
- "tracing-subscriber",
- "tray-icon",
- "uuid",
- "zeroize",
 ]
 
 [[package]]

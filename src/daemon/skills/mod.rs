@@ -1,5 +1,5 @@
 // Skills subsystem: discover SKILL.md packages on GitHub, stash a canonical
-// copy under `<config>/mcp-router/skills/managed/<name>/`, and mirror that
+// copy under `<config>/conduit/skills/managed/<name>/`, and mirror that
 // copy into each agentic IDE's skills dir (`~/.claude/skills`, etc.).
 
 pub mod discover;
@@ -21,7 +21,7 @@ use crate::paths::Paths;
 
 const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-const USER_AGENT: &str = "mcp-router-skills";
+const USER_AGENT: &str = "conduit-skills";
 const DOWNLOAD_FILES_PER_SKILL_LIMIT: usize = 200;
 const FILE_FETCH_CONCURRENCY: usize = 6;
 

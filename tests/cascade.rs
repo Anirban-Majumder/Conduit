@@ -9,13 +9,13 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use mcp_router::daemon::cascade::delete_server_with_cascade;
-use mcp_router::daemon::db::types::{
+use conduit::daemon::cascade::delete_server_with_cascade;
+use conduit::daemon::db::types::{
     ApprovalStatus, ManagedIdeConfig, PendingApproval, Server, ToolMeta,
 };
-use mcp_router::daemon::db::Db;
-use mcp_router::daemon::events::{Bus, Event};
-use mcp_router::daemon::ide_writer::write_uniform_mcp_servers;
+use conduit::daemon::db::Db;
+use conduit::daemon::events::{Bus, Event};
+use conduit::daemon::ide_writer::write_uniform_mcp_servers;
 
 fn unique_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);

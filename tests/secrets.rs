@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 
 use keyring_core::{mock, set_default_store, unset_default_store};
-use mcp_router::daemon::secrets;
+use conduit::daemon::secrets;
 
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 

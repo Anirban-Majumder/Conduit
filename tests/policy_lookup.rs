@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
-use mcp_router::daemon::db::types::{Decision, DecisionSource, Server, ToolMeta};
-use mcp_router::daemon::db::Db;
+use conduit::daemon::db::types::{Decision, DecisionSource, Server, ToolMeta};
+use conduit::daemon::db::Db;
 
 fn server(name: &str) -> Server {
     Server {

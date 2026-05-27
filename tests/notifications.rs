@@ -9,13 +9,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use mcp_router::daemon::approval::{ApprovalCenter, ApprovalRequest};
-use mcp_router::daemon::db::types::{
+use conduit::daemon::approval::{ApprovalCenter, ApprovalRequest};
+use conduit::daemon::db::types::{
     ApprovalStatus, Decision, DecisionSource, PendingApproval, Server,
 };
-use mcp_router::daemon::db::Db;
-use mcp_router::daemon::events::{Bus, Event};
-use mcp_router::gui::notification_router::{dispatch_action, NotificationAction};
+use conduit::daemon::db::Db;
+use conduit::daemon::events::{Bus, Event};
+use conduit::gui::notification_router::{dispatch_action, NotificationAction};
 
 fn sample_server(name: &str) -> Server {
     Server {

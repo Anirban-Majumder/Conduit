@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-const ROOT_DIRNAME: &str = "mcp-router";
+const ROOT_DIRNAME: &str = "conduit";
 
 #[derive(Debug, Error)]
 pub enum PathsError {

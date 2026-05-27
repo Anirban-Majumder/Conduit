@@ -71,7 +71,7 @@ fn spawn_notification(
             let handle = match notify_rust::Notification::new()
                 .summary(&ide_name)
                 .body(&body)
-                .appname("mcp-router")
+                .appname("Conduit")
                 .icon("dialog-information")
                 .action("default", "")
                 .action("approve", "Approve")
@@ -118,7 +118,7 @@ fn spawn_notification(
     if let Err(e) = notify_rust::Notification::new()
         .summary(&ide_name)
         .body(&body)
-        .appname("mcp-router")
+        .appname("Conduit")
         .show()
     {
         tracing::warn!(error = %e, "notification show failed");

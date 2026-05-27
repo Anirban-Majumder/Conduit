@@ -47,7 +47,7 @@ pub fn try_install() -> Option<HotkeyHandles> {
 /// Spawn a `std::thread` that pumps `GlobalHotKeyEvent`'s process-global channel.
 pub fn spawn_event_pump(hotkey_id: u32, on_press: impl Fn() + Send + 'static) {
     std::thread::Builder::new()
-        .name("mcp-router-hotkey".into())
+        .name("conduit-hotkey".into())
         .spawn(move || {
             let rx = GlobalHotKeyEvent::receiver();
             while let Ok(ev) = rx.recv() {

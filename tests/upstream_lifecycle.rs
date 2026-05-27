@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use mcp_router::daemon::upstream::lifecycle::detect_lifecycle;
+use conduit::daemon::upstream::lifecycle::detect_lifecycle;
 use serde_json::json;
 
 const PERSISTENT: i32 = -1;

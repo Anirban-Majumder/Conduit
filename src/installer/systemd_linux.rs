@@ -1,11 +1,11 @@
-// ~/.config/systemd/user/mcp-router.service. Spec §"Autostart at login".
+// ~/.config/systemd/user/conduit.service. Spec §"Autostart at login".
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::InstallError;
 
-const SERVICE_FILE_NAME: &str = "mcp-router.service";
+const SERVICE_FILE_NAME: &str = "conduit.service";
 
 pub fn install(exe: &Path) -> Result<PathBuf, InstallError> {
     let dir = service_dir()?;
@@ -24,7 +24,7 @@ pub fn is_installed() -> bool {
 }
 
 // Post-install the user runs once:
-//   systemctl --user daemon-reload && systemctl --user enable --now mcp-router.service
+//   systemctl --user daemon-reload && systemctl --user enable --now conduit.service
 // We deliberately don't shell out — headless / WSL2 / non-systemd setups make
 // invoking systemctl from inside the binary unreliable.
 pub fn install_into(dir: &Path, exe: &Path) -> Result<PathBuf, InstallError> {

@@ -22,7 +22,7 @@ impl Worker {
         let cancel_for_thread = cancel.clone();
 
         let join = thread::Builder::new()
-            .name("mcp-router-tokio".into())
+            .name("conduit-tokio".into())
             .spawn(move || run_runtime(cancel_for_thread, handle_tx))?;
 
         let handle = handle_rx
@@ -55,7 +55,7 @@ impl Drop for Worker {
 fn run_runtime(cancel: CancellationToken, handle_tx: mpsc::SyncSender<Handle>) {
     let rt = match Builder::new_multi_thread()
         .enable_all()
-        .thread_name("mcp-router-async")
+        .thread_name("conduit-async")
         .build()
     {
         Ok(rt) => rt,

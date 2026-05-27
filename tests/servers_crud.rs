@@ -5,8 +5,8 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::db::types::{EnvEntry, EnvValue, Server, TRANSPORT_HTTP, TRANSPORT_STDIO};
-use mcp_router::daemon::db::Db;
+use conduit::daemon::db::types::{EnvEntry, EnvValue, Server, TRANSPORT_HTTP, TRANSPORT_STDIO};
+use conduit::daemon::db::Db;
 
 fn sample_server(name: &str) -> Server {
     Server {
@@ -121,7 +121,7 @@ async fn http_transport_preserves_url() {
 
 #[test]
 fn invalid_server_names_rejected() {
-    use mcp_router::daemon::server_validators::is_valid_server_name;
+    use conduit::daemon::server_validators::is_valid_server_name;
 
     for bad in [
         "",
@@ -143,7 +143,7 @@ fn invalid_server_names_rejected() {
 
 #[test]
 fn lifecycle_idle_clamped_to_1_to_86400() {
-    use mcp_router::daemon::server_validators::{
+    use conduit::daemon::server_validators::{
         clamp_idle_lifecycle, lifecycle_from_wizard, LIFECYCLE_EPHEMERAL, LIFECYCLE_PERSISTENT,
     };
 
@@ -161,7 +161,7 @@ fn lifecycle_idle_clamped_to_1_to_86400() {
 
 #[tokio::test]
 async fn rename_server_cascades_to_policies_and_server_tools() {
-    use mcp_router::daemon::db::types::{Decision, DecisionSource, ToolMeta};
+    use conduit::daemon::db::types::{Decision, DecisionSource, ToolMeta};
 
     let db = Db::spawn_in_memory().unwrap();
     let s = sample_server("github");
@@ -215,7 +215,7 @@ async fn update_ide_key_label_renames_display_name() {
 
 #[tokio::test]
 async fn upsert_server_with_tools_seeds_per_tool_policies_and_fallback() {
-    use mcp_router::daemon::db::types::ToolMeta;
+    use conduit::daemon::db::types::ToolMeta;
 
     let db = Db::spawn_in_memory().unwrap();
     let s = sample_server("github");
@@ -247,17 +247,17 @@ async fn upsert_server_with_tools_seeds_per_tool_policies_and_fallback() {
         "expected per-tool + fallback policies, got {policies:?}"
     );
     for p in &policies {
-        assert_eq!(p.decision, mcp_router::daemon::db::types::Decision::Ask);
+        assert_eq!(p.decision, conduit::daemon::db::types::Decision::Ask);
         assert_eq!(
             p.decision_source,
-            mcp_router::daemon::db::types::DecisionSource::Probe
+            conduit::daemon::db::types::DecisionSource::Probe
         );
     }
 }
 
 #[tokio::test]
 async fn re_probe_drops_vanished_tools_and_their_policies() {
-    use mcp_router::daemon::db::types::ToolMeta;
+    use conduit::daemon::db::types::ToolMeta;
 
     let db = Db::spawn_in_memory().unwrap();
     let s = sample_server("github");

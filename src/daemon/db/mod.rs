@@ -247,7 +247,7 @@ impl Db {
     fn spawn_with(conn: Connection) -> Result<Self, DbError> {
         let (tx, rx) = mpsc::channel::<DbCmd>(CMD_CHANNEL_DEPTH);
         thread::Builder::new()
-            .name("mcp-router-db".into())
+            .name("conduit-db".into())
             .spawn(move || actor_loop(conn, rx))?;
         Ok(Self { tx })
     }

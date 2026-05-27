@@ -13,19 +13,19 @@ fn fresh_tmp(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("mcp-router-installer-{label}-{ns}"))
+    std::env::temp_dir().join(format!("conduit-installer-{label}-{ns}"))
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use mcp_router::installer::systemd_linux::{install_into, render_service_unit, uninstall_from};
+    use conduit::installer::systemd_linux::{install_into, render_service_unit, uninstall_from};
     use std::path::Path;
 
     #[test]
     fn render_service_unit_includes_exec_path() {
-        let unit = render_service_unit(Path::new("/opt/mcp-router/bin/mcp-router"));
-        assert!(unit.contains("ExecStart=/opt/mcp-router/bin/mcp-router"));
+        let unit = render_service_unit(Path::new("/opt/conduit/bin/conduit"));
+        assert!(unit.contains("ExecStart=/opt/conduit/bin/conduit"));
         assert!(unit.contains("[Unit]"));
         assert!(unit.contains("[Service]"));
         assert!(unit.contains("[Install]"));
@@ -35,12 +35,12 @@ mod linux {
     #[test]
     fn install_into_writes_service_file() {
         let dir = fresh_tmp("linux-install");
-        let exe = Path::new("/usr/bin/mcp-router");
+        let exe = Path::new("/usr/bin/conduit");
         let path = install_into(&dir, exe).expect("install");
         assert!(path.is_file());
-        assert!(path.ends_with("mcp-router.service"));
+        assert!(path.ends_with("conduit.service"));
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("ExecStart=/usr/bin/mcp-router"));
+        assert!(body.contains("ExecStart=/usr/bin/conduit"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -53,7 +53,7 @@ mod linux {
     #[test]
     fn install_then_uninstall_round_trip() {
         let dir = fresh_tmp("linux-rt");
-        let exe = Path::new("/usr/bin/mcp-router");
+        let exe = Path::new("/usr/bin/conduit");
         let path = install_into(&dir, exe).unwrap();
         assert!(path.is_file());
         uninstall_from(&dir).unwrap();
@@ -65,15 +65,15 @@ mod linux {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use mcp_router::installer::launchd_macos::{install_into, render_plist, uninstall_from};
+    use conduit::installer::launchd_macos::{install_into, render_plist, uninstall_from};
     use std::path::Path;
 
     #[test]
     fn render_plist_includes_exec_and_keepalive() {
         let plist = render_plist(Path::new(
-            "/Applications/mcp-router.app/Contents/MacOS/mcp-router",
+            "/Applications/conduit.app/Contents/MacOS/conduit",
         ));
-        assert!(plist.contains("/Applications/mcp-router.app/Contents/MacOS/mcp-router"));
+        assert!(plist.contains("/Applications/conduit.app/Contents/MacOS/conduit"));
         assert!(plist.contains("<key>RunAtLoad</key><true/>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
@@ -83,7 +83,7 @@ mod macos {
     #[test]
     fn install_into_writes_plist() {
         let dir = fresh_tmp("macos-install");
-        let exe = Path::new("/usr/local/bin/mcp-router");
+        let exe = Path::new("/usr/local/bin/conduit");
         let path = install_into(&dir, exe).expect("install");
         assert!(path.is_file());
         assert!(path.ends_with("com.mcprouter.plist"));
@@ -93,7 +93,7 @@ mod macos {
     #[test]
     fn install_then_uninstall_round_trip() {
         let dir = fresh_tmp("macos-rt");
-        let exe = Path::new("/usr/local/bin/mcp-router");
+        let exe = Path::new("/usr/local/bin/conduit");
         let path = install_into(&dir, exe).unwrap();
         uninstall_from(&dir).unwrap();
         assert!(!path.exists());
@@ -103,15 +103,15 @@ mod macos {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use mcp_router::installer::scheduled_task_windows::render_task_xml;
+    use conduit::installer::scheduled_task_windows::render_task_xml;
     use std::path::Path;
 
     #[test]
     fn render_task_xml_includes_command_and_logon_trigger() {
-        let xml = render_task_xml(Path::new(r"C:\Program Files\mcp-router\mcp-router.exe"));
+        let xml = render_task_xml(Path::new(r"C:\Program Files\conduit\conduit.exe"));
         assert!(xml.contains("LogonTrigger"));
         assert!(xml.contains("RestartOnFailure"));
-        assert!(xml.contains(r"C:\Program Files\mcp-router\mcp-router.exe"));
+        assert!(xml.contains(r"C:\Program Files\conduit\conduit.exe"));
     }
 }
 
@@ -119,5 +119,5 @@ mod windows {
 fn xml_escape_smoke() {
     // No public XML escape exists; this is just a smoke test of the public is_installed.
     // is_installed must not panic regardless of state.
-    let _ = mcp_router::installer::is_installed();
+    let _ = conduit::installer::is_installed();
 }

@@ -2,7 +2,7 @@
 #![allow(clippy::expect_used, reason = "test ergonomics")]
 #![allow(clippy::indexing_slicing, reason = "test ergonomics")]
 
-use mcp_router::daemon::paste_parser::{parse, ParseError};
+use conduit::daemon::paste_parser::{parse, ParseError};
 
 // ── Format 1: full mcpServers wrapper ───────────────────────────────────────
 

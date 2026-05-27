@@ -4,8 +4,8 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::db::Db;
-use mcp_router::daemon::onboarding::{
+use conduit::daemon::db::Db;
+use conduit::daemon::onboarding::{
     check_background_hint, mark_first_run_completed, should_show_window_at_startup,
     BackgroundHintAction,
 };

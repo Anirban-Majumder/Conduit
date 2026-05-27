@@ -1,5 +1,5 @@
-// OS keyring wrapper. Per-server env at `mcp-router/server/<server>/env/<uuid>`.
-// OAuth tokens at `mcp-router-oauth/<account>:{access|refresh|client_secret}`.
+// OS keyring wrapper. Per-server env at `conduit/server/<server>/env/<uuid>`.
+// OAuth tokens at `conduit-oauth/<account>:{access|refresh|client_secret}`.
 
 use keyring_core::{Entry, Error as KeyringError};
 use uuid::Uuid;
@@ -13,7 +13,7 @@ pub enum SecretsError {
 }
 
 fn entry(server: &str, uuid: &str) -> Result<Entry, SecretsError> {
-    let service = format!("mcp-router/server/{server}/env");
+    let service = format!("conduit/server/{server}/env");
     Ok(Entry::new(&service, uuid)?)
 }
 
@@ -46,12 +46,12 @@ pub fn delete(server: &str, uuid: &str) -> Result<(), SecretsError> {
 }
 
 // ── OAuth token storage ───────────────────────────────────────────────────
-// Stored under service "mcp-router-oauth" with account suffixes:
+// Stored under service "conduit-oauth" with account suffixes:
 //   "<server>:access" / "<server>:refresh" / "<server>:client_secret"
 // During the wizard's step 2b, tokens are written under a draft UUID; on Save
 // they're promoted to the canonical server name and the draft entries deleted.
 
-const OAUTH_SERVICE: &str = "mcp-router-oauth";
+const OAUTH_SERVICE: &str = "conduit-oauth";
 
 fn oauth_entry(account: &str) -> Result<Entry, SecretsError> {
     Ok(Entry::new(OAUTH_SERVICE, account)?)

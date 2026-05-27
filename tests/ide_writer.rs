@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use mcp_router::daemon::ide_writer::{
+use conduit::daemon::ide_writer::{
     purge_one_server_for_ide, purge_uniform_mcp_servers, read_raw, validate_json, write_raw,
     write_uniform_mcp_servers,
 };
@@ -20,7 +20,7 @@ fn fresh_tmp(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("mcp-router-ide-writer-{name}-{ns}"))
+    std::env::temp_dir().join(format!("conduit-ide-writer-{name}-{ns}"))
 }
 
 #[test]

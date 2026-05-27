@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
-use mcp_router::daemon::db::types::{Skill, SkillRepo};
-use mcp_router::daemon::db::Db;
+use conduit::daemon::db::types::{Skill, SkillRepo};
+use conduit::daemon::db::Db;
 
 fn fresh_repo(owner: &str) -> SkillRepo {
     SkillRepo {

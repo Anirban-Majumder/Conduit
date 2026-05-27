@@ -84,7 +84,7 @@ pub fn install(
 
     let cancel_for_thread = cancel.clone();
     let join = std::thread::Builder::new()
-        .name("mcp-router-tray".into())
+        .name("conduit-tray".into())
         .spawn(move || tray_thread(cmd_rx, cancel_for_thread, callbacks, ready_tx))
         .ok()?;
 
@@ -147,7 +147,7 @@ fn tray_thread(
 
     let tray = match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("mcp-router")
+        .with_tooltip("Conduit")
         .with_icon(icon_idle.clone())
         .build()
     {

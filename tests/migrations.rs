@@ -5,7 +5,7 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::db::{
+use conduit::daemon::db::{
     types::{Decision, DecisionSource, Server},
     Db,
 };
@@ -88,7 +88,7 @@ async fn migrations_idempotent_on_re_open() {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "mcp-router-mig-test-{}-{n}.db",
+        "conduit-mig-test-{}-{n}.db",
         std::process::id()
     ));
     let _ignored = std::fs::remove_file(&path);

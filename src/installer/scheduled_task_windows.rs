@@ -95,7 +95,7 @@ pub fn render_task_xml(exe: &Path) -> String {
 
 fn task_xml_dir() -> Result<PathBuf, InstallError> {
     let appdata = dirs::config_dir().ok_or(InstallError::NoHomeDir)?;
-    Ok(appdata.join("mcp-router"))
+    Ok(appdata.join("conduit"))
 }
 
 fn current_user_display() -> String {

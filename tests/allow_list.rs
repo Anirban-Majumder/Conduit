@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
-use mcp_router::daemon::upstream::allow_list;
+use conduit::daemon::upstream::allow_list;
 
 #[test]
 fn all_known_packages_return_correct_value() {

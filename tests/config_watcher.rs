@@ -8,14 +8,14 @@
 
 use std::time::Duration;
 
-use mcp_router::daemon::config_watcher;
-use mcp_router::daemon::events::{Bus, Event};
+use conduit::daemon::config_watcher;
+use conduit::daemon::events::{Bus, Event};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watcher_publishes_config_reloaded_after_debounce() {
     let tmp_dir = std::env::temp_dir().join(format!(
-        "mcp-router-watcher-{}-{}",
+        "conduit-watcher-{}-{}",
         std::process::id(),
         rand_suffix(),
     ));

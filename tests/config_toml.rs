@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
-use mcp_router::daemon::config_toml::Settings;
+use conduit::daemon::config_toml::Settings;
 
 #[test]
 fn empty_toml_parses_to_spec_defaults() {
@@ -74,7 +74,7 @@ fn invalid_toml_returns_parse_error() {
 #[test]
 fn load_or_default_missing_file_returns_defaults() {
     let path = std::env::temp_dir().join(format!(
-        "mcp-router-cfg-missing-{}.toml",
+        "conduit-cfg-missing-{}.toml",
         std::process::id()
     ));
     std::fs::remove_file(&path).ok();
@@ -85,7 +85,7 @@ fn load_or_default_missing_file_returns_defaults() {
 #[test]
 fn load_or_default_present_file_parses() {
     let path = std::env::temp_dir().join(format!(
-        "mcp-router-cfg-present-{}.toml",
+        "conduit-cfg-present-{}.toml",
         std::process::id()
     ));
     std::fs::write(&path, "[daemon]\nport = 12345\n").expect("write fixture");
@@ -97,7 +97,7 @@ fn load_or_default_present_file_parses() {
 #[test]
 fn load_or_default_garbage_file_returns_defaults() {
     let path = std::env::temp_dir().join(format!(
-        "mcp-router-cfg-garbage-{}.toml",
+        "conduit-cfg-garbage-{}.toml",
         std::process::id()
     ));
     std::fs::write(&path, "not [valid] :::").expect("write fixture");

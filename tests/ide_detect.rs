@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use mcp_router::daemon::ide_detect::{detect_installed, scan_paths, DetectionSource};
+use conduit::daemon::ide_detect::{detect_installed, scan_paths, DetectionSource};
 
 #[cfg(target_os = "macos")]
-use mcp_router::daemon::ide_detect::scan_apps;
+use conduit::daemon::ide_detect::scan_apps;
 
 // ── scan_paths unit tests ────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(suffix: &str) -> Self {
         let mut path = std::env::temp_dir();
-        path.push(format!("mcp-router-test-{suffix}-{}", std::process::id()));
+        path.push(format!("conduit-test-{suffix}-{}", std::process::id()));
         fs::create_dir_all(&path).expect("create temp dir");
         Self(path)
     }

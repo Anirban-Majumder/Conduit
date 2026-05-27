@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use mcp_router::daemon::skills::sync;
+use conduit::daemon::skills::sync;
 
 fn fresh_tmp(label: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +11,7 @@ fn fresh_tmp(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("mcp-router-skills-sync-{label}-{ns}"))
+    std::env::temp_dir().join(format!("conduit-skills-sync-{label}-{ns}"))
 }
 
 #[test]

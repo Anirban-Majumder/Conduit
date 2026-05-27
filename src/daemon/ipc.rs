@@ -81,7 +81,7 @@ pub fn resolve_socket_path() -> SocketAddr {
     #[cfg(windows)]
     {
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".into());
-        SocketAddr::Namespaced(format!("mcp-router-{user}"))
+        SocketAddr::Namespaced(format!("conduit-{user}"))
     }
     #[cfg(target_os = "linux")]
     {
@@ -91,9 +91,9 @@ pub fn resolve_socket_path() -> SocketAddr {
             .unwrap_or_else(|| PathBuf::from("/tmp"));
         let uid = uid_suffix();
         let path = if dir.as_path() == std::path::Path::new("/tmp") {
-            dir.join(format!("mcp-router-{uid}.sock"))
+            dir.join(format!("conduit-{uid}.sock"))
         } else {
-            dir.join("mcp-router.sock")
+            dir.join("conduit.sock")
         };
         SocketAddr::FilePath(path)
     }
@@ -104,7 +104,7 @@ pub fn resolve_socket_path() -> SocketAddr {
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| PathBuf::from("/tmp"));
         let uid = uid_suffix();
-        SocketAddr::FilePath(dir.join(format!("mcp-router-{uid}.sock")))
+        SocketAddr::FilePath(dir.join(format!("conduit-{uid}.sock")))
     }
 }
 

@@ -8,13 +8,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mcp_router::daemon::approval::{
+use conduit::daemon::approval::{
     spawn_timeout_sweeper, sweep_and_publish_timeouts, ApprovalCenter, ApprovalOutcome,
     ApprovalRequest,
 };
-use mcp_router::daemon::db::types::{ApprovalStatus, PendingApproval};
-use mcp_router::daemon::db::Db;
-use mcp_router::daemon::events::{Bus, Event};
+use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
+use conduit::daemon::db::Db;
+use conduit::daemon::events::{Bus, Event};
 use tokio::time::timeout as wait_for;
 use tokio_util::sync::CancellationToken;
 
@@ -244,7 +244,7 @@ async fn resolve_to_pending_rejected() {
         .expect_err("resolving to Pending is invalid");
     assert!(matches!(
         err,
-        mcp_router::daemon::approval::ApprovalError::InvalidStatus
+        conduit::daemon::approval::ApprovalError::InvalidStatus
     ));
 }
 

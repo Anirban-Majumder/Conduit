@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use mcp_router::daemon::upstream::oauth::{
+use conduit::daemon::upstream::oauth::{
     bind_callback_listener, parse_www_authenticate, wait_for_callback, OauthError,
     RefreshCoordinator,
 };

@@ -1,12 +1,12 @@
 [package]
-name = "mcp-router"
+name = "conduit"
 version = "0.0.1"
 edition = "2021"
-description = "Polished MCP proxy + policy enforcer for IDEs"
-repository = "https://github.com/ahmed/mcp-router"  # TODO: replace with actual repo URL on push
+description = "MCPs and skills, synced to every IDE."
+repository = "https://github.com/ahmed/conduit"  # TODO: replace with actual repo URL on push
 license = "Apache-2.0"
 
-# Dependencies populated as phases land. See specs/mcp-router-v0.md §Stack.
+# Dependencies populated as phases land. See specs/conduit-v0.md §Stack.
 # Stage 1 subset: only what the foundation (runtime topology, DB actor,
 # events broadcast, errors, Slint shell) directly needs. Subsequent stages
 # add axum, rmcp, reqwest, serde, toml, keyring, dirs, notify, tray-icon,

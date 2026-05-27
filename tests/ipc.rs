@@ -11,7 +11,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use mcp_router::daemon::ipc::{
+use conduit::daemon::ipc::{
     self, accept_loop, send_command, try_bind, BindError, Command, ShowHandler, SocketAddr,
 };
 use tokio_util::sync::CancellationToken;
@@ -20,7 +20,7 @@ fn unique_addr(tag: &str) -> SocketAddr {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
     let mut p = std::env::temp_dir();
-    p.push(format!("mcp-router-ipc-{}-{tag}-{n}.sock", std::process::id()));
+    p.push(format!("conduit-ipc-{}-{tag}-{n}.sock", std::process::id()));
     let _ignored = std::fs::remove_file(&p);
     SocketAddr::FilePath(p)
 }

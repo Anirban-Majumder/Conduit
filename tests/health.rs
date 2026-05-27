@@ -4,7 +4,7 @@
     reason = "test ergonomics"
 )]
 
-use mcp_router::daemon::upstream::health::{derive_state, ServerHealth, ServerState};
+use conduit::daemon::upstream::health::{derive_state, ServerHealth, ServerState};
 
 const fn fresh() -> ServerHealth {
     ServerHealth {
