@@ -1,7 +1,7 @@
-// IDE config writers: Claude Code, Cursor, VS Code Copilot, OpenCode, OpenClaude.
-// Each per-IDE module supplies its OS-resolved config path; this module owns
-// the shared deep-merge / atomic-write / purge logic over the uniform
-// `mcpServers` shape. See spec §Add IDE flow > IDE config paths.
+// IDE config writers: Claude Code, Cursor, VS Code Copilot, OpenCode,
+// OpenClaude, Codex. Each per-IDE module supplies its OS-resolved config path
+// + per-IDE schema (top-level key + optional `type` discriminator); this
+// module owns the shared deep-merge / atomic-write / purge logic.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,47 @@ use serde_json::{Map, Value};
 use crate::daemon::db::types::{IdeKey, ManagedIdeConfig};
 pub use crate::daemon::ide_detect::IdeKind;
 
+/// Per-IDE schema for the JSON-flavored MCP config (5 of 6 IDEs).
+/// Codex is TOML and goes through `write_toml_mcp_servers` instead.
+#[derive(Debug, Clone, Copy)]
+pub struct JsonSchema {
+    /// Top-level key holding the server map (e.g. `mcpServers`, `servers`, `mcp`).
+    pub top_level_key: &'static str,
+    /// Required `type` discriminator on each entry, or None if the IDE
+    /// auto-negotiates transport from the URL.
+    pub server_type: Option<&'static str>,
+}
+
+#[expect(
+    clippy::match_same_arms,
+    reason = "per-IDE arms intentional: each schema was verified independently against that project's docs/source. Coincidental equality today (Claude Code + OpenClaude) shouldn't mask future drift."
+)]
+const fn json_schema_for(ide: IdeKind) -> Option<JsonSchema> {
+    match ide {
+        IdeKind::ClaudeCode => Some(JsonSchema {
+            top_level_key: "mcpServers",
+            server_type: Some("http"),
+        }),
+        IdeKind::Cursor => Some(JsonSchema {
+            top_level_key: "mcpServers",
+            server_type: None,
+        }),
+        IdeKind::VsCodeCopilot => Some(JsonSchema {
+            top_level_key: "servers",
+            server_type: Some("http"),
+        }),
+        IdeKind::OpenCode => Some(JsonSchema {
+            top_level_key: "mcp",
+            server_type: Some("remote"),
+        }),
+        IdeKind::OpenClaude => Some(JsonSchema {
+            top_level_key: "mcpServers",
+            server_type: Some("http"),
+        }),
+        IdeKind::Codex => None,
+    }
+}
+
 pub mod claude_code;
 pub mod codex;
 pub mod cursor;
@@ -19,8 +60,12 @@ pub mod openclaude;
 pub mod opencode;
 pub mod vscode_copilot;
 
+// Template for adding a new client. Gated with `#![cfg(any())]` so it never
+// compiles — copy this file to `<name>.rs` and wire it into the dispatchers.
+pub mod example;
+
 pub mod error;
-pub use error::IdeWriterError;
+pub use error::ClientError;
 
 /// Resolve the IDE's config file path on the CURRENT operating system.
 /// Returns None if we have no path mapping for this (ide, os) combination.
@@ -109,11 +154,12 @@ pub fn write(
     ide_key: &IdeKey,
     server_names: &[String],
     port: u16,
-) -> Result<ManagedIdeConfig, IdeWriterError> {
-    let path = config_path_for(ide).ok_or(IdeWriterError::NoPathForOs)?;
-    match ide {
-        IdeKind::Codex => write_toml_mcp_servers(&path, &ide_key.key, server_names, port)?,
-        _ => write_uniform_mcp_servers(&path, &ide_key.key, server_names, port)?,
+) -> Result<ManagedIdeConfig, ClientError> {
+    let path = config_path_for(ide).ok_or(ClientError::NoPathForOs)?;
+    if let Some(schema) = json_schema_for(ide) {
+        write_uniform_mcp_servers(&path, &schema, &ide_key.key, server_names, port)?;
+    } else {
+        write_toml_mcp_servers(&path, &ide_key.key, server_names, port)?;
     }
     Ok(ManagedIdeConfig {
         ide_name: ide_name(ide).to_string(),
@@ -128,12 +174,12 @@ pub fn write(
 ///
 /// Identifies our entries by URL match: `http://127.0.0.1:<port>/<ide_key>/<server>/mcp`.
 /// Preserves every other entry the user added. Idempotent (missing file is Ok).
-pub fn purge(ide: IdeKind, ide_key: &str, port: u16) -> Result<(), IdeWriterError> {
-    let path = config_path_for(ide).ok_or(IdeWriterError::NoPathForOs)?;
-    match ide {
-        IdeKind::Codex => purge_toml_mcp_servers(&path, ide_key, port),
-        _ => purge_uniform_mcp_servers(&path, ide_key, port),
-    }
+pub fn purge(ide: IdeKind, ide_key: &str, port: u16) -> Result<(), ClientError> {
+    let path = config_path_for(ide).ok_or(ClientError::NoPathForOs)?;
+    let Some(schema) = json_schema_for(ide) else {
+        return purge_toml_mcp_servers(&path, ide_key, port);
+    };
+    purge_uniform_mcp_servers(&path, &schema, ide_key, port)
 }
 
 fn url_for(port: u16, key: &str, server: &str) -> String {
@@ -151,53 +197,59 @@ fn url_is_ours(url: &str, port: u16, key: &str) -> bool {
     !server_part.is_empty() && !server_part.contains('/')
 }
 
-/// Merge our `mcpServers` entries into the JSON file at `path` and write
-/// atomically. Used by `write`; exposed so tests can drive arbitrary paths.
+/// Merge our server entries into the JSON file at `path` (under
+/// `schema.top_level_key`) and write atomically. Used by `write`; exposed so
+/// tests can drive arbitrary paths.
 pub fn write_uniform_mcp_servers(
     path: &Path,
+    schema: &JsonSchema,
     key: &str,
     server_names: &[String],
     port: u16,
-) -> Result<(), IdeWriterError> {
+) -> Result<(), ClientError> {
     let mut root = read_existing_object(path)?.unwrap_or_default();
 
-    let mut servers = match root.remove("mcpServers") {
+    let mut servers = match root.remove(schema.top_level_key) {
         Some(Value::Object(m)) => m,
-        // Non-object value under `mcpServers` is malformed by our standards;
-        // replace it. Other top-level keys are preserved.
+        // Non-object value under the top-level key is malformed by our
+        // standards; replace it. Other top-level keys are preserved.
         Some(_) | None => Map::new(),
     };
 
     for name in server_names {
         let mut entry = Map::new();
+        if let Some(ty) = schema.server_type {
+            entry.insert("type".to_string(), Value::String(ty.to_string()));
+        }
         entry.insert("url".to_string(), Value::String(url_for(port, key, name)));
         servers.insert(name.clone(), Value::Object(entry));
     }
 
-    root.insert("mcpServers".to_string(), Value::Object(servers));
+    root.insert(schema.top_level_key.to_string(), Value::Object(servers));
     atomic_write_json(path, &Value::Object(root))
 }
 
-/// Drop one server's `mcpServers` entry by exact URL match.
+/// Drop one server's entry from the IDE's MCP config by exact URL match.
 ///
 /// Targets `http://127.0.0.1:<port>/<ide_key>/<server_name>/mcp`. Used by
 /// §3.1 cascade delete and the per-server "Remove from this IDE" button.
 /// Other entries (user-authored, other servers, other top-level keys) are
-/// preserved.
+/// preserved. `ide` selects the per-IDE schema (top-level key + format).
 pub fn purge_one_server_for_ide(
+    ide: IdeKind,
     path: &Path,
     port: u16,
     ide_key: &str,
     server_name: &str,
-) -> Result<(), IdeWriterError> {
-    if is_toml_path(path) {
+) -> Result<(), ClientError> {
+    let Some(schema) = json_schema_for(ide) else {
         return purge_one_server_for_ide_toml(path, port, ide_key, server_name);
-    }
+    };
     let Some(mut root) = read_existing_object(path)? else {
         return Ok(());
     };
     let target = url_for(port, ide_key, server_name);
-    if let Some(Value::Object(servers)) = root.get_mut("mcpServers") {
+    if let Some(Value::Object(servers)) = root.get_mut(schema.top_level_key) {
         servers.retain(|_name, entry| {
             entry.get("url").and_then(Value::as_str) != Some(target.as_str())
         });
@@ -205,28 +257,22 @@ pub fn purge_one_server_for_ide(
     atomic_write_json(path, &Value::Object(root))
 }
 
-fn is_toml_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
-}
-
 /// Read the raw file contents (UTF-8 string) for the Editors-tab inline JSON
 /// viewer. Returns `None` if the file doesn't exist yet.
-pub fn read_raw(path: &Path) -> Result<Option<String>, IdeWriterError> {
+pub fn read_raw(path: &Path) -> Result<Option<String>, ClientError> {
     match fs::read_to_string(path) {
         Ok(s) => Ok(Some(s)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(IdeWriterError::Io(e)),
+        Err(e) => Err(ClientError::Io(e)),
     }
 }
 
 /// Atomic write of the inline-editor textarea. Validates JSON first; refuses
 /// to clobber the file on parse error.
-pub fn write_raw(path: &Path, text: &str) -> Result<(), IdeWriterError> {
+pub fn write_raw(path: &Path, text: &str) -> Result<(), ClientError> {
     let value: Value = serde_json::from_str(text)?;
     let Value::Object(_) = &value else {
-        return Err(IdeWriterError::Json(serde::de::Error::custom(
+        return Err(ClientError::Json(serde::de::Error::custom(
             "expected top-level JSON object",
         )));
     };
@@ -235,24 +281,30 @@ pub fn write_raw(path: &Path, text: &str) -> Result<(), IdeWriterError> {
 
 /// Returns Ok(()) if `text` parses as a valid top-level JSON object. Used by
 /// the Editors-tab live-validate (without writing).
-pub fn validate_json(text: &str) -> Result<(), IdeWriterError> {
+pub fn validate_json(text: &str) -> Result<(), ClientError> {
     let value: Value = serde_json::from_str(text)?;
     let Value::Object(_) = &value else {
-        return Err(IdeWriterError::Json(serde::de::Error::custom(
+        return Err(ClientError::Json(serde::de::Error::custom(
             "expected top-level JSON object",
         )));
     };
     Ok(())
 }
 
-/// Drop every `mcpServers` entry whose `url` matches our (port, key) shape.
-/// Missing file is a no-op. Exposed so tests can drive arbitrary paths.
-pub fn purge_uniform_mcp_servers(path: &Path, key: &str, port: u16) -> Result<(), IdeWriterError> {
+/// Drop every entry under `schema.top_level_key` whose `url` matches our
+/// (port, key) shape. Missing file is a no-op. Exposed so tests can drive
+/// arbitrary paths.
+pub fn purge_uniform_mcp_servers(
+    path: &Path,
+    schema: &JsonSchema,
+    key: &str,
+    port: u16,
+) -> Result<(), ClientError> {
     let Some(mut root) = read_existing_object(path)? else {
         return Ok(());
     };
 
-    if let Some(Value::Object(servers)) = root.get_mut("mcpServers") {
+    if let Some(Value::Object(servers)) = root.get_mut(schema.top_level_key) {
         servers.retain(|_name, entry| {
             let Some(url) = entry.get("url").and_then(Value::as_str) else {
                 return true;
@@ -264,7 +316,7 @@ pub fn purge_uniform_mcp_servers(path: &Path, key: &str, port: u16) -> Result<()
     atomic_write_json(path, &Value::Object(root))
 }
 
-fn read_existing_object(path: &Path) -> Result<Option<Map<String, Value>>, IdeWriterError> {
+fn read_existing_object(path: &Path) -> Result<Option<Map<String, Value>>, ClientError> {
     match fs::read(path) {
         Ok(bytes) if bytes.iter().all(u8::is_ascii_whitespace) => Ok(None),
         Ok(bytes) => {
@@ -272,17 +324,17 @@ fn read_existing_object(path: &Path) -> Result<Option<Map<String, Value>>, IdeWr
             match value {
                 Value::Object(m) => Ok(Some(m)),
                 // Valid JSON but not an object — refuse rather than clobber.
-                _ => Err(IdeWriterError::Json(serde::de::Error::custom(
+                _ => Err(ClientError::Json(serde::de::Error::custom(
                     "expected top-level JSON object",
                 ))),
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(IdeWriterError::Io(e)),
+        Err(e) => Err(ClientError::Io(e)),
     }
 }
 
-fn atomic_write_json(path: &Path, value: &Value) -> Result<(), IdeWriterError> {
+fn atomic_write_json(path: &Path, value: &Value) -> Result<(), ClientError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
@@ -298,7 +350,7 @@ fn atomic_write_json(path: &Path, value: &Value) -> Result<(), IdeWriterError> {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ignored = fs::remove_file(&tmp);
-            Err(IdeWriterError::Io(e))
+            Err(ClientError::Io(e))
         }
     }
 }
@@ -311,7 +363,7 @@ pub fn write_toml_mcp_servers(
     key: &str,
     server_names: &[String],
     port: u16,
-) -> Result<(), IdeWriterError> {
+) -> Result<(), ClientError> {
     let mut root = read_existing_toml_table(path)?.unwrap_or_default();
 
     let mut servers = match root.remove("mcp_servers") {
@@ -333,7 +385,7 @@ pub fn write_toml_mcp_servers(
 }
 
 /// TOML-flavored sibling of `purge_uniform_mcp_servers`.
-pub fn purge_toml_mcp_servers(path: &Path, key: &str, port: u16) -> Result<(), IdeWriterError> {
+pub fn purge_toml_mcp_servers(path: &Path, key: &str, port: u16) -> Result<(), ClientError> {
     let Some(mut root) = read_existing_toml_table(path)? else {
         return Ok(());
     };
@@ -353,7 +405,7 @@ fn purge_one_server_for_ide_toml(
     port: u16,
     ide_key: &str,
     server_name: &str,
-) -> Result<(), IdeWriterError> {
+) -> Result<(), ClientError> {
     let Some(mut root) = read_existing_toml_table(path)? else {
         return Ok(());
     };
@@ -366,24 +418,24 @@ fn purge_one_server_for_ide_toml(
     atomic_write_toml(path, &toml::Value::Table(root))
 }
 
-fn read_existing_toml_table(path: &Path) -> Result<Option<toml::value::Table>, IdeWriterError> {
+fn read_existing_toml_table(path: &Path) -> Result<Option<toml::value::Table>, ClientError> {
     match fs::read_to_string(path) {
         Ok(s) if s.chars().all(char::is_whitespace) => Ok(None),
         Ok(s) => {
             let value: toml::Value = toml::from_str(&s)?;
             match value {
                 toml::Value::Table(t) => Ok(Some(t)),
-                _ => Err(IdeWriterError::TomlDe(serde::de::Error::custom(
+                _ => Err(ClientError::TomlDe(serde::de::Error::custom(
                     "expected top-level TOML table",
                 ))),
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(IdeWriterError::Io(e)),
+        Err(e) => Err(ClientError::Io(e)),
     }
 }
 
-fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), IdeWriterError> {
+fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), ClientError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
@@ -401,17 +453,17 @@ fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), IdeWriterEr
         Ok(()) => Ok(()),
         Err(e) => {
             let _ignored = fs::remove_file(&tmp);
-            Err(IdeWriterError::Io(e))
+            Err(ClientError::Io(e))
         }
     }
 }
 
-fn tmp_path_for(path: &Path) -> Result<PathBuf, IdeWriterError> {
+fn tmp_path_for(path: &Path) -> Result<PathBuf, ClientError> {
     let file_name = path
         .file_name()
-        .ok_or(IdeWriterError::NonUtf8Path)?
+        .ok_or(ClientError::NonUtf8Path)?
         .to_str()
-        .ok_or(IdeWriterError::NonUtf8Path)?;
+        .ok_or(ClientError::NonUtf8Path)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let pid = std::process::id();
     let nonce = now_nanos();

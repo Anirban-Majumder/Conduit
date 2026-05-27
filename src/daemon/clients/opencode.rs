@@ -1,5 +1,6 @@
-// TODO: refine per-IDE shape — OpenCode may use a non-standard key; ship the
-// uniform `mcpServers` shape for v0 and revisit during beta.
+// Repo:   https://github.com/sst/opencode
+// MCP:    ~/.config/opencode/opencode.json (XDG on Linux+macOS, NOT ~/Library) — top-level `mcp`; schema `{type:"remote", url}`. Source: https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/config/mcp.ts
+// Skills: ~/.config/opencode/skills/<name>/SKILL.md (one of several scan paths). Source: https://raw.githubusercontent.com/sst/opencode/main/packages/opencode/src/skill/index.ts
 
 use std::path::{Path, PathBuf};
 

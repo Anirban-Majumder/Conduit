@@ -22,7 +22,7 @@ use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
 use conduit::daemon::http_server::{self, AppState};
 use conduit::daemon::ide_detect::IdeKind;
-use conduit::daemon::ide_writer;
+use conduit::daemon::clients;
 use conduit::daemon::ipc;
 use conduit::daemon::onboarding::{
     check_background_hint, mark_first_run_completed, should_show_window_at_startup,
@@ -1023,7 +1023,7 @@ fn install_callbacks(
                 let display = record
                     .as_ref()
                     .map_or_else(|| kind_str.clone(), |r| r.display_name.clone());
-                let text = match path.as_deref().map(ide_writer::read_raw) {
+                let text = match path.as_deref().map(clients::read_raw) {
                     Some(Ok(Some(s))) => s,
                     Some(Ok(None)) | None => String::new(),
                     Some(Err(e)) => format!("// read error: {e}"),
@@ -1047,7 +1047,7 @@ fn install_callbacks(
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let validation = ide_writer::validate_json(text.as_str());
+            let validation = clients::validate_json(text.as_str());
             ui.set_selected_editor_text(text);
             ui.set_selected_editor_dirty(true);
             match validation {
@@ -1087,7 +1087,7 @@ fn install_callbacks(
                     });
                     return;
                 };
-                let result = ide_writer::write_raw(&path, &text);
+                let result = clients::write_raw(&path, &text);
                 let _ignored = weak.upgrade_in_event_loop(move |ui| match result {
                     Ok(()) => {
                         ui.set_selected_editor_status(SharedString::from("saved"));
@@ -1120,7 +1120,7 @@ fn install_callbacks(
             rt.spawn(async move {
                 let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
                 let path = resolve_ide_config_path(record.as_ref());
-                let text = match path.as_deref().map(ide_writer::read_raw) {
+                let text = match path.as_deref().map(clients::read_raw) {
                     Some(Ok(Some(s))) => s,
                     Some(Ok(None)) | None => String::new(),
                     Some(Err(e)) => format!("// read error: {e}"),
@@ -1327,7 +1327,7 @@ fn resolve_ide_config_path(
             return Some(p);
         }
         if let Some(kind) = IdeKind::from_db_kind(&rec.ide_kind) {
-            return ide_writer::config_path_for(kind);
+            return clients::config_path_for(kind);
         }
     }
     None
@@ -1349,7 +1349,7 @@ async fn remove_ide(db: &Db, port: u16, ide_kind: &str) {
     let Some(kind) = IdeKind::from_db_kind(&record.ide_kind) else {
         return;
     };
-    if let Err(e) = ide_writer::purge(kind, &record.ide_key, port) {
+    if let Err(e) = clients::purge(kind, &record.ide_key, port) {
         tracing::warn!(error = %e, kind = %record.ide_kind, "ide purge failed");
     }
     if let Err(e) = db.mark_ide_not_tracked(&record.ide_kind).await {
@@ -1998,10 +1998,10 @@ async fn toggle_server_for_ide(
             ide_name: record.display_name.clone(),
             created_at: record.first_seen_at,
         };
-        match ide_writer::write(kind, &key_handle, &entries, port) {
+        match clients::write(kind, &key_handle, &entries, port) {
             Ok(managed) => managed.config_path,
             Err(e) => {
-                tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "ide_writer::write failed");
+                tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "clients::write failed");
                 return;
             }
         }
@@ -2012,14 +2012,18 @@ async fn toggle_server_for_ide(
         let Some(existing_path) = record
             .config_path
             .clone()
-            .or_else(|| ide_writer::config_path_for(kind))
+            .or_else(|| clients::config_path_for(kind))
         else {
             tracing::warn!(kind = %record.ide_kind, "no config path for ide; skipping purge");
             return;
         };
-        if let Err(e) =
-            ide_writer::purge_one_server_for_ide(&existing_path, port, &record.ide_key, server_name)
-        {
+        if let Err(e) = clients::purge_one_server_for_ide(
+            kind,
+            &existing_path,
+            port,
+            &record.ide_key,
+            server_name,
+        ) {
             tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "purge_one_server_for_ide failed");
             return;
         }

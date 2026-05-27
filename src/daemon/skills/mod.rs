@@ -16,7 +16,7 @@ use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::ide_writer::{self, SKILL_TARGET_IDES};
+use crate::daemon::clients::{self, SKILL_TARGET_IDES};
 use crate::paths::Paths;
 
 const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -319,7 +319,7 @@ impl SkillManager {
         let directory_owned = directory.to_string();
         tokio::task::spawn_blocking(move || {
             for ide in SKILL_TARGET_IDES {
-                sync::remove_from_target(&directory_owned, ide_writer::ide_db_name(*ide));
+                sync::remove_from_target(&directory_owned, clients::ide_db_name(*ide));
             }
         })
         .await
@@ -434,7 +434,7 @@ async fn apply_targets_blocking(
     let targets: Vec<String> = targets.to_vec();
     tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
         for ide in SKILL_TARGET_IDES {
-            let key = ide_writer::ide_db_name(*ide);
+            let key = clients::ide_db_name(*ide);
             if targets.iter().any(|t| t == key) {
                 sync::sync_to_target(&dest, key)?;
             } else {
@@ -453,7 +453,7 @@ fn normalize_targets(targets: Vec<String>) -> Vec<String> {
         .filter(|t| {
             SKILL_TARGET_IDES
                 .iter()
-                .any(|ide| ide_writer::ide_db_name(*ide) == t)
+                .any(|ide| clients::ide_db_name(*ide) == t)
         })
         .collect();
     out.sort();

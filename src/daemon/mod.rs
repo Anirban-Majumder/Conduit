@@ -7,7 +7,7 @@ pub mod errors;
 pub mod events;
 pub mod http_server;
 pub mod ide_detect;
-pub mod ide_writer;
+pub mod clients;
 pub mod ipc;
 pub mod mcp_proxy;
 pub mod onboarding;

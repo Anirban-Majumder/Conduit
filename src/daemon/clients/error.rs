@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum IdeWriterError {
+pub enum ClientError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 

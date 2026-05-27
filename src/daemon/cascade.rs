@@ -7,8 +7,8 @@ use crate::daemon::db::types::{ApprovalStatus, ManagedIdeConfig};
 use crate::daemon::db::{CascadeTrim, Db};
 use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::ide_writer::ide_kind_from_db_name;
-use crate::daemon::ide_writer::{self, IdeWriterError};
+use crate::daemon::clients::ide_kind_from_db_name;
+use crate::daemon::clients::{self, ClientError};
 
 const APPLY_PARALLELISM: usize = 4;
 
@@ -43,13 +43,17 @@ pub async fn delete_server_with_cascade(
             Ok(p) => p,
             Err(_closed) => break,
         };
+        let Some(ide) = ide_kind_from_db_name(&target.ide_name) else {
+            tracing::warn!(ide = %target.ide_name, "cascade: unknown IDE in plan; skipping");
+            continue;
+        };
         let path = target.config_path.clone();
         let ide_key = target.ide_key.clone();
         let server = server_name.to_string();
         let target_clone = target.clone();
         joinset.spawn_blocking(move || {
             let _permit = permit;
-            let result = ide_writer::purge_one_server_for_ide(&path, port, &ide_key, &server);
+            let result = clients::purge_one_server_for_ide(ide, &path, port, &ide_key, &server);
             (target_clone, result)
         });
     }
@@ -118,12 +122,12 @@ async fn plan_targets(db: &Db, server_name: &str) -> Result<Vec<TargetIde>, DbEr
     Ok(plan)
 }
 
-fn describe(err: &IdeWriterError) -> String {
+fn describe(err: &ClientError) -> String {
     match err {
-        IdeWriterError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        ClientError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
             "config file no longer exists".to_string()
         }
-        IdeWriterError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+        ClientError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             "permission denied".to_string()
         }
         other => other.to_string(),

@@ -6,12 +6,12 @@ use std::fs;
 use std::path::Path;
 
 use crate::daemon::errors::SkillError;
-use crate::daemon::ide_writer::{self, ide_kind_from_db_name};
+use crate::daemon::clients::{self, ide_kind_from_db_name};
 
 pub fn sync_to_target(source: &Path, ide_db_name: &str) -> Result<(), SkillError> {
     let ide = ide_kind_from_db_name(ide_db_name)
         .ok_or_else(|| SkillError::UnknownTarget(ide_db_name.to_string()))?;
-    let Some(base) = ide_writer::skills_dir_for(ide) else {
+    let Some(base) = clients::skills_dir_for(ide) else {
         return Err(SkillError::UnknownTarget(ide_db_name.to_string()));
     };
     let install_name = source
@@ -52,7 +52,7 @@ pub fn remove_from_target(install_name: &str, ide_db_name: &str) {
     let Some(ide) = ide_kind_from_db_name(ide_db_name) else {
         return;
     };
-    let Some(base) = ide_writer::skills_dir_for(ide) else {
+    let Some(base) = clients::skills_dir_for(ide) else {
         return;
     };
     let dest = base.join(install_name);

@@ -1,5 +1,6 @@
-// TODO: refine per-IDE shape — VS Code Copilot's stable schema uses `servers`
-// rather than `mcpServers`. v0 ships the uniform shape; revisit during beta.
+// Repo:   https://github.com/microsoft/vscode-copilot-chat
+// MCP:    <Code/User>/mcp.json — top-level `servers`; schema `{type:"http", url}`. Source: https://code.visualstudio.com/docs/copilot/reference/mcp-configuration
+// Skills: not supported (prompt files are workspace-scoped only: .github/prompts/*.prompt.md). Source: https://code.visualstudio.com/docs/copilot/customization/prompt-files
 
 use std::path::{Path, PathBuf};
 

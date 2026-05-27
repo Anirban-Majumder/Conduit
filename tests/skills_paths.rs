@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use conduit::daemon::ide_writer::{
+use conduit::daemon::clients::{
     ide_db_name, ide_kind_from_db_name, skills_dir_under, SKILL_TARGET_IDES,
 };
 use conduit::paths::Paths;

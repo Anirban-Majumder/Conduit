@@ -157,7 +157,7 @@ pub async fn probe_with_progress(
                         return Err(ProbeError::OauthRequired);
                     };
                     let (meta, callback_listener, redirect_uri, pkce, state, dcr) =
-                        run_oauth_pre(&challenge, cancel.clone(), &emit).await?;
+                        run_oauth_pre(url, &challenge, cancel.clone(), &emit).await?;
                     let authorize_url = oauth::build_authorize_url(
                         &meta.authorization_endpoint,
                         &dcr.client_id,
@@ -336,21 +336,63 @@ type OauthPre = (
     oauth::DcrResponse,
 );
 
+fn resource_metadata_candidates(mcp_url: &str, challenge: &oauth::OauthChallenge) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(advertised) = challenge.resource_metadata_url.as_deref() {
+        out.push(advertised.to_string());
+    }
+    if let Ok(parsed) = reqwest::Url::parse(mcp_url) {
+        let origin = format!(
+            "{}://{}",
+            parsed.scheme(),
+            parsed.host_str().unwrap_or_default()
+        );
+        let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+        let path = parsed.path().trim_start_matches('/').trim_end_matches('/');
+        if !path.is_empty() {
+            out.push(format!(
+                "{origin}{port_suffix}/.well-known/oauth-protected-resource/{path}"
+            ));
+        }
+        out.push(format!(
+            "{origin}{port_suffix}/.well-known/oauth-protected-resource"
+        ));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+async fn first_authorization_metadata(
+    http: &reqwest::Client,
+    candidates: &[String],
+) -> Result<oauth::AuthorizationServerMetadata, ProbeError> {
+    let mut last_err: Option<String> = None;
+    for candidate in candidates {
+        match oauth::fetch_authorization_server_metadata(http, candidate).await {
+            Ok(meta) => return Ok(meta),
+            Err(e) => last_err = Some(format!("{candidate}: {e}")),
+        }
+    }
+    Err(ProbeError::OauthFlow(format!(
+        "no OAuth protected-resource metadata found (tried {} candidates: {})",
+        candidates.len(),
+        last_err.unwrap_or_else(|| "none".into())
+    )))
+}
+
 async fn run_oauth_pre(
+    mcp_url: &str,
     challenge: &oauth::OauthChallenge,
     cancel: CancellationToken,
     emit: &(dyn Fn(ProbeEvent) + Send + Sync),
 ) -> Result<OauthPre, ProbeError> {
-    let resource = challenge.resource_metadata_url.as_deref().ok_or_else(|| {
-        ProbeError::OauthFlow("server did not advertise resource_metadata".into())
-    })?;
     let http = reqwest::Client::new();
     emit(ProbeEvent::Phase(
         "Resolving authorization server...".into(),
     ));
-    let meta = oauth::fetch_authorization_server_metadata(&http, resource)
-        .await
-        .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
+    let resource_candidates = resource_metadata_candidates(mcp_url, challenge);
+    let meta = first_authorization_metadata(&http, &resource_candidates).await?;
     let (listener, _port, redirect_uri) = oauth::bind_callback_listener()
         .await
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;

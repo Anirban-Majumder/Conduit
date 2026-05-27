@@ -57,6 +57,12 @@ pub enum UpstreamError {
     #[error("initialize failed: {0}")]
     InitFailed(String),
 
+    /// Upstream returned 401 Unauthorized with a parseable `WWW-Authenticate`
+    /// header. The string is the raw header value, e.g.
+    /// `Bearer realm="OAuth", resource_metadata="https://..."`.
+    #[error("auth required: {0}")]
+    AuthRequired(String),
+
     #[error("upstream process died between calls")]
     Crashed,
 

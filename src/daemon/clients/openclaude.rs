@@ -1,3 +1,7 @@
+// Repo:   https://github.com/Gitlawb/openclaude
+// MCP:    ~/.openclaude.json — top-level `mcpServers`; schema `{type:"http", url}` (McpHTTPServerConfigSchema). Source: https://raw.githubusercontent.com/Gitlawb/openclaude/main/src/services/mcp/types.ts
+// Skills: ~/.openclaude/skills/<name>/SKILL.md (resolved via getClaudeConfigHomeDir()). Source: https://raw.githubusercontent.com/Gitlawb/openclaude/main/src/skills/loadSkillsDir.ts
+
 use std::path::{Path, PathBuf};
 
 pub(crate) const IDE_NAME: &str = "OpenClaude";

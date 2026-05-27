@@ -13,7 +13,12 @@ use conduit::daemon::cascade::delete_server_with_cascade;
 use conduit::daemon::db::types::{ApprovalStatus, PendingApproval, Server, ToolMeta};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
-use conduit::daemon::ide_writer::write_uniform_mcp_servers;
+use conduit::daemon::clients::{write_uniform_mcp_servers, JsonSchema};
+
+const CURSOR_SCHEMA: JsonSchema = JsonSchema {
+    top_level_key: "mcpServers",
+    server_type: None,
+};
 
 fn unique_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -71,6 +76,7 @@ async fn cascade_trims_ide_configs_and_deletes_server_row() {
         .unwrap();
     write_uniform_mcp_servers(
         &cfg_path,
+        &CURSOR_SCHEMA,
         &ide.ide_key,
         &["gmail".to_string(), "github".to_string()],
         9876,

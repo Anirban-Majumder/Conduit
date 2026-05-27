@@ -1,7 +1,6 @@
-// Codex CLI (OpenAI). Config lives at `$CODEX_HOME/config.toml`, default
-// `~/.codex/config.toml` on every OS. Format is TOML — not JSON like the
-// other five — and the section key is `mcp_servers` (snake_case), with
-// HTTP servers expressed as `[mcp_servers.<name>]` tables holding a `url`.
+// Repo:   https://github.com/openai/codex
+// MCP:    $CODEX_HOME/config.toml (default ~/.codex/config.toml) — top-level `[mcp_servers.<name>]`; remote uses `url` only (transport inferred, no `type`). Source: https://raw.githubusercontent.com/openai/codex/main/codex-rs/config/src/mcp_types.rs
+// Skills: ~/.codex/skills (deprecated; current is ~/.agents/skills, plus repo-local .agents/skills). Source: https://raw.githubusercontent.com/openai/codex/main/codex-rs/core-skills/src/loader.rs
 
 use std::path::{Path, PathBuf};
 
