@@ -38,6 +38,16 @@ export struct ToolPolicyRow {
     decision: string,           // "allow" | "ask" | "deny"
 }
 
+// Per-IDE enablement chip for the currently selected server. `ide_name` and
+// `ide_key` round-trip back to Rust so the callback can locate the
+// `managed_ide_configs` row; `label` is what's shown to the user.
+export struct ServerIdeTarget {
+    ide_name: string,
+    ide_key: string,
+    label: string,
+    active: bool,
+}
+
 export struct ServerDetail {
     name: string,
     version: string,                // "server_version" from probe
@@ -447,15 +457,41 @@ component HealthCard inherits Rectangle {
     }
 }
 
+// Shared on/off chip: bright (accent) when active, muted (surface-3) when not.
+// Used both by the Servers tab (per-IDE enable/disable for an MCP server) and
+// the Skills tab (per-IDE sync targets for an installed skill).
+component TargetToggle inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback toggle();
+    background: root.active ? Theme.accent : Theme.surface-3;
+    border-radius: Theme.radius-sm;
+    height: 28px;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.bg : Theme.text-secondary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea { clicked => { root.toggle(); } }
+}
+
 component ServersTab inherits Rectangle {
     in property <[ServerRow]> rows;
     in property <string> selected;
     in property <ServerDetail> detail;
     in property <[ToolPolicyRow]> tools;
+    in property <[ServerIdeTarget]> targets;
     callback select-server(string);
     callback delete-clicked(string);
     callback retest-clicked(string);
     callback change-tool-policy(string, string, string);   // server, tool, decision
+    callback toggle-target(string, string, string, bool);  // server, ide_name, ide_key, enable
     callback add-clicked();
     callback copy-error-clicked(string);
 
@@ -593,6 +629,29 @@ component ServersTab inherits Rectangle {
                         detail: root.detail;
                         copy-error => { root.copy-error-clicked(root.detail.last-error); }
                     }
+                    // Per-IDE enable/disable. Same TargetToggle component as the
+                    // Skills tab — bright when the server is in that IDE's MCP
+                    // config, muted when it isn't.
+                    if targets.length > 0 : Text {
+                        text: "IDEs";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    if targets.length > 0 : Flickable {
+                        viewport-width: ide-row.preferred-width;
+                        viewport-height: self.height;
+                        height: 36px;
+                        ide-row := HorizontalLayout {
+                            spacing: 6px;
+                            for t in targets : TargetToggle {
+                                label: t.label;
+                                active: t.active;
+                                toggle => {
+                                    root.toggle-target(root.selected, t.ide-name, t.ide-key, !t.active);
+                                }
+                            }
+                        }
+                    }
                     // Tools + per-tool policy
                     if tools.length > 0 : Text {
                         text: "Tools (" + tools.length + ")";
@@ -614,27 +673,6 @@ component ServersTab inherits Rectangle {
             }
         }
     }
-}
-
-component TargetToggle inherits Rectangle {
-    in property <string> label;
-    in property <bool> active;
-    callback toggle();
-    background: root.active ? Theme.accent : Theme.surface-3;
-    border-radius: Theme.radius-sm;
-    height: 28px;
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        alignment: center;
-        Text {
-            text: root.label;
-            color: root.active ? Theme.bg : Theme.text-secondary;
-            font-size: Theme.font-body-sm;
-            vertical-alignment: center;
-        }
-    }
-    TouchArea { clicked => { root.toggle(); } }
 }
 
 component SkillsTab inherits Rectangle {
@@ -965,12 +1003,14 @@ component EditorsTab inherits Rectangle {
     callback edit-text(string);
     callback save();
     callback reload();
+    min-height: 480px;
     HorizontalLayout {
         spacing: Theme.gap-md;
 
         VerticalLayout {
             width: 280px;
             spacing: Theme.gap-sm;
+            alignment: start;
             HorizontalLayout {
                 alignment: space-between;
                 Text {
@@ -1022,17 +1062,18 @@ component EditorsTab inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border;
             horizontal-stretch: 1;
-            if root.selected == "" : Text {
-                text: "Select an IDE on the left.";
-                color: Theme.text-tertiary;
-                font-size: Theme.font-body-sm;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            if root.selected != "" : VerticalLayout {
+            VerticalLayout {
                 padding: Theme.gap-md;
                 spacing: Theme.gap-sm;
-                HorizontalLayout {
+                if root.selected == "" : Text {
+                    text: "Select an IDE on the left.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    vertical-stretch: 1;
+                }
+                if root.selected != "" : HorizontalLayout {
                     alignment: space-between;
                     spacing: Theme.gap-sm;
                     Text {
@@ -1063,7 +1104,7 @@ component EditorsTab inherits Rectangle {
                         }
                     }
                 }
-                if root.selected-config-status != "" : Rectangle {
+                if root.selected != "" && root.selected-config-status != "" : Rectangle {
                     background: root.selected-config-status-is-error ? #4d1f1f : Theme.surface-2;
                     border-radius: Theme.radius-sm;
                     min-height: 28px;
@@ -1077,7 +1118,7 @@ component EditorsTab inherits Rectangle {
                         }
                     }
                 }
-                Rectangle {
+                if root.selected != "" : Rectangle {
                     background: Theme.bg;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
@@ -1728,7 +1769,7 @@ component AddIdeDialog inherits Rectangle {
                 font-size: Theme.font-body-sm;
                 wrap: word-wrap;
             }
-            for ide in ["Claude Code", "Cursor", "VsCodeCopilot", "OpenCode", "OpenClaude"] : Rectangle {
+            for ide in ["Claude Code", "Cursor", "VsCodeCopilot", "OpenCode", "OpenClaude", "Codex"] : Rectangle {
                 background: root.selected == ide ? Theme.surface-2 : Theme.surface;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
@@ -1801,6 +1842,7 @@ export component MainWindow inherits Window {
     in-out property <string> selected-server: "";
     in property <ServerDetail> selected-server-detail;
     in property <[ToolPolicyRow]> selected-server-tools;
+    in property <[ServerIdeTarget]> selected-server-targets;
 
     // Add Server wizard state — 1=connection form, 2=probing, 3=per-tool policy
     in-out property <int> wizard-step: 1;
@@ -1843,6 +1885,7 @@ export component MainWindow inherits Window {
     callback select-server(string);
     callback retest-clicked(string);
     callback change-tool-policy(string, string, string);
+    callback toggle-server-target(string, string, string, bool);  // server, ide_name, ide_key, enable
     callback submit-add-ide();             // reads add-ide-selected
     callback parse-paste();                // reads add-server-paste, fills the other add-server-* fields
     callback toggle-open-window-at-startup(bool);
@@ -1968,6 +2011,7 @@ export component MainWindow inherits Window {
                     selected: root.selected-server;
                     detail: root.selected-server-detail;
                     tools: root.selected-server-tools;
+                    targets: root.selected-server-targets;
                     select-server(name) => { root.select-server(name); }
                     delete-clicked(name) => {
                         root.pending-delete-server = name;
@@ -1977,10 +2021,14 @@ export component MainWindow inherits Window {
                     change-tool-policy(server, tool, decision) => {
                         root.change-tool-policy(server, tool, decision);
                     }
+                    toggle-target(server, ide-name, ide-key, enable) => {
+                        root.toggle-server-target(server, ide-name, ide-key, enable);
+                    }
                     copy-error-clicked(text) => { root.copy-error-clicked(text); }
                     add-clicked => { root.show-add-server(); }
                 }
                 if root.active-tab == 2 : EditorsTab {
+                    vertical-stretch: 1;
                     rows: root.ides;
                     selected: root.selected-editor;
                     selected-config-text: root.selected-editor-text;

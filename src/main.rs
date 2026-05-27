@@ -14,7 +14,7 @@ use conduit::daemon::cascade;
 use conduit::daemon::config_toml::Settings;
 use conduit::daemon::config_watcher;
 use conduit::daemon::db::types::{
-    ApprovalStatus, Decision, DecisionSource, EnvEntry, EnvValue, ManagedIdeConfig, Server,
+    ApprovalStatus, Decision, DecisionSource, EnvEntry, EnvValue, IdeKey, ManagedIdeConfig, Server,
     ToolMeta as DbToolMeta, TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
 use conduit::daemon::db::Db;
@@ -42,8 +42,8 @@ use conduit::runtime::Worker;
 
 mod ui;
 use ui::{
-    ApprovalRow, AuditRow, IdeRow, MainWindow, PolicyRow, ServerDetail, ServerRow, SettingsRow,
-    SkillRepoRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
+    ApprovalRow, AuditRow, IdeRow, MainWindow, PolicyRow, ServerDetail, ServerIdeTarget, ServerRow,
+    SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 #[expect(clippy::too_many_lines, reason = "single-binary entrypoint wires every subsystem")]
@@ -854,6 +854,30 @@ fn install_callbacks(
         });
     });
 
+    let db_for_toggle_target = db.clone();
+    let rt_for_toggle_target = rt.clone();
+    let weak_for_toggle_target = window.as_weak();
+    let port_for_toggle_target = port;
+    window.on_toggle_server_target(move |server, ide_name, ide_key, enable| {
+        let db = db_for_toggle_target.clone();
+        let weak = weak_for_toggle_target.clone();
+        let server = server.to_string();
+        let ide_name = ide_name.to_string();
+        let ide_key = ide_key.to_string();
+        rt_for_toggle_target.spawn(async move {
+            toggle_server_for_ide(
+                &db,
+                port_for_toggle_target,
+                &server,
+                &ide_name,
+                &ide_key,
+                enable,
+            )
+            .await;
+            refresh_server_detail(&weak, &db, &server).await;
+        });
+    });
+
     window.on_copy_error_clicked(move |text| {
         if text.is_empty() {
             return;
@@ -1195,6 +1219,7 @@ fn parse_ide_kind(name: &str) -> Option<IdeKind> {
         "VsCodeCopilot" | "VS Code Copilot" | "VS Code" => Some(IdeKind::VsCodeCopilot),
         "OpenCode" => Some(IdeKind::OpenCode),
         "OpenClaude" => Some(IdeKind::OpenClaude),
+        "Codex" => Some(IdeKind::Codex),
         _ => None,
     }
 }
@@ -1744,6 +1769,112 @@ async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &Db, name: &s
         ui.set_selected_server_detail(detail);
         ui.set_selected_server_tools(ModelRc::new(VecModel::from(tool_rows)));
     });
+
+    refresh_server_targets(weak, db, name).await;
+}
+
+/// Per-IDE enable/disable chips for the currently selected server. One chip
+/// per `managed_ide_configs` row — active when the server appears in that
+/// IDE's `managed_entries`.
+async fn refresh_server_targets(weak: &slint::Weak<MainWindow>, db: &Db, server_name: &str) {
+    let cfgs = db.list_all_ide_configs().await.unwrap_or_default();
+    let rows: Vec<ServerIdeTarget> = cfgs
+        .into_iter()
+        .map(|c| {
+            let active = c.managed_entries.iter().any(|n| n == server_name);
+            ServerIdeTarget {
+                ide_name: SharedString::from(c.ide_name.clone()),
+                ide_key: SharedString::from(c.ide_key),
+                label: SharedString::from(ide_display_label(&c.ide_name)),
+                active,
+            }
+        })
+        .collect();
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_selected_server_targets(ModelRc::new(VecModel::from(rows)));
+    });
+}
+
+/// Add or remove `server_name` from one IDE's MCP config, then persist the
+/// updated `managed_entries` to the DB. Add path uses `ide_writer::write`
+/// (idempotent merge); remove path uses `purge_one_server_for_ide` (URL match).
+async fn toggle_server_for_ide(
+    db: &Db,
+    port: u16,
+    server_name: &str,
+    ide_name: &str,
+    ide_key: &str,
+    enable: bool,
+) {
+    let cfgs = match db.list_all_ide_configs().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "list_all_ide_configs failed");
+            return;
+        }
+    };
+    let Some(cfg) = cfgs
+        .into_iter()
+        .find(|c| c.ide_name == ide_name && c.ide_key == ide_key)
+    else {
+        tracing::warn!(ide = %ide_name, key = %ide_key, "no managed config for ide");
+        return;
+    };
+    let Some(kind) = parse_ide_kind(ide_name) else {
+        tracing::warn!(ide = %ide_name, "unknown ide name");
+        return;
+    };
+
+    let mut entries = cfg.managed_entries.clone();
+    let already_present = entries.iter().any(|n| n == server_name);
+    if enable {
+        if !already_present {
+            entries.push(server_name.to_string());
+        }
+        let key_handle = IdeKey {
+            key: ide_key.to_string(),
+            ide_name: ide_name.to_string(),
+            created_at: 0,
+        };
+        if let Err(e) = ide_writer::write(kind, &key_handle, &entries, port) {
+            tracing::warn!(error = %e, ide = %ide_name, server = %server_name, "ide_writer::write failed");
+            return;
+        }
+    } else {
+        if already_present {
+            entries.retain(|n| n != server_name);
+        }
+        if let Err(e) = ide_writer::purge_one_server_for_ide(&cfg.config_path, port, ide_key, server_name) {
+            tracing::warn!(error = %e, ide = %ide_name, server = %server_name, "purge_one_server_for_ide failed");
+            return;
+        }
+    }
+
+    let updated = ManagedIdeConfig {
+        ide_name: cfg.ide_name,
+        ide_key: cfg.ide_key,
+        config_path: cfg.config_path,
+        managed_entries: entries,
+        written_at: unix_now(),
+    };
+    if let Err(e) = db.record_ide_config_write(updated).await {
+        tracing::warn!(error = %e, "record_ide_config_write failed");
+    }
+}
+
+/// Friendly label for a `managed_ide_configs.ide_name`. Falls back to the
+/// raw string when we don't recognise it.
+fn ide_display_label(db_name: &str) -> String {
+    match db_name {
+        "ClaudeCode" | "Claude Code" => "Claude Code",
+        "OpenClaude" => "OpenClaude",
+        "OpenCode" => "OpenCode",
+        "Cursor" => "Cursor",
+        "VsCodeCopilot" | "VS Code Copilot" | "VS Code" => "VS Code",
+        "Codex" => "Codex",
+        other => other,
+    }
+    .to_string()
 }
 
 async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
@@ -1755,6 +1886,7 @@ async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
         "VsCodeCopilot",
         "OpenCode",
         "OpenClaude",
+        "Codex",
     ] {
         let cfgs = db.list_ide_configs_for_ide(ide).await.unwrap_or_default();
         for c in cfgs {

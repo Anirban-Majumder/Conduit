@@ -13,6 +13,7 @@ pub enum IdeKind {
     VsCodeCopilot,
     OpenCode,
     OpenClaude,
+    Codex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,13 @@ const IDE_SPECS: &[IdeSpec] = &[
         kind: IdeKind::OpenClaude,
         display_name: "OpenClaude",
         binaries: &["openclaude"],
+        #[cfg(target_os = "macos")]
+        mac_app: None,
+    },
+    IdeSpec {
+        kind: IdeKind::Codex,
+        display_name: "Codex",
+        binaries: &["codex"],
         #[cfg(target_os = "macos")]
         mac_app: None,
     },

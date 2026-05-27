@@ -13,6 +13,7 @@ use crate::daemon::db::types::{IdeKey, ManagedIdeConfig};
 pub use crate::daemon::ide_detect::IdeKind;
 
 pub mod claude_code;
+pub mod codex;
 pub mod cursor;
 pub mod openclaude;
 pub mod opencode;
@@ -30,6 +31,7 @@ pub fn config_path_for(ide: IdeKind) -> Option<PathBuf> {
         IdeKind::VsCodeCopilot => vscode_copilot::config_path(),
         IdeKind::OpenCode => opencode::config_path(),
         IdeKind::OpenClaude => openclaude::config_path(),
+        IdeKind::Codex => codex::config_path(),
     }
 }
 
@@ -43,6 +45,7 @@ pub fn config_path_under(ide: IdeKind, home: &Path) -> PathBuf {
         IdeKind::VsCodeCopilot => vscode_copilot::config_path_under(home),
         IdeKind::OpenCode => opencode::config_path_under(home),
         IdeKind::OpenClaude => openclaude::config_path_under(home),
+        IdeKind::Codex => codex::config_path_under(home),
     }
 }
 
@@ -59,7 +62,7 @@ pub fn skills_dir_for(ide: IdeKind) -> Option<PathBuf> {
         IdeKind::ClaudeCode => claude_code::skills_dir(),
         IdeKind::OpenClaude => openclaude::skills_dir(),
         IdeKind::OpenCode => opencode::skills_dir(),
-        IdeKind::Cursor | IdeKind::VsCodeCopilot => None,
+        IdeKind::Cursor | IdeKind::VsCodeCopilot | IdeKind::Codex => None,
     }
 }
 
@@ -68,7 +71,7 @@ pub fn skills_dir_under(ide: IdeKind, home: &Path) -> Option<PathBuf> {
         IdeKind::ClaudeCode => Some(claude_code::skills_dir_under(home)),
         IdeKind::OpenClaude => Some(openclaude::skills_dir_under(home)),
         IdeKind::OpenCode => Some(opencode::skills_dir_under(home)),
-        IdeKind::Cursor | IdeKind::VsCodeCopilot => None,
+        IdeKind::Cursor | IdeKind::VsCodeCopilot | IdeKind::Codex => None,
     }
 }
 
@@ -79,6 +82,7 @@ pub const fn ide_kind_from_db_name(s: &str) -> Option<IdeKind> {
         b"OpenCode" => Some(IdeKind::OpenCode),
         b"Cursor" => Some(IdeKind::Cursor),
         b"VsCodeCopilot" => Some(IdeKind::VsCodeCopilot),
+        b"Codex" => Some(IdeKind::Codex),
         _ => None,
     }
 }
@@ -94,6 +98,7 @@ const fn ide_name(ide: IdeKind) -> &'static str {
         IdeKind::VsCodeCopilot => vscode_copilot::IDE_NAME,
         IdeKind::OpenCode => opencode::IDE_NAME,
         IdeKind::OpenClaude => openclaude::IDE_NAME,
+        IdeKind::Codex => codex::IDE_NAME,
     }
 }
 
@@ -109,7 +114,10 @@ pub fn write(
     port: u16,
 ) -> Result<ManagedIdeConfig, IdeWriterError> {
     let path = config_path_for(ide).ok_or(IdeWriterError::NoPathForOs)?;
-    write_uniform_mcp_servers(&path, &ide_key.key, server_names, port)?;
+    match ide {
+        IdeKind::Codex => write_toml_mcp_servers(&path, &ide_key.key, server_names, port)?,
+        _ => write_uniform_mcp_servers(&path, &ide_key.key, server_names, port)?,
+    }
     Ok(ManagedIdeConfig {
         ide_name: ide_name(ide).to_string(),
         ide_key: ide_key.key.clone(),
@@ -125,7 +133,10 @@ pub fn write(
 /// Preserves every other entry the user added. Idempotent (missing file is Ok).
 pub fn purge(ide: IdeKind, ide_key: &str, port: u16) -> Result<(), IdeWriterError> {
     let path = config_path_for(ide).ok_or(IdeWriterError::NoPathForOs)?;
-    purge_uniform_mcp_servers(&path, ide_key, port)
+    match ide {
+        IdeKind::Codex => purge_toml_mcp_servers(&path, ide_key, port),
+        _ => purge_uniform_mcp_servers(&path, ide_key, port),
+    }
 }
 
 fn url_for(port: u16, key: &str, server: &str) -> String {
@@ -182,6 +193,9 @@ pub fn purge_one_server_for_ide(
     ide_key: &str,
     server_name: &str,
 ) -> Result<(), IdeWriterError> {
+    if is_toml_path(path) {
+        return purge_one_server_for_ide_toml(path, port, ide_key, server_name);
+    }
     let Some(mut root) = read_existing_object(path)? else {
         return Ok(());
     };
@@ -192,6 +206,12 @@ pub fn purge_one_server_for_ide(
         });
     }
     atomic_write_json(path, &Value::Object(root))
+}
+
+fn is_toml_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
 }
 
 /// Read the raw file contents (UTF-8 string) for the Editors-tab inline JSON
@@ -274,6 +294,108 @@ fn atomic_write_json(path: &Path, value: &Value) -> Result<(), IdeWriterError> {
 
     let mut serialized = serde_json::to_vec_pretty(value)?;
     serialized.push(b'\n');
+
+    let tmp = tmp_path_for(path)?;
+    fs::write(&tmp, &serialized)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ignored = fs::remove_file(&tmp);
+            Err(IdeWriterError::Io(e))
+        }
+    }
+}
+
+/// TOML-flavored sibling of `write_uniform_mcp_servers` for Codex
+/// (`~/.codex/config.toml`). Top-level key is `mcp_servers` (`snake_case`),
+/// per-server table holds `url` for the `StreamableHttp` transport.
+pub fn write_toml_mcp_servers(
+    path: &Path,
+    key: &str,
+    server_names: &[String],
+    port: u16,
+) -> Result<(), IdeWriterError> {
+    let mut root = read_existing_toml_table(path)?.unwrap_or_default();
+
+    let mut servers = match root.remove("mcp_servers") {
+        Some(toml::Value::Table(t)) => t,
+        Some(_) | None => toml::value::Table::new(),
+    };
+
+    for name in server_names {
+        let mut entry = toml::value::Table::new();
+        entry.insert("url".to_string(), toml::Value::String(url_for(port, key, name)));
+        servers.insert(name.clone(), toml::Value::Table(entry));
+    }
+
+    root.insert("mcp_servers".to_string(), toml::Value::Table(servers));
+    atomic_write_toml(path, &toml::Value::Table(root))
+}
+
+/// TOML-flavored sibling of `purge_uniform_mcp_servers`.
+pub fn purge_toml_mcp_servers(path: &Path, key: &str, port: u16) -> Result<(), IdeWriterError> {
+    let Some(mut root) = read_existing_toml_table(path)? else {
+        return Ok(());
+    };
+    if let Some(toml::Value::Table(servers)) = root.get_mut("mcp_servers") {
+        servers.retain(|_name, entry| {
+            let Some(url) = entry.get("url").and_then(toml::Value::as_str) else {
+                return true;
+            };
+            !url_is_ours(url, port, key)
+        });
+    }
+    atomic_write_toml(path, &toml::Value::Table(root))
+}
+
+fn purge_one_server_for_ide_toml(
+    path: &Path,
+    port: u16,
+    ide_key: &str,
+    server_name: &str,
+) -> Result<(), IdeWriterError> {
+    let Some(mut root) = read_existing_toml_table(path)? else {
+        return Ok(());
+    };
+    let target = url_for(port, ide_key, server_name);
+    if let Some(toml::Value::Table(servers)) = root.get_mut("mcp_servers") {
+        servers.retain(|_name, entry| {
+            entry.get("url").and_then(toml::Value::as_str) != Some(target.as_str())
+        });
+    }
+    atomic_write_toml(path, &toml::Value::Table(root))
+}
+
+fn read_existing_toml_table(
+    path: &Path,
+) -> Result<Option<toml::value::Table>, IdeWriterError> {
+    match fs::read_to_string(path) {
+        Ok(s) if s.chars().all(char::is_whitespace) => Ok(None),
+        Ok(s) => {
+            let value: toml::Value = toml::from_str(&s)?;
+            match value {
+                toml::Value::Table(t) => Ok(Some(t)),
+                _ => Err(IdeWriterError::TomlDe(
+                    serde::de::Error::custom("expected top-level TOML table"),
+                )),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(IdeWriterError::Io(e)),
+    }
+}
+
+fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), IdeWriterError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let mut serialized = toml::to_string_pretty(value)?.into_bytes();
+    if !serialized.ends_with(b"\n") {
+        serialized.push(b'\n');
+    }
 
     let tmp = tmp_path_for(path)?;
     fs::write(&tmp, &serialized)?;

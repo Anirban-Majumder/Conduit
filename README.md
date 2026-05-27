@@ -3,8 +3,8 @@
 > **MCPs and skills, synced to every IDE.**
 
 Install an MCP server once. Add a skill once. Conduit mirrors both into Cursor,
-VSCode, Claude Code, Opencode, and Openclaude — and keeps them in sync as you
-add, remove, or swap IDEs.
+VSCode, Claude Code, Opencode, Openclaude, and Codex — and keeps them in sync
+as you add, remove, or swap IDEs.
 
 ---
 
@@ -23,6 +23,15 @@ add, remove, or swap IDEs.
   in the OS keyring — never in plaintext on disk.
 - 🦀 **Single Rust binary.** Pure Rust + Slint. No webview, no Node, no
   Electron. ~20 MB on disk, ~80 MB RAM idle.
+
+## 🖥️ Supported IDEs
+
+- [x] Claude Code
+- [x] Cursor
+- [x] VS Code Copilot
+- [x] OpenCode
+- [x] OpenClaude
+- [x] Codex
 
 ## 🧭 How it works
 
