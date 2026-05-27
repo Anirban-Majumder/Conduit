@@ -71,10 +71,20 @@ async fn handle_mcp(
     Path((key, server)): Path<(String, String)>,
     State(state): State<AppState>,
     Json(envelope): Json<Value>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let id = envelope.get("id").cloned().unwrap_or(Value::Null);
+    let method = envelope
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let params = envelope.get("params").cloned().unwrap_or(Value::Null);
 
-    // routing_paused short-circuit.
+    // JSON-RPC notifications carry no `id` and expect no response.
+    if envelope.get("id").is_none() || method.starts_with("notifications/") {
+        return (StatusCode::ACCEPTED, "").into_response();
+    }
+
     match state.db.get_settings_kv("routing_paused").await {
         Ok(Some(v)) if v == "true" => {
             return rpc_error_response(id, DAEMON_PAUSED, "daemon_paused");
@@ -83,7 +93,6 @@ async fn handle_mcp(
         Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
     }
 
-    // 1. Validate IDE key.
     let ide_lookup = match state.db.lookup_ide_key(&key).await {
         Ok(v) => v,
         Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
@@ -92,7 +101,13 @@ async fn handle_mcp(
         return rpc_error_response(id, IDE_KEY_INVALID, "ide_key_invalid");
     };
 
-    // 2. Validate server exists.
+    if method == "initialize" {
+        return rpc_success_response(id, conduit_initialize_result(&params));
+    }
+    if method == "ping" {
+        return rpc_success_response(id, json!({}));
+    }
+
     let server_lookup = match state.db.get_server(&server).await {
         Ok(v) => v,
         Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
@@ -101,15 +116,6 @@ async fn handle_mcp(
         return rpc_error_response(id, SERVER_NOT_FOUND, "server_not_found");
     };
 
-    // 3. Parse method + params.
-    let method = envelope
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let params = envelope.get("params").cloned().unwrap_or(Value::Null);
-
-    // 4. Route.
     match route_tool_call(
         &state,
         &ide.key,
@@ -129,6 +135,30 @@ async fn handle_mcp(
         Err(ProxyError::Db(e)) => rpc_error_response(id, INTERNAL, &format!("db: {e}")),
         Err(ProxyError::Approval(e)) => rpc_error_response(id, INTERNAL, &format!("approval: {e}")),
     }
+}
+
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+
+fn conduit_initialize_result(params: &Value) -> Value {
+    let requested = params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let negotiated = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested) {
+        requested
+    } else {
+        DEFAULT_PROTOCOL_VERSION
+    };
+    json!({
+        "protocolVersion": negotiated,
+        "capabilities": { "tools": { "listChanged": false } },
+        "serverInfo": {
+            "name": "conduit",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    })
 }
 
 /// JSON-RPC error codes per spec §"Error semantics".
@@ -223,6 +253,7 @@ pub(crate) fn server_to_config(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing, reason = "test ergonomics")]
     use super::*;
 
     #[test]
@@ -233,5 +264,27 @@ mod tests {
         assert_eq!(IDE_KEY_INVALID, -32003);
         assert_eq!(DAEMON_PAUSED, -32004);
         assert_eq!(INTERNAL, -32603);
+    }
+
+    #[test]
+    fn initialize_echoes_client_protocol_when_supported() {
+        let req = json!({ "protocolVersion": "2025-03-26" });
+        let res = conduit_initialize_result(&req);
+        assert_eq!(res["protocolVersion"], "2025-03-26");
+        assert_eq!(res["serverInfo"]["name"], "conduit");
+        assert!(res["capabilities"]["tools"].is_object());
+    }
+
+    #[test]
+    fn initialize_falls_back_when_client_version_unknown() {
+        let req = json!({ "protocolVersion": "9999-12-31" });
+        let res = conduit_initialize_result(&req);
+        assert_eq!(res["protocolVersion"], DEFAULT_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn initialize_falls_back_when_client_omits_version() {
+        let res = conduit_initialize_result(&json!({}));
+        assert_eq!(res["protocolVersion"], DEFAULT_PROTOCOL_VERSION);
     }
 }
