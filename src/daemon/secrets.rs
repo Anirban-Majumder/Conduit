@@ -75,12 +75,35 @@ pub fn store_oauth_client_secret(account: &str, secret: &str) -> Result<(), Secr
     Ok(())
 }
 
+pub fn fetch_oauth_client_secret(account: &str) -> Result<String, SecretsError> {
+    fetch_keyring(&format!("{account}:client_secret"))
+}
+
 pub fn fetch_oauth_access(account: &str) -> Result<String, SecretsError> {
     fetch_keyring(&format!("{account}:access"))
 }
 
 pub fn fetch_oauth_refresh(account: &str) -> Result<String, SecretsError> {
     fetch_keyring(&format!("{account}:refresh"))
+}
+
+pub fn store_oauth_meta(account: &str, meta: &OauthMeta) -> Result<(), SecretsError> {
+    let blob = serde_json::to_string(meta).unwrap_or_else(|_| "{}".into());
+    oauth_entry(&format!("{account}:meta"))?
+        .set_password(&blob)?;
+    Ok(())
+}
+
+pub fn fetch_oauth_meta(account: &str) -> Result<OauthMeta, SecretsError> {
+    let blob = fetch_keyring(&format!("{account}:meta"))?;
+    serde_json::from_str(&blob).map_err(|_e| SecretsError::NotFound)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OauthMeta {
+    pub token_endpoint: String,
+    pub client_id: String,
+    pub expires_at_unix: i64,
 }
 
 fn fetch_keyring(account: &str) -> Result<String, SecretsError> {
@@ -98,18 +121,22 @@ fn fetch_keyring(account: &str) -> Result<String, SecretsError> {
 pub fn promote_oauth_tokens(draft: &str, server: &str) -> Result<(), SecretsError> {
     let access = fetch_oauth_access(draft).ok();
     let refresh = fetch_oauth_refresh(draft).ok();
+    let meta = fetch_oauth_meta(draft).ok();
     if let Some(a) = &access {
         store_oauth_access(server, a)?;
     }
     if let Some(r) = &refresh {
         store_oauth_refresh(server, r)?;
     }
+    if let Some(m) = &meta {
+        store_oauth_meta(server, m)?;
+    }
     delete_oauth_tokens(draft)?;
     Ok(())
 }
 
 pub fn delete_oauth_tokens(account: &str) -> Result<(), SecretsError> {
-    for suffix in ["access", "refresh", "client_secret"] {
+    for suffix in ["access", "refresh", "client_secret", "meta"] {
         let full = format!("{account}:{suffix}");
         match oauth_entry(&full)?.delete_credential() {
             Ok(()) | Err(KeyringError::NoEntry) => {}

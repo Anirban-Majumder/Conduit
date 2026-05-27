@@ -1,17 +1,5 @@
-// HTTP streamable-MCP transport. Thin wrapper around rmcp's
-// `StreamableHttpClientTransport` + `serve_client_with_ct`.
-// Spec §"Add MCP server flow".
-//
-// For v0 we support **bearer-token** auth: a `MCP_BEARER_TOKEN` entry in the
-// server's env vars (plain or secret-keyring-backed) becomes the
-// `Authorization: Bearer <token>` header on every request. Most pre-
-// authenticated MCP HTTP servers (Linear, Atlassian, Notion) hand the user a
-// static token to paste — this covers them.
-//
-// Full OAuth-with-browser-redirect (spec §"OAuth handling") lands in v0.1 —
-// rmcp exposes `AuthorizationManager` + `AuthClient` for that, but the
-// browser-redirect / local-callback-listener / token-refresh wiring is a
-// dedicated work item.
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rmcp::service::{serve_client_with_ct, RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::{
@@ -19,18 +7,18 @@ use rmcp::transport::streamable_http_client::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::daemon::secrets::{
+    fetch_oauth_access, fetch_oauth_client_secret, fetch_oauth_meta, fetch_oauth_refresh,
+    store_oauth_access, store_oauth_meta, store_oauth_refresh, OauthMeta,
+};
 use crate::daemon::upstream::manager::UpstreamError;
+use crate::daemon::upstream::oauth::{refresh_tokens, RefreshCoordinator};
 
-/// Env-var name the daemon recognises as a pre-authenticated bearer token.
 pub const BEARER_TOKEN_ENV: &str = "MCP_BEARER_TOKEN";
+const REFRESH_WINDOW_SECS: i64 = 60;
 
 pub type HttpClient = RunningService<RoleClient, ()>;
 
-/// Connect to an HTTP MCP server and complete the `initialize` handshake.
-///
-/// `bearer_token` is wrapped into `Authorization: Bearer <token>` on every
-/// outbound request (see [`BEARER_TOKEN_ENV`]). HTTPS support comes from
-/// `Cargo.toml`'s `rmcp` `reqwest` feature, which flips on `reqwest/rustls`.
 pub async fn connect(
     url: &str,
     bearer_token: Option<&str>,
@@ -45,4 +33,88 @@ pub async fn connect(
         .await
         .map_err(|e| UpstreamError::InitFailed(e.to_string()))?;
     Ok(client)
+}
+
+/// Return a current access token for `server`, refreshing if near expiry.
+///
+/// `None` means no OAuth tokens are stored — caller should use the static
+/// bearer-token path instead.
+pub async fn ensure_fresh_access_token(
+    server: &str,
+    coord: &Arc<RefreshCoordinator>,
+    http: &reqwest::Client,
+) -> Option<String> {
+    let access = fetch_oauth_access(server).ok()?;
+    let Ok(meta) = fetch_oauth_meta(server) else {
+        return Some(access);
+    };
+    let now = now_unix();
+    if meta.expires_at_unix - now > REFRESH_WINDOW_SECS {
+        return Some(access);
+    }
+    let Ok(refresh) = fetch_oauth_refresh(server) else {
+        return Some(access);
+    };
+    refresh_with_coordinator(server, coord, http, &meta, &refresh).await
+}
+
+async fn refresh_with_coordinator(
+    server: &str,
+    coord: &Arc<RefreshCoordinator>,
+    http: &reqwest::Client,
+    meta: &OauthMeta,
+    refresh: &str,
+) -> Option<String> {
+    if let Some(tx) = coord.try_acquire(server).await {
+        let client_secret = fetch_oauth_client_secret(server).ok();
+        let result = refresh_tokens(
+            http,
+            &meta.token_endpoint,
+            &meta.client_id,
+            client_secret.as_deref(),
+            refresh,
+        )
+        .await;
+        let outcome = match result {
+            Ok(token_resp) => {
+                let new_access = token_resp.access_token.clone();
+                if let Err(e) = store_oauth_access(server, &new_access) {
+                    tracing::warn!(error = %e, server = %server, "store access failed");
+                }
+                if let Some(r) = token_resp.refresh_token {
+                    if let Err(e) = store_oauth_refresh(server, &r) {
+                        tracing::warn!(error = %e, server = %server, "store refresh failed");
+                    }
+                }
+                let new_meta = OauthMeta {
+                    token_endpoint: meta.token_endpoint.clone(),
+                    client_id: meta.client_id.clone(),
+                    expires_at_unix: now_unix()
+                        + i64::try_from(token_resp.expires_in.unwrap_or(3600)).unwrap_or(3600),
+                };
+                if let Err(e) = store_oauth_meta(server, &new_meta) {
+                    tracing::warn!(error = %e, server = %server, "store meta failed");
+                }
+                Ok(new_access)
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        tx.send(outcome.clone()).ok();
+        coord.release(server).await;
+        outcome.ok()
+    } else if let Some(mut rx) = coord.wait_for(server).await {
+        match rx.recv().await {
+            Ok(Ok(token)) => Some(token),
+            _ => None,
+        }
+    } else {
+        fetch_oauth_access(server).ok()
+    }
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }

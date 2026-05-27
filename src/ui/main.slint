@@ -171,14 +171,6 @@ component PillButton inherits Rectangle {
     ta := TouchArea {}
 }
 
-component RowCard inherits Rectangle {
-    background: Theme.surface;
-    border-radius: Theme.radius-md;
-    border-width: 1px;
-    border-color: Theme.border;
-    height: 64px;
-}
-
 component EmptyState inherits Rectangle {
     in property <string> text;
     background: transparent;
@@ -355,7 +347,7 @@ component ToolPolicyRowItem inherits Rectangle {
 
 component ToolPolicyTable inherits Rectangle {
     in property <[ToolPolicyRow]> rows;
-    in property <length> list-max-height: 320px;
+    in property <length> list-max-height: 360px;
     callback change-decision(string, string);
     VerticalLayout {
         spacing: 6px;
@@ -382,7 +374,7 @@ component ToolPolicyTable inherits Rectangle {
             }
         }
         Flickable {
-            height: root.list-max-height;
+            height: min(root.list-max-height, content-layout.preferred-height);
             viewport-height: content-layout.preferred-height;
             content-layout := VerticalLayout {
                 spacing: 6px;
@@ -961,37 +953,54 @@ component SkillsTab inherits Rectangle {
 
 component EditorsTab inherits Rectangle {
     in property <[IdeRow]> rows;
+    in-out property <string> selected;
+    in property <string> selected-config-text;
+    in property <string> selected-config-status;
+    in property <bool> selected-config-status-is-error;
+    in property <bool> selected-config-dirty;
     callback remove-clicked(string);
     callback add-clicked();
-    VerticalLayout {
-        spacing: Theme.gap-sm;
-        HorizontalLayout {
-            alignment: space-between;
-            Text {
-                text: rows.length > 0 ? "Connected IDEs (" + rows.length + ")" : "No IDEs connected";
-                color: Theme.text-secondary;
-                font-size: Theme.font-eyebrow;
-                vertical-alignment: center;
-            }
-            PillButton {
-                label: "+ Add IDE";
-                bg-color: Theme.accent;
-                fg-color: Theme.bg;
-                clicked => { root.add-clicked(); }
-            }
-        }
-        if rows.length == 0 : EmptyState {
-            text: "Connect an IDE via the (TBD) Add IDE flow.";
-            height: 200px;
-        }
-        for row in rows : RowCard {
+    callback reveal-clicked(string);
+    callback select(string);
+    callback edit-text(string);
+    callback save();
+    callback reload();
+    HorizontalLayout {
+        spacing: Theme.gap-md;
+
+        VerticalLayout {
+            width: 280px;
+            spacing: Theme.gap-sm;
             HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: Theme.gap-md;
                 alignment: space-between;
+                Text {
+                    text: rows.length > 0 ? "IDEs (" + rows.length + ")" : "No IDEs connected";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                }
+                PillButton {
+                    label: "+ Add";
+                    bg-color: Theme.accent;
+                    fg-color: Theme.bg;
+                    clicked => { root.add-clicked(); }
+                }
+            }
+            if rows.length == 0 : EmptyState {
+                text: "Connect an IDE via Add.";
+                height: 160px;
+            }
+            for row in rows : Rectangle {
+                background: row.name == root.selected ? Theme.surface-2 : Theme.surface;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: row.name == root.selected ? Theme.accent : Theme.border;
+                height: 64px;
+                TouchArea {
+                    clicked => { root.select(row.name); }
+                }
                 VerticalLayout {
-                    alignment: center;
+                    padding: Theme.gap-sm;
                     spacing: 2px;
                     Text {
                         text: row.name;
@@ -999,14 +1008,93 @@ component EditorsTab inherits Rectangle {
                         font-size: Theme.font-body;
                     }
                     Text {
-                        text: "key " + row.key + " · " + row.config_path;
+                        text: "key " + row.key;
                         color: Theme.text-tertiary;
                         font-size: Theme.font-body-sm;
                     }
                 }
-                PillButton {
-                    label: "Remove";
-                    clicked => { root.remove-clicked(row.name); }
+            }
+        }
+
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            horizontal-stretch: 1;
+            if root.selected == "" : Text {
+                text: "Select an IDE on the left.";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if root.selected != "" : VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: Theme.gap-sm;
+                HorizontalLayout {
+                    alignment: space-between;
+                    spacing: Theme.gap-sm;
+                    Text {
+                        text: root.selected;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-h3;
+                        vertical-alignment: center;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        PillButton {
+                            label: "Reveal";
+                            clicked => { root.reveal-clicked(root.selected); }
+                        }
+                        PillButton {
+                            label: "Reload";
+                            clicked => { root.reload(); }
+                        }
+                        PillButton {
+                            label: root.selected-config-dirty ? "Save *" : "Save";
+                            bg-color: root.selected-config-dirty ? Theme.accent : Theme.surface-3;
+                            fg-color: root.selected-config-dirty ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.save(); }
+                        }
+                        PillButton {
+                            label: "Remove";
+                            clicked => { root.remove-clicked(root.selected); }
+                        }
+                    }
+                }
+                if root.selected-config-status != "" : Rectangle {
+                    background: root.selected-config-status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 28px;
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.selected-config-status;
+                            color: root.selected-config-status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                Rectangle {
+                    background: Theme.bg;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    vertical-stretch: 1;
+                    Flickable {
+                        viewport-height: editor.preferred-height;
+                        editor := TextInput {
+                            text: root.selected-config-text;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            font-family: "Space Mono";
+                            single-line: false;
+                            wrap: word-wrap;
+                            edited => { root.edit-text(self.text); }
+                        }
+                    }
                 }
             }
         }
@@ -1219,7 +1307,8 @@ component HelpTab inherits Rectangle {
 
 component LabeledInput inherits VerticalLayout {
     in property <string> label;
-    in-out property <string> text <=> input.text;
+    in property <string> text;
+    callback edited(string);
     spacing: 4px;
     Text {
         text: root.label;
@@ -1227,18 +1316,20 @@ component LabeledInput inherits VerticalLayout {
         font-size: Theme.font-eyebrow;
     }
     input := TextInput {
+        text: root.text;
         color: Theme.text-primary;
         font-size: Theme.font-body;
         single-line: true;
         height: 32px;
+        edited => { root.edited(self.text); }
     }
     Rectangle { background: Theme.border; height: 1px; }
 }
 
 component LabeledTextArea inherits VerticalLayout {
     in property <string> label;
-    in-out property <string> text <=> input.text;
-    callback edited <=> input.edited;
+    in property <string> text;
+    callback edited(string);
     spacing: 4px;
     Text {
         text: root.label;
@@ -1250,6 +1341,7 @@ component LabeledTextArea inherits VerticalLayout {
         border-radius: Theme.radius-sm;
         height: 120px;
         input := TextInput {
+            text: root.text;
             color: Theme.text-primary;
             font-size: Theme.font-body-sm;
             single-line: false;
@@ -1258,6 +1350,7 @@ component LabeledTextArea inherits VerticalLayout {
             height: parent.height - 16px;
             x: 12px;
             y: 8px;
+            edited => { root.edited(self.text); }
         }
     }
 }
@@ -1272,12 +1365,11 @@ component ModalShell inherits Rectangle {
         border-radius: Theme.radius-lg;
         border-width: 1px;
         border-color: Theme.border;
+        clip: true;
         width: 560px;
-        height: 560px;
+        height: min(640px, parent.height - 48px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        // Trap clicks inside the card so dismiss() isn't fired by clicks on
-        // the form itself — only the dim backdrop dismisses.
         TouchArea {}
         VerticalLayout {
             padding: Theme.gap-lg;
@@ -1332,13 +1424,13 @@ component WizardStepIndicator inherits Rectangle {
 }
 
 component AddServerDialog inherits Rectangle {
-    in-out property <string> name <=> name-input.text;
-    in-out property <string> command <=> cmd-input.text;
-    in-out property <string> args <=> args-input.text;
-    in-out property <string> url <=> url-input.text;
-    in-out property <string> headers <=> headers-input.text;
+    in-out property <string> name;
+    in-out property <string> command;
+    in-out property <string> args;
+    in-out property <string> url;
+    in-out property <string> headers;
     in-out property <string> transport;
-    in-out property <string> paste <=> paste-input.text;
+    in-out property <string> paste;
     in-out property <string> status;
     in-out property <bool> status-is-error: false;
     in-out property <bool> busy: false;
@@ -1363,8 +1455,7 @@ component AddServerDialog inherits Rectangle {
 
             WizardStepIndicator { step: root.step; }
 
-            VerticalLayout {
-                visible: root.step == 1;
+            if root.step == 1 : VerticalLayout {
                 spacing: 6px;
                 HorizontalLayout {
                     spacing: Theme.gap-sm;
@@ -1381,26 +1472,39 @@ component AddServerDialog inherits Rectangle {
                         clicked => { root.transport = "stdio"; }
                     }
                 }
-                name-input := LabeledInput { label: "Name (letters, digits, _, -, 1–64 chars)"; }
-                cmd-input := LabeledInput {
+                LabeledInput {
+                    label: "Name (letters, digits, _, -, 1–64 chars)";
+                    text: root.name;
+                    edited(t) => { root.name = t; }
+                }
+                if root.transport == "stdio" : LabeledInput {
                     label: "Command";
-                    visible: root.transport == "stdio";
+                    text: root.command;
+                    edited(t) => { root.command = t; }
                 }
-                args-input := LabeledInput {
+                if root.transport == "stdio" : LabeledInput {
                     label: "Args, space-separated";
-                    visible: root.transport == "stdio";
+                    text: root.args;
+                    edited(t) => { root.args = t; }
                 }
-                url-input := LabeledInput {
+                if root.transport == "http" : LabeledInput {
                     label: "URL";
-                    visible: root.transport == "http";
+                    text: root.url;
+                    edited(t) => { root.url = t; }
                 }
-                headers-input := LabeledInput {
+                if root.transport == "http" : LabeledInput {
                     label: "Headers (KEY=value, comma separated)";
-                    visible: root.transport == "http";
+                    text: root.headers;
+                    edited(t) => { root.headers = t; }
                 }
-                paste-input := LabeledTextArea {
+                LabeledTextArea {
                     label: "Paste full MCP JSON to auto-fill — parses as you type";
-                    edited => { paste-debounce.running = false; paste-debounce.running = true; }
+                    text: root.paste;
+                    edited(t) => {
+                        root.paste = t;
+                        paste-debounce.running = false;
+                        paste-debounce.running = true;
+                    }
                 }
                 paste-debounce := Timer {
                     interval: 600ms;
@@ -1437,8 +1541,7 @@ component AddServerDialog inherits Rectangle {
                 }
             }
 
-            // Step 2 — probing (plus OAuth sign-in state).
-            if root.step == 2 : VerticalLayout {
+            if root.step == 2 && root.oauth-url == "" : VerticalLayout {
                 spacing: Theme.gap-md;
                 HorizontalLayout {
                     spacing: Theme.gap-sm;
@@ -1451,38 +1554,105 @@ component AddServerDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
-                if root.oauth-url == "" : Text {
+                Text {
                     text: "Spawning, calling initialize, fetching tools — up to ~30 seconds per phase.";
                     color: Theme.text-tertiary;
                     font-size: Theme.font-body-sm;
                     wrap: word-wrap;
                 }
-                if root.oauth-url != "" : VerticalLayout {
-                    spacing: 6px;
-                    Text {
-                        text: "Browser tab opened for sign-in. If it didn't open, copy this URL:";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-body-sm;
-                        wrap: word-wrap;
+                if root.status != "" : Rectangle {
+                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        Text {
+                            text: root.status;
+                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
                     }
-                    Rectangle {
-                        background: Theme.surface-2;
-                        border-radius: Theme.radius-sm;
-                        min-height: 36px;
-                        HorizontalLayout {
-                            padding: Theme.gap-sm;
-                            spacing: Theme.gap-sm;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        label: "← Back to edit";
+                        clicked => { root.wizard-back(); }
+                    }
+                }
+            }
+
+            if root.step == 2 && root.oauth-url != "" : VerticalLayout {
+                spacing: Theme.gap-md;
+                Rectangle {
+                    background: Theme.surface-2;
+                    border-radius: Theme.radius-md;
+                    min-height: 64px;
+                    HorizontalLayout {
+                        padding: Theme.gap-md;
+                        spacing: Theme.gap-md;
+                        Text {
+                            text: "🔐";
+                            font-size: 28px;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
                             Text {
-                                text: root.oauth-url;
+                                text: "Sign in required";
                                 color: Theme.text-primary;
+                                font-size: Theme.font-h3;
+                            }
+                            Text {
+                                text: "This server uses OAuth. We opened a browser tab — sign in and approve, then return here.";
+                                color: Theme.text-secondary;
                                 font-size: Theme.font-body-sm;
                                 wrap: word-wrap;
-                                horizontal-stretch: 1;
                             }
-                            PillButton {
-                                label: "Copy";
-                                clicked => { root.copy-oauth-url(); }
-                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: start;
+                    Rectangle {
+                        background: Theme.warning;
+                        border-radius: 5px;
+                        width: 10px;
+                        height: 10px;
+                        y: 5px;
+                    }
+                    Text {
+                        text: root.phase-status != "" ? root.phase-status : "Waiting for sign-in...";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: "If the tab didn't open, copy this URL into your browser:";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    background: Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 36px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        spacing: Theme.gap-sm;
+                        Text {
+                            text: root.oauth-url;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        PillButton {
+                            label: "Copy URL";
+                            clicked => { root.copy-oauth-url(); }
                         }
                     }
                 }
@@ -1654,6 +1824,12 @@ export component MainWindow inherits Window {
     in-out property <bool> open-window-at-startup;
     in-out property <string> default-unknown-tool-policy: "ask";
 
+    in-out property <string> selected-editor: "";
+    in-out property <string> selected-editor-text: "";
+    in-out property <string> selected-editor-status: "";
+    in-out property <bool> selected-editor-status-is-error: false;
+    in-out property <bool> selected-editor-dirty: false;
+
     callback approve-clicked(string);
     callback deny-clicked(string);
     callback remove-server-clicked(string);
@@ -1672,6 +1848,12 @@ export component MainWindow inherits Window {
     callback toggle-open-window-at-startup(bool);
     callback set-default-unknown-tool-policy(string);
     callback copy-error-clicked(string);
+
+    callback select-ide(string);
+    callback reveal-ide-config(string);
+    callback edit-ide-config(string);
+    callback save-ide-config();
+    callback reload-ide-config();
 
     callback skills-refresh-clicked();
     callback skills-open-folder-clicked();
@@ -1800,8 +1982,18 @@ export component MainWindow inherits Window {
                 }
                 if root.active-tab == 2 : EditorsTab {
                     rows: root.ides;
+                    selected: root.selected-editor;
+                    selected-config-text: root.selected-editor-text;
+                    selected-config-status: root.selected-editor-status;
+                    selected-config-status-is-error: root.selected-editor-status-is-error;
+                    selected-config-dirty: root.selected-editor-dirty;
                     remove-clicked(name) => { root.remove-ide-clicked(name); }
                     add-clicked => { root.show-add-ide(); }
+                    reveal-clicked(name) => { root.reveal-ide-config(name); }
+                    select(name) => { root.select-ide(name); }
+                    edit-text(t) => { root.edit-ide-config(t); }
+                    save => { root.save-ide-config(); }
+                    reload => { root.reload-ide-config(); }
                 }
                 if root.active-tab == 3 : SkillsTab {
                     vertical-stretch: 1;

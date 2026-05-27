@@ -99,11 +99,13 @@ fn main() -> Result<()> {
         bus.clone(),
         approval_timeout,
     ));
-    // UpstreamManager::new spawns a reaper task via tokio::spawn — must run
-    // inside the worker runtime context, not the bare main thread.
     let upstream = {
         let _guard = worker.handle().enter();
-        Arc::new(UpstreamManager::new(paths.clone(), cancel.clone()))
+        Arc::new(UpstreamManager::with_bus(
+            paths.clone(),
+            cancel.clone(),
+            Some(bus.clone()),
+        ))
     };
     let skill_manager = {
         let _guard = worker.handle().enter();
@@ -889,6 +891,163 @@ fn install_callbacks(
             }
         });
     });
+
+    {
+        let db = db.clone();
+        let rt = rt.clone();
+        let weak = window.as_weak();
+        window.on_select_ide(move |name| {
+            let db = db.clone();
+            let weak = weak.clone();
+            let name = name.to_string();
+            rt.spawn(async move {
+                let path = db
+                    .list_ide_configs_for_ide(&name)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                    .map(|c| c.config_path);
+                let text = match path.as_deref().map(ide_writer::read_raw) {
+                    Some(Ok(Some(s))) => s,
+                    Some(Ok(None)) | None => String::new(),
+                    Some(Err(e)) => format!("// read error: {e}"),
+                };
+                let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_selected_editor(SharedString::from(name));
+                    ui.set_selected_editor_text(SharedString::from(text));
+                    ui.set_selected_editor_status(SharedString::default());
+                    ui.set_selected_editor_status_is_error(false);
+                    ui.set_selected_editor_dirty(false);
+                });
+            });
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        window.on_edit_ide_config(move |text| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let validation = ide_writer::validate_json(text.as_str());
+            ui.set_selected_editor_text(text);
+            ui.set_selected_editor_dirty(true);
+            match validation {
+                Ok(()) => {
+                    ui.set_selected_editor_status(SharedString::from("valid JSON"));
+                    ui.set_selected_editor_status_is_error(false);
+                }
+                Err(e) => {
+                    ui.set_selected_editor_status(SharedString::from(e.to_string()));
+                    ui.set_selected_editor_status_is_error(true);
+                }
+            }
+        });
+    }
+
+    {
+        let db = db.clone();
+        let rt = rt.clone();
+        let weak = window.as_weak();
+        window.on_save_ide_config(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let name = ui.get_selected_editor().to_string();
+            let text = ui.get_selected_editor_text().to_string();
+            if name.is_empty() {
+                return;
+            }
+            let db = db.clone();
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let Some(cfg) = db
+                    .list_ide_configs_for_ide(&name)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                else {
+                    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_selected_editor_status(SharedString::from("no config path"));
+                        ui.set_selected_editor_status_is_error(true);
+                    });
+                    return;
+                };
+                let result = ide_writer::write_raw(&cfg.config_path, &text);
+                let _ignored = weak.upgrade_in_event_loop(move |ui| match result {
+                    Ok(()) => {
+                        ui.set_selected_editor_status(SharedString::from("saved"));
+                        ui.set_selected_editor_status_is_error(false);
+                        ui.set_selected_editor_dirty(false);
+                    }
+                    Err(e) => {
+                        ui.set_selected_editor_status(SharedString::from(e.to_string()));
+                        ui.set_selected_editor_status_is_error(true);
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let db = db.clone();
+        let rt = rt.clone();
+        let weak = window.as_weak();
+        window.on_reload_ide_config(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let name = ui.get_selected_editor().to_string();
+            if name.is_empty() {
+                return;
+            }
+            let db = db.clone();
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let path = db
+                    .list_ide_configs_for_ide(&name)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                    .map(|c| c.config_path);
+                let text = match path.as_deref().map(ide_writer::read_raw) {
+                    Some(Ok(Some(s))) => s,
+                    Some(Ok(None)) | None => String::new(),
+                    Some(Err(e)) => format!("// read error: {e}"),
+                };
+                let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_selected_editor_text(SharedString::from(text));
+                    ui.set_selected_editor_status(SharedString::default());
+                    ui.set_selected_editor_status_is_error(false);
+                    ui.set_selected_editor_dirty(false);
+                });
+            });
+        });
+    }
+
+    {
+        let db = db.clone();
+        let rt = rt.clone();
+        window.on_reveal_ide_config(move |name| {
+            let db = db.clone();
+            let name = name.to_string();
+            rt.spawn(async move {
+                let Some(cfg) = db
+                    .list_ide_configs_for_ide(&name)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                else {
+                    return;
+                };
+                reveal_in_file_manager(&cfg.config_path);
+            });
+        });
+    }
 
     let db_for_remove_ide = db.clone();
     let rt_for_remove_ide = rt.clone();
@@ -1688,3 +1847,20 @@ fn settings_to_row(s: &Settings) -> SettingsRow {
         notifications_enabled: SharedString::from(s.notifications.enabled.to_string()),
     }
 }
+
+fn reveal_in_file_manager(path: &std::path::Path) {
+    let result: std::io::Result<std::process::Child> = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-R").arg(path).spawn()
+    } else if cfg!(target_os = "windows") {
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(path);
+        std::process::Command::new("explorer").arg(arg).spawn()
+    } else {
+        let dir = path.parent().unwrap_or(path);
+        std::process::Command::new("xdg-open").arg(dir).spawn()
+    };
+    if let Err(e) = result {
+        tracing::warn!(path = %path.display(), error = %e, "reveal in file manager failed");
+    }
+}
+

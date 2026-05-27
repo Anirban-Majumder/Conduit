@@ -1,7 +1,4 @@
-// Upstream lifecycle manager: lazy spawn on first call, idle TTL tracker.
-// Spec §"Server lifecycle".
-
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,8 +9,13 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::daemon::events::{Bus, Event};
+use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
+use crate::daemon::upstream::oauth::RefreshCoordinator;
 use crate::daemon::upstream::{http, stdio};
 use crate::paths::Paths;
+
+const ERROR_RING_CAP: usize = 5;
 
 const EPHEMERAL: i32 = 0;
 const PERSISTENT: i32 = -1;
@@ -85,12 +87,22 @@ impl std::fmt::Debug for Entry {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeStatus {
+    pub last_call_at: Option<i64>,
+    pub last_call_error: Option<String>,
+    pub recent_errors: VecDeque<(i64, String)>,
+    last_emit_at: Option<Instant>,
+}
+
 #[derive(Debug)]
 pub struct UpstreamManager {
     state: Arc<Mutex<HashMap<String, Entry>>>,
+    status: Arc<Mutex<HashMap<String, RuntimeStatus>>>,
     cancel: CancellationToken,
-    // `paths` is held so a future stage can route per-server log files
-    // (spec §"Debug + diagnostics"); not yet wired.
+    bus: Option<Bus>,
+    refresh_coord: Arc<RefreshCoordinator>,
+    refresh_http: reqwest::Client,
     #[expect(
         dead_code,
         reason = "reserved for per-server log file paths in a later stage"
@@ -100,14 +112,59 @@ pub struct UpstreamManager {
 
 impl UpstreamManager {
     pub fn new(paths: Paths, cancel: CancellationToken) -> Self {
+        Self::with_bus(paths, cancel, None)
+    }
+
+    pub fn with_bus(paths: Paths, cancel: CancellationToken, bus: Option<Bus>) -> Self {
         let state = Arc::new(Mutex::new(HashMap::new()));
+        let status = Arc::new(Mutex::new(HashMap::new()));
         let mgr = Self {
             state: state.clone(),
+            status,
             cancel: cancel.clone(),
+            bus,
+            refresh_coord: RefreshCoordinator::new(),
+            refresh_http: reqwest::Client::new(),
             paths,
         };
         spawn_reaper(state, cancel);
         mgr
+    }
+
+    pub async fn snapshot(&self, server: &str) -> Option<RuntimeStatus> {
+        self.status.lock().await.get(server).cloned()
+    }
+
+    async fn record(&self, server: &str, error: Option<String>) {
+        let now = Instant::now();
+        let unix = now_unix();
+        let mut map = self.status.lock().await;
+        let entry = map.entry(server.to_string()).or_default();
+        entry.last_call_at = Some(unix);
+        if let Some(ref e) = error {
+            entry.last_call_error = Some(e.clone());
+            entry.recent_errors.push_back((unix, e.clone()));
+            while entry.recent_errors.len() > ERROR_RING_CAP {
+                entry.recent_errors.pop_front();
+            }
+        } else {
+            entry.last_call_error = None;
+        }
+        let due = error.is_some()
+            || entry
+                .last_emit_at
+                .is_none_or(|prev| now.duration_since(prev) >= HEALTH_EVENT_DEBOUNCE);
+        if due {
+            entry.last_emit_at = Some(now);
+        }
+        drop(map);
+        if due {
+            if let Some(bus) = &self.bus {
+                bus.publish(Event::ServerHealthChanged {
+                    name: server.to_string(),
+                });
+            }
+        }
     }
 
     /// Forward a JSON-RPC tools/call to the named upstream. Spawns lazily.
@@ -130,15 +187,20 @@ impl UpstreamManager {
         }
 
         let request = parse_tool_call_params(params)?;
-        self.ensure_running(config).await?;
+        if let Err(e) = self.ensure_running(config).await {
+            self.record(&config.name, Some(e.to_string())).await;
+            return Err(e);
+        }
 
         let mut state = self.state.lock().await;
         let peer = {
             let Some(entry) = state.get_mut(&config.name) else {
+                self.record(&config.name, Some("crashed".into())).await;
                 return Err(UpstreamError::Crashed);
             };
             if entry.client.is_closed() {
                 state.remove(&config.name);
+                self.record(&config.name, Some("crashed".into())).await;
                 return Err(UpstreamError::Crashed);
             }
             entry.last_use = Instant::now();
@@ -148,8 +210,13 @@ impl UpstreamManager {
 
         let response = match peer.call_tool(request).await {
             Ok(call_result) => serde_json::to_value(call_result)?,
-            Err(e) => return Err(UpstreamError::Rmcp(e)),
+            Err(e) => {
+                let msg = e.to_string();
+                self.record(&config.name, Some(msg)).await;
+                return Err(UpstreamError::Rmcp(e));
+            }
         };
+        self.record(&config.name, None).await;
 
         if config.lifecycle_seconds == EPHEMERAL {
             self.kill(&config.name).await;
@@ -215,13 +282,19 @@ impl UpstreamManager {
             return Ok(());
         }
 
-        // Spawn outside the lock — the initialize handshake can take seconds.
         let client = match &config.transport {
             Transport::Stdio { command, args, env } => {
                 stdio::connect(command, args, env, self.cancel.clone()).await?
             }
             Transport::Http { url, bearer_token } => {
-                http::connect(url, bearer_token.as_deref(), self.cancel.clone()).await?
+                let refreshed = http::ensure_fresh_access_token(
+                    &config.name,
+                    &self.refresh_coord,
+                    &self.refresh_http,
+                )
+                .await;
+                let token = refreshed.as_deref().or(bearer_token.as_deref());
+                http::connect(url, token, self.cancel.clone()).await?
             }
         };
 
@@ -331,6 +404,13 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
     }
     drop(guard);
     out
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 fn is_expired(entry: &Entry, now: Instant) -> bool {

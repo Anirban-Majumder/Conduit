@@ -236,6 +236,8 @@ pub struct Db {
 impl Db {
     pub fn spawn_at(path: &Path) -> Result<Self, DbError> {
         let conn = Connection::open(path)?;
+        #[cfg(all(unix, not(debug_assertions)))]
+        restrict_db_perms(path);
         Self::spawn_with(conn)
     }
 
@@ -877,6 +879,23 @@ fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
     }
     while let Some(cmd) = rx.blocking_recv() {
         dispatch(&conn, cmd);
+    }
+}
+
+#[cfg(all(unix, not(debug_assertions)))]
+fn restrict_db_perms(path: &Path) {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name: OsString = path.as_os_str().to_os_string();
+        name.push(suffix);
+        let p = PathBuf::from(name);
+        if !p.exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(path = %p.display(), error = %e, "chmod 0600 failed");
+        }
     }
 }
 
