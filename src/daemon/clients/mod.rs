@@ -94,26 +94,35 @@ pub fn config_path_under(ide: IdeKind, home: &Path) -> PathBuf {
     }
 }
 
-/// IDE targets that natively load `<dir>/skills/*` at startup. Cursor / VS Code
-/// Copilot don't, so they're excluded from skill sync.
-pub const SKILL_TARGET_IDES: &[IdeKind] =
-    &[IdeKind::ClaudeCode, IdeKind::OpenClaude, IdeKind::OpenCode];
+/// IDE targets that natively load `<dir>/skills/*` at startup. VS Code Copilot
+/// has no global skills directory (prompt files are workspace-scoped only).
+pub const SKILL_TARGET_IDES: &[IdeKind] = &[
+    IdeKind::ClaudeCode,
+    IdeKind::Cursor,
+    IdeKind::OpenClaude,
+    IdeKind::OpenCode,
+    IdeKind::Codex,
+];
 
 pub fn skills_dir_for(ide: IdeKind) -> Option<PathBuf> {
     match ide {
         IdeKind::ClaudeCode => claude_code::skills_dir(),
+        IdeKind::Cursor => cursor::skills_dir(),
         IdeKind::OpenClaude => openclaude::skills_dir(),
         IdeKind::OpenCode => opencode::skills_dir(),
-        IdeKind::Cursor | IdeKind::VsCodeCopilot | IdeKind::Codex => None,
+        IdeKind::Codex => codex::skills_dir(),
+        IdeKind::VsCodeCopilot => None,
     }
 }
 
 pub fn skills_dir_under(ide: IdeKind, home: &Path) -> Option<PathBuf> {
     match ide {
         IdeKind::ClaudeCode => Some(claude_code::skills_dir_under(home)),
+        IdeKind::Cursor => Some(cursor::skills_dir_under(home)),
         IdeKind::OpenClaude => Some(openclaude::skills_dir_under(home)),
         IdeKind::OpenCode => Some(opencode::skills_dir_under(home)),
-        IdeKind::Cursor | IdeKind::VsCodeCopilot | IdeKind::Codex => None,
+        IdeKind::Codex => Some(codex::skills_dir_under(home)),
+        IdeKind::VsCodeCopilot => None,
     }
 }
 

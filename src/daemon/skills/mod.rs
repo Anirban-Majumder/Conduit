@@ -568,9 +568,17 @@ mod tests {
             "ClaudeCode".into(),
             "Cursor".into(),
             "OpenCode".into(),
+            "VsCodeCopilot".into(), // no global skills dir — filtered out
             "Bogus".into(),
             "ClaudeCode".into(),
         ]);
-        assert_eq!(out, vec!["ClaudeCode".to_string(), "OpenCode".to_string()]);
+        assert_eq!(
+            out,
+            vec![
+                "ClaudeCode".to_string(),
+                "Cursor".to_string(),
+                "OpenCode".to_string(),
+            ]
+        );
     }
 }

@@ -24,22 +24,76 @@ as you add, remove, or swap IDEs.
 - 🦀 **Single Rust binary.** Pure Rust + Slint. No webview, no Node, no
   Electron. ~20 MB on disk, ~80 MB RAM idle.
 
+## 🚀 Quick start
+
+```sh
+git clone https://github.com/Anirban-Majumder/conduit
+cd conduit
+cargo build --release
+./target/release/conduit
+```
+
+> **Linux deps:** `sudo pacman -S xdotool libxkbcommon` (Arch) or
+> `sudo apt install libxdo-dev libxkbcommon-dev` (Debian/Ubuntu).
+
+## 🧪 Verify
+
+```sh
+cargo check --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+## 🧭 How it works
+
+Conduit is a tray app and an HTTP daemon in the same process. It binds
+`127.0.0.1:9876`, hands each IDE a random 8-char key, and rewrites that IDE's
+MCP config to point at its keyed URL. The tray window is where you manage
+servers, grant approvals, and watch the audit log — close it and Conduit
+keeps routing in the background.
+
+## 📁 Where state lives
+
+| OS      | Path                                              |
+| ------- | ------------------------------------------------- |
+| Linux   | `~/.config/conduit/`                              |
+| macOS   | `~/Library/Application Support/conduit/`          |
+| Windows | `%APPDATA%\conduit\`                              |
+
+Inside that directory:
+
+```
+conduit/
+├── config.toml      # user settings (port, approval timeout, …)
+├── state.db         # SQLite: servers, policies, audit log
+├── installs/        # auto-installed upstream MCP packages
+├── skills/managed/  # canonical copies of installed skills
+└── logs/daemon.log
+```
+
+Secrets — env-var values and OAuth tokens — never touch disk in plaintext.
+Conduit uses the OS keyring: `gnome-keyring` / `KWallet` on Linux, Keychain on
+macOS, Credential Manager on Windows.
+
+
+
 ## 🖥️ Supported clients
 
-Conduit syncs MCP servers (and where supported, skills) into the config files
-each client auto-loads. Per-client module lives in
-[`src/daemon/clients/`](src/daemon/clients/) with a 3-line header citing the
-upstream source for every path — if a vendor changes their schema, the fix
-is one file, with the citation right there.
+| Client          | MCP | Skills |
+| --------------- | :-: | :----: |
+| Claude Code     | ✅  |   ✅   |
+| Cursor          | ✅  |   ✅   |
+| VS Code Copilot | ✅  |   —    |
+| OpenCode        | ✅  |   ✅   |
+| OpenClaude      | ✅  |   ✅   |
+| Codex           | ✅  |   ✅   |
 
-| Client | MCP config | Top-level key | Required fields | Skills dir |
-|---|---|---|---|---|
-| Claude Code | `~/.claude.json` | `mcpServers` | `type:"http"`, `url` | `~/.claude/skills/` |
-| Cursor | `~/.cursor/mcp.json` | `mcpServers` | `url` (no type) | `~/.cursor/skills/` |
-| VS Code Copilot | `<Code/User>/mcp.json` | `servers` | `type:"http"`, `url` | — |
-| OpenCode | `~/.config/opencode/opencode.json` | `mcp` | `type:"remote"`, `url` | `~/.config/opencode/skills/` |
-| OpenClaude | `~/.openclaude.json` | `mcpServers` | `type:"http"`, `url` | `~/.openclaude/skills/` |
-| Codex | `~/.codex/config.toml` | `mcp_servers` (TOML) | `url` (no type) | `~/.codex/skills/` |
+Conduit syncs MCP servers (and where supported, skills) into the config files
+each client auto-loads. Skills are placed in each IDE's skills directory as a
+directory symlink to the canonical managed copy — edits propagate everywhere
+for free; recursive copy is the fallback when symlinks aren't allowed
+(sandboxed Windows accounts).
+
 
 ### Adding a new client
 
@@ -89,56 +143,6 @@ Then in [`mod.rs`](src/daemon/clients/mod.rs):
 5. If skills are auto-loaded, map it in `skills_dir_for` /
    `skills_dir_under` and add to `SKILL_TARGET_IDES`.
 
-## 🧭 How it works
-
-Conduit is a tray app and an HTTP daemon in the same process. It binds
-`127.0.0.1:9876`, hands each IDE a random 8-char key, and rewrites that IDE's
-MCP config to point at its keyed URL. The tray window is where you manage
-servers, grant approvals, and watch the audit log — close it and Conduit
-keeps routing in the background.
-
-## 🚀 Quick start
-
-```sh
-git clone https://github.com/Anirban-Majumder/conduit
-cd conduit
-cargo build --release
-./target/release/conduit
-```
-
-> **Linux deps:** `sudo pacman -S xdotool libxkbcommon` (Arch) or
-> `sudo apt install libxdo-dev libxkbcommon-dev` (Debian/Ubuntu).
-
-## 📁 Where state lives
-
-| OS      | Path                                              |
-| ------- | ------------------------------------------------- |
-| Linux   | `~/.config/conduit/`                              |
-| macOS   | `~/Library/Application Support/conduit/`          |
-| Windows | `%APPDATA%\conduit\`                              |
-
-Inside that directory:
-
-```
-conduit/
-├── config.toml      # user settings (port, approval timeout, …)
-├── state.db         # SQLite: servers, policies, audit log
-├── installs/        # auto-installed upstream MCP packages
-├── skills/managed/  # canonical copies of installed skills
-└── logs/daemon.log
-```
-
-Secrets — env-var values and OAuth tokens — never touch disk in plaintext.
-Conduit uses the OS keyring: `gnome-keyring` / `KWallet` on Linux, Keychain on
-macOS, Credential Manager on Windows.
-
-## 🧪 Verify
-
-```sh
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
 
 ## 📄 License
 

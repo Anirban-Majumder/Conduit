@@ -22,6 +22,9 @@ fn skills_dir_under_matches_per_ide_layout() {
     let claude = skills_dir_under(ide_kind_from_db_name("ClaudeCode").unwrap(), home).unwrap();
     assert_eq!(claude, home.join(".claude").join("skills"));
 
+    let cursor = skills_dir_under(ide_kind_from_db_name("Cursor").unwrap(), home).unwrap();
+    assert_eq!(cursor, home.join(".cursor").join("skills"));
+
     let openclaude = skills_dir_under(ide_kind_from_db_name("OpenClaude").unwrap(), home).unwrap();
     assert_eq!(openclaude, home.join(".openclaude").join("skills"));
 
@@ -30,13 +33,15 @@ fn skills_dir_under_matches_per_ide_layout() {
         opencode,
         home.join(".config").join("opencode").join("skills")
     );
+
+    let codex = skills_dir_under(ide_kind_from_db_name("Codex").unwrap(), home).unwrap();
+    assert_eq!(codex, home.join(".codex").join("skills"));
 }
 
 #[test]
-fn skills_dir_under_returns_none_for_non_agentic_ides() {
+fn skills_dir_under_returns_none_for_vscode_copilot() {
     let home = Path::new("/test-home");
-    assert!(skills_dir_under(ide_kind_from_db_name("Cursor").unwrap(), home,).is_none());
-    assert!(skills_dir_under(ide_kind_from_db_name("VsCodeCopilot").unwrap(), home,).is_none());
+    assert!(skills_dir_under(ide_kind_from_db_name("VsCodeCopilot").unwrap(), home).is_none());
 }
 
 #[test]
