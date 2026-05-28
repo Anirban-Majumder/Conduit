@@ -29,9 +29,6 @@ fn server_row(name: &str) -> Server {
         last_probe_error: None,
         last_auth_error_msg: None,
         last_auth_error_at: None,
-        oauth_authority: None,
-        oauth_client_id: None,
-        oauth_scopes: None,
     }
 }
 
@@ -54,14 +51,25 @@ async fn v01_servers_table_has_new_columns() {
         "server_version",
         "last_probed_at",
         "last_probe_error",
+        "last_auth_error_msg",
+        "last_auth_error_at",
+    ] {
+        assert!(
+            cols.iter().any(|c| c == expected),
+            "missing column {expected} on servers, got {cols:?}"
+        );
+    }
+    // The legacy OAuth columns are dropped by the migration — client_id and
+    // scopes now live in the keyring credential blob.
+    for dropped in [
         "oauth_authority",
         "oauth_client_id",
         "oauth_client_secret_ref",
         "oauth_scopes",
     ] {
         assert!(
-            cols.iter().any(|c| c == expected),
-            "missing column {expected} on servers, got {cols:?}"
+            !cols.iter().any(|c| c == dropped),
+            "column {dropped} should have been dropped, got {cols:?}"
         );
     }
 }
@@ -105,7 +113,10 @@ async fn migrations_idempotent_on_re_open() {
         db.ping().await.expect("second ping");
         assert_eq!(db.schema_version().await.unwrap(), 4);
         let cols = db.table_columns("servers").await.unwrap();
-        assert!(cols.iter().any(|c| c == "oauth_authority"));
+        // Re-running migrations must keep the legacy OAuth column dropped (the
+        // conditional DROP is idempotent and doesn't re-add it).
+        assert!(!cols.iter().any(|c| c == "oauth_authority"));
+        assert!(cols.iter().any(|c| c == "last_auth_error_msg"));
     }
 
     let _ignored = std::fs::remove_file(&path);

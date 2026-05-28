@@ -220,9 +220,6 @@ pub struct Server {
     pub last_probe_error: Option<String>,
     pub last_auth_error_msg: Option<String>,
     pub last_auth_error_at: Option<i64>,
-    pub oauth_authority: Option<String>,
-    pub oauth_client_id: Option<String>,
-    pub oauth_scopes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

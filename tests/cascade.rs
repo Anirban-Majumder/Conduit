@@ -10,10 +10,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use conduit::daemon::cascade::delete_server_with_cascade;
+use conduit::daemon::clients::{write_uniform_mcp_servers, JsonSchema};
 use conduit::daemon::db::types::{ApprovalStatus, PendingApproval, Server, ToolMeta};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
-use conduit::daemon::clients::{write_uniform_mcp_servers, JsonSchema};
 
 const CURSOR_SCHEMA: JsonSchema = JsonSchema {
     top_level_key: "mcpServers",
@@ -45,9 +45,6 @@ fn server(name: &str) -> Server {
         last_probe_error: None,
         last_auth_error_msg: None,
         last_auth_error_at: None,
-        oauth_authority: None,
-        oauth_client_id: None,
-        oauth_scopes: None,
     }
 }
 

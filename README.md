@@ -14,7 +14,7 @@ as you add, remove, or swap IDEs.
 - 📦 **Skills sync.** Install a SKILL.md package once, and Conduit drops it into every agentic IDE's skills directory.
 - 🛡️ **Per-tool approval gates.** First call to a new tool prompts you — always-allow, ask-each-time, or deny. Full audit trail in SQLite.
 - 🌐 **HTTP MCP proxy.** Conduit fronts every upstream at localhost, so HTTP-only IDEs can use stdio MCP servers too.
-- 🔑 **OAuth, handled.** Browser flow for upstreams that need it. Tokens live in the OS keyring — never in plaintext on disk.
+- 🔑 **OAuth, handled.** Browser flow for upstreams that need it. Tokens live in the OS keyring — never in plaintext on disk. HTTP OAuth servers must support [Dynamic Client Registration](https://datatracker.ietf.org/doc/html/rfc7591) (RFC 7591); a pre-registered `client_id` isn't supported yet.
 - 🦀 **Single Rust binary.** Pure Rust + Slint. No webview, no Node, no Electron. ~20 MB on disk, ~80 MB RAM idle.
 
 ## 🚀 Quick start

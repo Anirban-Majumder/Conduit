@@ -22,12 +22,8 @@ pub struct ProbeResult {
     pub server_name: String,
     pub server_version: String,
     pub tools: Vec<ToolMeta>,
-    /// Set when the probe ran OAuth — `draft_session_uuid` for keyring promotion on Save.
+    /// Set when the probe ran OAuth — draft session UUID for keyring promotion on Save.
     pub oauth_session: Option<String>,
-    /// Set when OAuth ran — used to populate `servers.oauth_*`.
-    pub oauth_authority: Option<String>,
-    pub oauth_client_id: Option<String>,
-    pub oauth_scopes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +103,7 @@ pub async fn probe(
 
 #[expect(
     clippy::too_many_lines,
-    reason = "OAuth pivot inlined for one-shot flow"
+    reason = "linear probe flow (connect → initialize → tools/list) reads clearer inline"
 )]
 pub async fn probe_with_progress(
     cfg: &DraftServerConfig,
@@ -121,9 +117,6 @@ pub async fn probe_with_progress(
     };
 
     let mut oauth_session: Option<String> = None;
-    let mut oauth_authority: Option<String> = None;
-    let mut oauth_client_id: Option<String> = None;
-    let mut oauth_scopes: Option<String> = None;
 
     let client = match &cfg.transport {
         DraftTransport::Stdio { command, args, env } => {
@@ -153,108 +146,27 @@ pub async fn probe_with_progress(
                         return Err(map_connect_error(e));
                     }
                     emit(ProbeEvent::Phase(
-                        "Sign in required — fetching OAuth metadata...".into(),
+                        "Sign in required — starting OAuth...".into(),
                     ));
-                    let Some(challenge) = fetch_oauth_challenge(url, cancel.clone()).await else {
-                        return Err(ProbeError::OauthRequired);
-                    };
-                    let (meta, callback_listener, redirect_uri, pkce, state, dcr) =
-                        run_oauth_pre(url, &challenge, cancel.clone(), &emit).await?;
-                    let scope_param = if meta.scopes_supported.is_empty() {
-                        None
-                    } else {
-                        Some(meta.scopes_supported.join(" "))
-                    };
-                    // RFC 8707: Use resource from PRM/AS metadata, or fall back to MCP URL.
-                    let resource_indicator = meta
-                        .resource
-                        .clone()
-                        .or_else(|| challenge.resource.clone())
-                        .unwrap_or_else(|| url.to_string());
-                    tracing::info!(
-                        scope_count = meta.scopes_supported.len(),
-                        scopes = scope_param.as_deref().unwrap_or("<none>"),
-                        resource = %resource_indicator,
-                        "OAuth: requesting advertised scopes",
-                    );
-                    let authorize_url = oauth::build_authorize_url(
-                        &meta.authorization_endpoint,
-                        &dcr.client_id,
-                        &redirect_uri,
-                        &pkce.challenge,
-                        state.as_str(),
-                        scope_param.as_deref(),
-                        Some(&resource_indicator),
-                    );
-                    emit(ProbeEvent::AuthorizeUrl(authorize_url.clone()));
-                    if let Err(open_err) = open::that(&authorize_url) {
-                        tracing::warn!(error = %open_err, "browser launch failed");
-                    }
-                    let code =
-                        oauth::wait_for_callback(callback_listener, state.as_str(), cancel.clone())
-                            .await
-                            .map_err(|err| ProbeError::OauthFlow(err.to_string()))?;
-                    emit(ProbeEvent::Phase("Exchanging code for tokens...".into()));
-                    let tokens = oauth::exchange_code_for_tokens(
-                        &reqwest::Client::new(),
-                        &meta.token_endpoint,
-                        &dcr.client_id,
-                        dcr.client_secret.as_deref(),
-                        &redirect_uri,
-                        &code,
-                        pkce.verifier.as_str(),
-                        Some(&resource_indicator),
-                    )
-                    .await
-                    .map_err(|err| ProbeError::OauthFlow(err.to_string()))?;
-                    tracing::info!(
-                        granted_scope = tokens.scope.as_deref().unwrap_or("<unspecified>"),
-                        has_refresh_token = tokens.refresh_token.is_some(),
-                        "OAuth: token grant received",
-                    );
-                    // Store tokens + meta under draft session.
                     let draft = cfg.draft_session.clone();
-                    secrets::store_oauth_access(&draft, &tokens.access_token)
-                        .map_err(|e| ProbeError::OauthFlow(format!("store access token: {e}")))?;
-                    if let Some(rt) = &tokens.refresh_token {
-                        secrets::store_oauth_refresh(&draft, rt).map_err(|e| {
-                            ProbeError::OauthFlow(format!("store refresh token: {e}"))
-                        })?;
-                    }
-                    if let Some(secret) = &dcr.client_secret {
-                        secrets::store_oauth_client_secret(&draft, secret).map_err(|e| {
-                            ProbeError::OauthFlow(format!("store client secret: {e}"))
-                        })?;
-                    }
-                    let expires_at_unix = {
-                        use std::time::{SystemTime, UNIX_EPOCH};
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-                            .unwrap_or(0);
-                        now + i64::try_from(tokens.expires_in.unwrap_or(3600)).unwrap_or(3600)
-                    };
-                    secrets::store_oauth_meta(
-                        &draft,
-                        &secrets::OauthMeta {
-                            token_endpoint: meta.token_endpoint.clone(),
-                            client_id: dcr.client_id.clone(),
-                            expires_at_unix,
-                            resource: meta.resource.clone(),
-                        },
-                    )
-                    .map_err(|e| ProbeError::OauthFlow(format!("store oauth meta: {e}")))?;
-                    oauth_session = Some(draft);
-                    oauth_authority = Some(meta.authorization_endpoint.clone());
-                    oauth_client_id = Some(dcr.client_id.clone());
-                    oauth_scopes = scope_param;
-                    // Retry rmcp with the freshly-minted bearer.
+                    run_oauth_login(url, &draft, cancel.clone(), &emit).await?;
+                    oauth_session = Some(draft.clone());
+                    // Retry via the runtime AuthClient path against the freshly
+                    // stored draft credentials — same code path as a saved server.
                     emit(ProbeEvent::Phase(
                         "Re-initializing with OAuth token...".into(),
                     ));
-                    let retry =
-                        http::connect(url, Some(&tokens.access_token), cancel.clone()).await;
-                    spawn_done(retry.map_err(map_connect_error)?, cancel.clone()).await?
+                    match http::connect_oauth(url, &draft, cancel.clone())
+                        .await
+                        .map_err(map_connect_error)?
+                    {
+                        Some(c) => spawn_done(c, cancel.clone()).await?,
+                        None => {
+                            return Err(ProbeError::OauthFlow(
+                                "credentials were not persisted after login".into(),
+                            ))
+                        }
+                    }
                 }
             }
         }
@@ -311,15 +223,16 @@ pub async fn probe_with_progress(
         server_version,
         tools,
         oauth_session,
-        oauth_authority,
-        oauth_client_id,
-        oauth_scopes,
     })
 }
 
 fn bearer_for(auth: &HttpAuth, headers: &[(String, String)]) -> Option<String> {
     if let HttpAuth::Bearer(t) = auth {
-        return Some(t.as_str().to_string());
+        // Strip a "Bearer " prefix the user may have pasted, mirroring the
+        // header path below: rmcp's bearer_auth re-adds it, so passing it raw
+        // would yield "Bearer Bearer <token>".
+        let raw = t.as_str().strip_prefix("Bearer ").unwrap_or(t.as_str());
+        return Some(raw.to_string());
     }
     headers.iter().find_map(|(k, v)| {
         if k.eq_ignore_ascii_case("authorization") {
@@ -366,152 +279,89 @@ fn looks_like_auth_failure(e: &crate::daemon::upstream::manager::UpstreamError) 
     message_looks_like_auth_failure(&s)
 }
 
-async fn fetch_oauth_challenge(
+async fn run_oauth_login(
     url: &str,
-    cancel: CancellationToken,
-) -> Option<oauth::OauthChallenge> {
-    let client = reqwest::Client::new();
-    let req = tokio::select! {
-        () = cancel.cancelled() => return None,
-        r = client.get(url).send() => r.ok()?,
-    };
-    if req.status().as_u16() != 401 {
-        return None;
-    }
-    let www = req.headers().get("www-authenticate")?.to_str().ok()?;
-    oauth::parse_www_authenticate(www)
-}
-
-struct PreOauth {}
-
-type OauthPre = (
-    oauth::AuthorizationServerMetadata,
-    tokio::net::TcpListener,
-    String,
-    oauth::Pkce,
-    Zeroizing<String>,
-    oauth::DcrResponse,
-);
-
-/// Check whether two URLs share the same origin (scheme + host + port).
-fn is_same_origin(a: &str, b: &str) -> bool {
-    let (Ok(a), Ok(b)) = (reqwest::Url::parse(a), reqwest::Url::parse(b)) else {
-        return false;
-    };
-    a.scheme() == b.scheme()
-        && a.host_str() == b.host_str()
-        && a.port_or_known_default() == b.port_or_known_default()
-}
-
-fn resource_metadata_candidates(mcp_url: &str, challenge: &oauth::OauthChallenge) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if let Some(advertised) = challenge.resource_metadata_url.as_deref() {
-        // RFC 9728 §3.1: resource_metadata URL MUST be on the same origin as
-        // the protected resource. Reject cross-origin values to prevent SSRF.
-        if is_same_origin(mcp_url, advertised) {
-            out.push(advertised.to_string());
-        } else {
-            tracing::warn!(
-                advertised = %advertised,
-                mcp_url = %mcp_url,
-                "ignoring cross-origin resource_metadata URL (RFC 9728 §3.1)"
-            );
-        }
-    }
-    if let Ok(parsed) = reqwest::Url::parse(mcp_url) {
-        let origin = format!(
-            "{}://{}",
-            parsed.scheme(),
-            parsed.host_str().unwrap_or_default()
-        );
-        let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
-        let path = parsed.path().trim_start_matches('/').trim_end_matches('/');
-        if !path.is_empty() {
-            out.push(format!(
-                "{origin}{port_suffix}/.well-known/oauth-protected-resource/{path}"
-            ));
-        }
-        out.push(format!(
-            "{origin}{port_suffix}/.well-known/oauth-protected-resource"
-        ));
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-async fn first_authorization_metadata(
-    http: &reqwest::Client,
-    candidates: &[String],
-) -> Result<oauth::AuthorizationServerMetadata, ProbeError> {
-    let mut last_err: Option<String> = None;
-    for candidate in candidates {
-        match oauth::fetch_authorization_server_metadata(http, candidate).await {
-            Ok(meta) => return Ok(meta),
-            Err(e) => last_err = Some(format!("{candidate}: {e}")),
-        }
-    }
-    Err(ProbeError::OauthFlow(format!(
-        "no OAuth protected-resource metadata found (tried {} candidates: {})",
-        candidates.len(),
-        last_err.unwrap_or_else(|| "none".into())
-    )))
-}
-
-async fn run_oauth_pre(
-    mcp_url: &str,
-    challenge: &oauth::OauthChallenge,
+    draft: &str,
     cancel: CancellationToken,
     emit: &(dyn Fn(ProbeEvent) + Send + Sync),
-) -> Result<OauthPre, ProbeError> {
-    let http = reqwest::Client::new();
-    emit(ProbeEvent::Phase(
-        "Resolving authorization server...".into(),
-    ));
+) -> Result<(), ProbeError> {
+    use rmcp::transport::auth::{OAuthState, StoredCredentials};
 
-    // Strategy 1: Protected Resource Metadata → Authorization Server (RFC 9728 + RFC 8414).
-    let resource_candidates = resource_metadata_candidates(mcp_url, challenge);
-    let meta = match first_authorization_metadata(&http, &resource_candidates).await {
-        Ok(m) => m,
-        Err(prm_err) => {
-            tracing::debug!(error = %prm_err, "PRM chain failed, trying direct well-known");
-            // Strategy 2: Direct well-known on MCP origin (RFC 8414 + OpenID Connect).
-            match oauth::fetch_auth_server_metadata_direct(&http, mcp_url).await {
-                Ok(m) => m,
-                Err(direct_err) => {
-                    tracing::debug!(error = %direct_err, "direct well-known failed, trying fallback endpoints");
-                    // Strategy 3: Generate fallback endpoints from the MCP URL.
-                    oauth::generate_fallback_endpoints(mcp_url).ok_or_else(|| {
-                        ProbeError::OauthFlow(format!(
-                            "OAuth discovery failed (PRM: {prm_err}; direct: {direct_err})"
-                        ))
-                    })?
-                }
-            }
-        }
-    };
     let (listener, _port, redirect_uri) = oauth::bind_callback_listener()
         .await
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
-    let pkce = oauth::Pkce::generate();
-    let state = oauth::fresh_state();
-    let dcr_scope = if meta.scopes_supported.is_empty() {
-        None
-    } else {
-        Some(meta.scopes_supported.join(" "))
-    };
-    let dcr = if let Some(reg) = &meta.registration_endpoint {
-        emit(ProbeEvent::Phase("Registering OAuth client...".into()));
-        oauth::register_client(&http, reg, &redirect_uri, dcr_scope)
-            .await
-            .map_err(|e| ProbeError::OauthFlow(e.to_string()))?
-    } else {
+
+    emit(ProbeEvent::Phase(
+        "Resolving authorization server...".into(),
+    ));
+    // `None` ⇒ rmcp builds its own client for discovery + DCR + token exchange.
+    let mut state = OAuthState::new(url, None).await.map_err(map_oauth_err)?;
+    // start_authorization discovers metadata (PRM → direct, no endpoint
+    // guessing) then dynamically registers a client. Servers without a
+    // registration_endpoint fail here; rmcp's OAuthState / OAuthClientConfig
+    // also supports a pre-registered client_id, but wiring that is a deliberate
+    // deferral (documented in the README), not an oversight.
+    state
+        .start_authorization(&[], &redirect_uri, Some("Conduit"))
+        .await
+        .map_err(map_oauth_err)?;
+
+    let authorize_url = state.get_authorization_url().await.map_err(map_oauth_err)?;
+    emit(ProbeEvent::AuthorizeUrl(authorize_url.clone()));
+    if let Err(open_err) = open::that(&authorize_url) {
+        tracing::warn!(error = %open_err, "browser launch failed");
+    }
+
+    let (code, csrf) = oauth::wait_for_callback(listener, cancel)
+        .await
+        .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
+    emit(ProbeEvent::Phase("Exchanging code for tokens...".into()));
+    state
+        .handle_callback(&code, &csrf)
+        .await
+        .map_err(map_oauth_err)?;
+
+    let (client_id, token_response) = state.get_credentials().await.map_err(map_oauth_err)?;
+    if token_response.is_none() {
         return Err(ProbeError::OauthFlow(
-            "server has no registration_endpoint and manual client_id is not yet supported".into(),
+            "authorization completed but no token was returned".into(),
         ));
-    };
-    let _ = (PreOauth {}, cancel);
-    Ok((meta, listener, redirect_uri, pkce, state, dcr))
+    }
+    // rmcp re-requests the grant's scopes server-side on refresh, so an empty
+    // scope list here is fine; the token was just minted, so "now" is its
+    // receipt time for expiry tracking.
+    let stored = StoredCredentials::new(
+        client_id,
+        token_response,
+        Vec::new(),
+        Some(now_epoch_secs()),
+    );
+    let draft = draft.to_string();
+    tokio::task::spawn_blocking(move || secrets::store_oauth_cred(&draft, &stored))
+        .await
+        .map_err(|e| ProbeError::OauthFlow(e.to_string()))?
+        .map_err(|e| ProbeError::OauthFlow(format!("store credentials: {e}")))?;
+    Ok(())
+}
+
+fn map_oauth_err(e: rmcp::transport::auth::AuthError) -> ProbeError {
+    use rmcp::transport::auth::AuthError;
+    match e {
+        AuthError::NoAuthorizationSupport => ProbeError::OauthRequired,
+        AuthError::RegistrationFailed(msg) => ProbeError::OauthFlow(format!(
+            "server does not support Dynamic Client Registration ({msg}); a \
+             pre-registered client_id is not yet supported"
+        )),
+        other => ProbeError::OauthFlow(other.to_string()),
+    }
+}
+
+fn now_epoch_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 async fn spawn_with_phase_timeout<F, T>(fut: F, cancel: CancellationToken) -> Result<T, ProbeError>
@@ -552,6 +402,14 @@ fn map_tools_error(e: ServiceError) -> ProbeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bearer_for_strips_pasted_prefix() {
+        let prefixed = HttpAuth::Bearer(Zeroizing::new("Bearer abc123".to_string()));
+        assert_eq!(bearer_for(&prefixed, &[]).as_deref(), Some("abc123"));
+        let raw = HttpAuth::Bearer(Zeroizing::new("xyz789".to_string()));
+        assert_eq!(bearer_for(&raw, &[]).as_deref(), Some("xyz789"));
+    }
 
     #[test]
     fn auth_failure_detector_matches_common_signals() {

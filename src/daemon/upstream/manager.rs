@@ -11,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::daemon::events::{Bus, Event};
 use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
-use crate::daemon::upstream::oauth::RefreshCoordinator;
 use crate::daemon::upstream::{http, stdio};
 use crate::paths::Paths;
 
@@ -107,8 +106,6 @@ pub struct UpstreamManager {
     status: Arc<Mutex<HashMap<String, RuntimeStatus>>>,
     cancel: CancellationToken,
     bus: Option<Bus>,
-    refresh_coord: Arc<RefreshCoordinator>,
-    refresh_http: reqwest::Client,
     #[expect(
         dead_code,
         reason = "reserved for per-server log file paths in a later stage"
@@ -129,8 +126,6 @@ impl UpstreamManager {
             status,
             cancel: cancel.clone(),
             bus,
-            refresh_coord: RefreshCoordinator::new(),
-            refresh_http: reqwest::Client::new(),
             paths,
         };
         spawn_reaper(state, cancel);
@@ -293,14 +288,14 @@ impl UpstreamManager {
                 stdio::connect(command, args, env, self.cancel.clone()).await?
             }
             Transport::Http { url, bearer_token } => {
-                let refreshed = http::ensure_fresh_access_token(
-                    &config.name,
-                    &self.refresh_coord,
-                    &self.refresh_http,
-                )
-                .await;
-                let token = refreshed.as_deref().or(bearer_token.as_deref());
-                http::connect(url, token, self.cancel.clone()).await?
+                // Three cases: OAuth (stored creds → AuthClient w/ auto-refresh),
+                // static bearer token, or no auth.
+                match http::connect_oauth(url, &config.name, self.cancel.clone()).await? {
+                    Some(client) => client,
+                    None => {
+                        http::connect(url, bearer_token.as_deref(), self.cancel.clone()).await?
+                    }
+                }
             }
         };
 
