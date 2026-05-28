@@ -54,6 +54,11 @@ fn main() -> Result<()> {
     init_tracing();
     tracing::info!("conduit starting");
 
+    // keyring v4 / keyring-core requires registering a backend before any
+    // Entry::new(); `true` picks Secret Service over kernel keyutils on Linux,
+    // and is a no-op selector on macOS (Keychain) and Windows (Cred Manager).
+    keyring::use_native_store(true).context("activate OS keyring backend")?;
+
     let paths = Paths::from_user_dirs().context("resolve conduit config dir")?;
     paths.ensure_created().context("create state dirs")?;
     tracing::info!(root = %paths.root().display(), "state root ready");
@@ -283,6 +288,7 @@ fn main() -> Result<()> {
     tracing::info!("conduit stopped");
     drop(bus);
     drop(worker);
+    keyring::release_store();
     Ok(())
 }
 
