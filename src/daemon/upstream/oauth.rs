@@ -64,7 +64,12 @@ pub fn state_matches(expected: &str, received: &str) -> bool {
     expected == received
 }
 
-/// Build the authorize URL with PKCE + state + scope query params.
+/// Build the authorize URL with PKCE + state + scope + (optional) resource params.
+///
+/// Matches the param set emitted by `modelcontextprotocol/typescript-sdk`'s
+/// `startAuthorization`: only RFC 8707 `resource`, no Auth0-native `audience`.
+/// Sending both has been observed to cause Cloudflare's OAuth provider to bind
+/// the token's `aud` claim differently than the resource server validates.
 #[must_use]
 pub fn build_authorize_url(
     authorization_endpoint: &str,
@@ -73,6 +78,7 @@ pub fn build_authorize_url(
     challenge: &str,
     state: &str,
     scopes: Option<&str>,
+    resource: Option<&str>,
 ) -> String {
     let mut params: Vec<(&str, &str)> = vec![
         ("response_type", "code"),
@@ -84,6 +90,9 @@ pub fn build_authorize_url(
     ];
     if let Some(scope) = scopes {
         params.push(("scope", scope));
+    }
+    if let Some(r) = resource {
+        params.push(("resource", r));
     }
 
     let mut query = String::new();
@@ -119,22 +128,34 @@ fn push_url_encoded(out: &mut String, s: &str) {
 }
 
 /// Dynamic client registration request body.
+///
+/// Field set mirrors `modelcontextprotocol/typescript-sdk` (the reference MCP
+/// OAuth client). Some auth servers (Auth0, Cloudflare workers-oauth-provider)
+/// register clients with empty allowed scopes when `scope` is omitted here,
+/// which then silently downgrades the authorize-time scope grant.
 #[derive(Debug, Clone, Serialize)]
 pub struct DcrRequest<'a> {
     pub client_name: &'a str,
+    pub client_uri: &'a str,
     pub redirect_uris: Vec<String>,
     pub grant_types: Vec<&'a str>,
+    pub response_types: Vec<&'a str>,
     pub token_endpoint_auth_method: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl DcrRequest<'_> {
     #[must_use]
-    pub fn public_pkce_client(redirect_uri: String) -> Self {
+    pub fn public_pkce_client(redirect_uri: String, scope: Option<String>) -> Self {
         Self {
             client_name: "MCP Router",
+            client_uri: "https://github.com/anthropics/mcp-router",
             redirect_uris: vec![redirect_uri],
             grant_types: vec!["authorization_code", "refresh_token"],
+            response_types: vec!["code"],
             token_endpoint_auth_method: "none",
+            scope,
         }
     }
 }
@@ -156,6 +177,10 @@ pub struct TokenResponse {
     pub expires_in: Option<u64>,
     #[serde(default)]
     pub token_type: Option<String>,
+    /// Granted scopes per RFC 6749 §5.1. Differs from the requested set
+    /// when the authorization server narrows the grant.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -220,21 +245,28 @@ pub enum OauthError {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "field names mirror RFC 8414 metadata keys"
-)]
 pub struct AuthorizationServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     #[serde(default)]
     pub registration_endpoint: Option<String>,
+    #[serde(default)]
+    pub scopes_supported: Vec<String>,
+    /// The protected resource identifier (RFC 9728 `resource`). Passed as
+    /// `audience` + `resource` on the authorize URL. Auth0-backed servers
+    /// (Atlassian, Okta) silently narrow tokens to identity scopes without it.
+    #[serde(default)]
+    pub resource: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ProtectedResourceMetadata {
     #[serde(default)]
     authorization_servers: Vec<String>,
+    #[serde(default)]
+    scopes_supported: Vec<String>,
+    #[serde(default)]
+    resource: Option<String>,
 }
 
 /// Resolve the protected-resource doc to the chosen `AuthorizationServerMetadata`.
@@ -249,6 +281,8 @@ pub async fn fetch_authorization_server_metadata(
         .error_for_status()?
         .json()
         .await?;
+    let prm_scopes = prm.scopes_supported;
+    let prm_resource = prm.resource;
     let authority = prm
         .authorization_servers
         .into_iter()
@@ -259,13 +293,22 @@ pub async fn fetch_authorization_server_metadata(
     } else {
         format!("{authority}/.well-known/oauth-authorization-server")
     };
-    let asm: AuthorizationServerMetadata = http
+    let mut asm: AuthorizationServerMetadata = http
         .get(&well_known)
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
+    // RFC 9728: protected-resource metadata is authoritative for which scopes
+    // grant access to this specific resource. Fall back to the auth server's
+    // global list only if the resource doesn't advertise its own.
+    if !prm_scopes.is_empty() {
+        asm.scopes_supported = prm_scopes;
+    }
+    if asm.resource.is_none() {
+        asm.resource = prm_resource;
+    }
     Ok(asm)
 }
 
@@ -274,8 +317,9 @@ pub async fn register_client(
     http: &reqwest::Client,
     registration_endpoint: &str,
     redirect_uri: &str,
+    scope: Option<String>,
 ) -> Result<DcrResponse, OauthError> {
-    let body = DcrRequest::public_pkce_client(redirect_uri.to_string());
+    let body = DcrRequest::public_pkce_client(redirect_uri.to_string(), scope);
     let resp = http.post(registration_endpoint).json(&body).send().await?;
     if !resp.status().is_success() {
         let status = resp.status();
@@ -395,6 +439,7 @@ pub async fn exchange_code_for_tokens(
     redirect_uri: &str,
     code: &str,
     code_verifier: &str,
+    resource: Option<&str>,
 ) -> Result<TokenResponse, OauthError> {
     let mut form = vec![
         ("grant_type", "authorization_code"),
@@ -407,7 +452,16 @@ pub async fn exchange_code_for_tokens(
         // Basic-auth header set below; don't also pass client_secret in the form.
         form.retain(|(k, _)| *k != "client_id");
     }
-    let mut req = http.post(token_endpoint).form(&form);
+    // RFC 8707: if the client passed `resource` to the authorize endpoint, it
+    // must also pass it to the token endpoint, or the issued token may not be
+    // bound to the target resource. Sentry rejects unbound tokens; Auth0 doesn't.
+    if let Some(r) = resource {
+        form.push(("resource", r));
+    }
+    let mut req = http
+        .post(token_endpoint)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .form(&form);
     if let Some(secret) = client_secret {
         req = req.basic_auth(client_id, Some(secret));
     }
@@ -427,6 +481,7 @@ pub async fn refresh_tokens(
     client_id: &str,
     client_secret: Option<&str>,
     refresh_token: &str,
+    resource: Option<&str>,
 ) -> Result<TokenResponse, OauthError> {
     let mut form = vec![
         ("grant_type", "refresh_token"),
@@ -435,7 +490,13 @@ pub async fn refresh_tokens(
     if client_secret.is_none() {
         form.push(("client_id", client_id));
     }
-    let mut req = http.post(token_endpoint).form(&form);
+    if let Some(r) = resource {
+        form.push(("resource", r));
+    }
+    let mut req = http
+        .post(token_endpoint)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .form(&form);
     if let Some(secret) = client_secret {
         req = req.basic_auth(client_id, Some(secret));
     }
@@ -563,6 +624,7 @@ mod tests {
             "CHAL",
             "STATE",
             Some("read write"),
+            None,
         );
         assert!(url.starts_with("https://auth.example.com/authorize?"));
         for needle in [
@@ -575,31 +637,72 @@ mod tests {
         ] {
             assert!(url.contains(needle), "missing {needle} in {url}");
         }
+        assert!(!url.contains("resource="));
+        assert!(!url.contains("audience="));
     }
 
     #[test]
-    fn authorize_url_preserves_existing_query() {
+    fn authorize_url_emits_only_resource_no_audience() {
         let url = build_authorize_url(
-            "https://auth.example.com/authorize?audience=mcp",
+            "https://auth.example.com/authorize",
             "cid",
             "http://127.0.0.1:5000/callback",
             "C",
             "S",
             None,
+            Some("https://mcp.example.com/v1/mcp"),
         );
-        assert!(url.contains("audience=mcp&"));
+        assert!(url.contains("resource=https%3A%2F%2Fmcp.example.com%2Fv1%2Fmcp"));
+        assert!(
+            !url.contains("audience="),
+            "audience must NOT be emitted — matches TS SDK; sending both can break Cloudflare workers-oauth-provider"
+        );
+    }
+
+    #[test]
+    fn authorize_url_preserves_existing_query() {
+        let url = build_authorize_url(
+            "https://auth.example.com/authorize?tenant=mcp",
+            "cid",
+            "http://127.0.0.1:5000/callback",
+            "C",
+            "S",
+            None,
+            None,
+        );
+        assert!(url.contains("tenant=mcp&"));
         assert!(url.contains("&client_id=cid"));
     }
 
     #[test]
-    fn dcr_public_pkce_client_has_expected_shape() {
-        let req = DcrRequest::public_pkce_client("http://127.0.0.1:5000/callback".to_string());
+    fn dcr_public_pkce_client_matches_sdk_shape() {
+        let req = DcrRequest::public_pkce_client(
+            "http://127.0.0.1:5000/callback".to_string(),
+            Some("read write".to_string()),
+        );
         assert_eq!(req.client_name, "MCP Router");
         assert_eq!(req.token_endpoint_auth_method, "none");
         assert!(req.grant_types.contains(&"authorization_code"));
         assert!(req.grant_types.contains(&"refresh_token"));
+        assert!(req.response_types.contains(&"code"));
+        assert_eq!(req.scope.as_deref(), Some("read write"));
         let body = serde_json::to_string(&req).unwrap();
-        assert!(body.contains("\"client_name\""));
+        assert!(body.contains("\"client_uri\""));
+        assert!(body.contains("\"response_types\""));
+        assert!(body.contains("\"scope\":\"read write\""));
+    }
+
+    #[test]
+    fn dcr_public_pkce_client_omits_scope_when_none() {
+        let req = DcrRequest::public_pkce_client(
+            "http://127.0.0.1:5000/callback".to_string(),
+            None,
+        );
+        let body = serde_json::to_string(&req).unwrap();
+        assert!(
+            !body.contains("\"scope\""),
+            "scope field must be omitted entirely (not serialized as null) when None",
+        );
     }
 
     #[test]
@@ -608,6 +711,39 @@ mod tests {
         let parsed: TokenResponse = serde_json::from_str(body).unwrap();
         assert_eq!(parsed.access_token, "abc");
         assert!(parsed.refresh_token.is_none());
+    }
+
+    #[test]
+    fn authorization_server_metadata_parses_scopes_supported() {
+        let body = r#"{
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "scopes_supported": ["read:jira-work", "write:jira-work", "offline_access"]
+        }"#;
+        let parsed: AuthorizationServerMetadata = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.scopes_supported.len(), 3);
+        assert!(parsed.scopes_supported.iter().any(|s| s == "offline_access"));
+    }
+
+    #[test]
+    fn authorization_server_metadata_scopes_default_empty() {
+        let body = r#"{
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token"
+        }"#;
+        let parsed: AuthorizationServerMetadata = serde_json::from_str(body).unwrap();
+        assert!(parsed.scopes_supported.is_empty());
+    }
+
+    #[test]
+    fn protected_resource_metadata_parses_scopes_supported() {
+        let body = r#"{
+            "authorization_servers": ["https://auth.example.com/tenant"],
+            "scopes_supported": ["read:me", "read:jira-work"]
+        }"#;
+        let parsed: ProtectedResourceMetadata = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.scopes_supported, vec!["read:me", "read:jira-work"]);
+        assert_eq!(parsed.authorization_servers.len(), 1);
     }
 
     #[test]

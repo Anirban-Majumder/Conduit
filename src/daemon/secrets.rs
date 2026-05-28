@@ -117,17 +117,31 @@ fn fetch_keyring(account: &str) -> Result<String, SecretsError> {
 pub fn promote_oauth_tokens(draft: &str, server: &str) -> Result<(), SecretsError> {
     let access = fetch_oauth_access(draft).ok();
     let refresh = fetch_oauth_refresh(draft).ok();
+    let client_secret = fetch_oauth_client_secret(draft).ok();
     let meta = fetch_oauth_meta(draft).ok();
+    tracing::info!(
+        draft = %draft,
+        server = %server,
+        has_access = access.is_some(),
+        has_refresh = refresh.is_some(),
+        has_client_secret = client_secret.is_some(),
+        has_meta = meta.is_some(),
+        "promote_oauth_tokens: read from draft",
+    );
     if let Some(a) = &access {
         store_oauth_access(server, a)?;
     }
     if let Some(r) = &refresh {
         store_oauth_refresh(server, r)?;
     }
+    if let Some(s) = &client_secret {
+        store_oauth_client_secret(server, s)?;
+    }
     if let Some(m) = &meta {
         store_oauth_meta(server, m)?;
     }
     delete_oauth_tokens(draft)?;
+    tracing::info!(server = %server, "promote_oauth_tokens: completed");
     Ok(())
 }
 

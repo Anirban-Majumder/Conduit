@@ -158,13 +158,25 @@ pub async fn probe_with_progress(
                     };
                     let (meta, callback_listener, redirect_uri, pkce, state, dcr) =
                         run_oauth_pre(url, &challenge, cancel.clone(), &emit).await?;
+                    let scope_param = if meta.scopes_supported.is_empty() {
+                        None
+                    } else {
+                        Some(meta.scopes_supported.join(" "))
+                    };
+                    tracing::info!(
+                        scope_count = meta.scopes_supported.len(),
+                        scopes = scope_param.as_deref().unwrap_or("<none>"),
+                        resource = meta.resource.as_deref().unwrap_or("<none>"),
+                        "OAuth: requesting advertised scopes",
+                    );
                     let authorize_url = oauth::build_authorize_url(
                         &meta.authorization_endpoint,
                         &dcr.client_id,
                         &redirect_uri,
                         &pkce.challenge,
                         state.as_str(),
-                        None,
+                        scope_param.as_deref(),
+                        meta.resource.as_deref(),
                     );
                     emit(ProbeEvent::AuthorizeUrl(authorize_url.clone()));
                     if let Err(open_err) = open::that(&authorize_url) {
@@ -183,9 +195,15 @@ pub async fn probe_with_progress(
                         &redirect_uri,
                         &code,
                         pkce.verifier.as_str(),
+                        meta.resource.as_deref(),
                     )
                     .await
                     .map_err(|err| ProbeError::OauthFlow(err.to_string()))?;
+                    tracing::info!(
+                        granted_scope = tokens.scope.as_deref().unwrap_or("<unspecified>"),
+                        has_refresh_token = tokens.refresh_token.is_some(),
+                        "OAuth: token grant received",
+                    );
                     // Store tokens under draft session.
                     let draft = cfg.draft_session.clone();
                     secrets::store_oauth_access(&draft, &tokens.access_token).ok();
@@ -238,7 +256,7 @@ pub async fn probe_with_progress(
         },
     };
 
-    let tools = list_result
+    let tools: Vec<ToolMeta> = list_result
         .tools
         .into_iter()
         .map(|t| ToolMeta {
@@ -247,6 +265,12 @@ pub async fn probe_with_progress(
             input_schema: serde_json::to_value(&*t.input_schema).unwrap_or(Value::Null),
         })
         .collect();
+    tracing::info!(
+        server = %server_name,
+        tool_count = tools.len(),
+        tool_names = %tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
+        "probe: enumerated tools",
+    );
 
     let _ignored = client.cancel().await;
 
@@ -398,9 +422,14 @@ async fn run_oauth_pre(
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
     let pkce = oauth::Pkce::generate();
     let state = oauth::fresh_state();
+    let dcr_scope = if meta.scopes_supported.is_empty() {
+        None
+    } else {
+        Some(meta.scopes_supported.join(" "))
+    };
     let dcr = if let Some(reg) = &meta.registration_endpoint {
         emit(ProbeEvent::Phase("Registering OAuth client...".into()));
-        oauth::register_client(&http, reg, &redirect_uri)
+        oauth::register_client(&http, reg, &redirect_uri, dcr_scope)
             .await
             .map_err(|e| ProbeError::OauthFlow(e.to_string()))?
     } else {

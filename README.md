@@ -10,19 +10,12 @@ as you add, remove, or swap IDEs.
 
 ## ✨ Features
 
-- 🔌 **One catalog, every IDE.** Add an MCP server in Conduit; it shows up in
-  every IDE you've connected. Remove it once, it leaves everywhere.
-- 📦 **Skills sync.** Install a SKILL.md package once, and Conduit drops it into
-  every agentic IDE's skills directory.
-- 🛡️ **Per-tool approval gates.** First call to a new tool prompts you —
-  always-allow, ask-each-time, or deny. Full audit trail in SQLite.
-- 🌐 **HTTP MCP proxy.** Conduit fronts every upstream at
-  `http://127.0.0.1:9876/<ide-key>/<server>/mcp`, so HTTP-only IDEs can use
-  stdio MCP servers too.
-- 🔑 **OAuth, handled.** Browser flow for upstreams that need it. Tokens live
-  in the OS keyring — never in plaintext on disk.
-- 🦀 **Single Rust binary.** Pure Rust + Slint. No webview, no Node, no
-  Electron. ~20 MB on disk, ~80 MB RAM idle.
+- 🔌 **One Tool, every IDE.** Add an MCP server in here; it shows up in every IDE. Remove it once, it leaves everywhere.
+- 📦 **Skills sync.** Install a SKILL.md package once, and Conduit drops it into every agentic IDE's skills directory.
+- 🛡️ **Per-tool approval gates.** First call to a new tool prompts you — always-allow, ask-each-time, or deny. Full audit trail in SQLite.
+- 🌐 **HTTP MCP proxy.** Conduit fronts every upstream at localhost, so HTTP-only IDEs can use stdio MCP servers too.
+- 🔑 **OAuth, handled.** Browser flow for upstreams that need it. Tokens live in the OS keyring — never in plaintext on disk.
+- 🦀 **Single Rust binary.** Pure Rust + Slint. No webview, no Node, no Electron. ~20 MB on disk, ~80 MB RAM idle.
 
 ## 🚀 Quick start
 
@@ -100,49 +93,7 @@ for free; recursive copy is the fallback when symlinks aren't allowed
 Copy [`src/daemon/clients/example.rs`](src/daemon/clients/example.rs) to
 `src/daemon/clients/<name>.rs`, fill in the 3-line citation header from
 authoritative docs/source (never invent URLs), then wire the new variant
-through `IdeKind` and the dispatchers in
-[`mod.rs`](src/daemon/clients/mod.rs). The example template:
-
-```rust
-// Repo:   <upstream repo URL, or N/A if closed-source>
-// MCP:    <config file path>; top-level `<key>`; schema `<one-line>`. Source: <docs/repo URL>
-// Skills: <skills dir path, or "not supported">. Source: <docs/repo URL, or N/A>
-
-use std::path::{Path, PathBuf};
-
-pub(crate) const IDE_NAME: &str = "ExampleClient";
-
-pub(crate) fn config_path_under(home: &Path) -> PathBuf {
-    home.join(".example").join("config.json")
-}
-
-pub(crate) fn config_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(config_path_under(&home))
-}
-
-// Delete these two if the client has no skills directory.
-pub(crate) fn skills_dir_under(home: &Path) -> PathBuf {
-    home.join(".example").join("skills")
-}
-
-pub(crate) fn skills_dir() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(skills_dir_under(&home))
-}
-```
-
-Then in [`mod.rs`](src/daemon/clients/mod.rs):
-
-1. Add a variant to `IdeKind` in `crate::daemon::ide_detect`.
-2. `pub mod <name>;`
-3. Map the variant in `json_schema_for` (top-level key + optional `type`),
-   OR add a TOML branch like Codex.
-4. Map the variant in `config_path_for` / `config_path_under` /
-   `ide_kind_from_db_name` / `ide_name`.
-5. If skills are auto-loaded, map it in `skills_dir_for` /
-   `skills_dir_under` and add to `SKILL_TARGET_IDES`.
-
+through `IdeKind` and the dispatchers in [`mod.rs`](src/daemon/clients/mod.rs). 
 
 ## 📄 License
 

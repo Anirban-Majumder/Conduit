@@ -44,12 +44,25 @@ pub async fn ensure_fresh_access_token(
     coord: &Arc<RefreshCoordinator>,
     http: &reqwest::Client,
 ) -> Option<String> {
-    let access = fetch_oauth_access(server).ok()?;
+    let Ok(access) = fetch_oauth_access(server) else {
+        tracing::warn!(server = %server, "ensure_fresh_access_token: no access token in keyring");
+        return None;
+    };
     let Ok(meta) = fetch_oauth_meta(server) else {
+        tracing::info!(
+            server = %server,
+            access_len = access.len(),
+            "ensure_fresh_access_token: have access token, no meta (refresh disabled)",
+        );
         return Some(access);
     };
     let now = now_unix();
     if meta.expires_at_unix - now > REFRESH_WINDOW_SECS {
+        tracing::debug!(
+            server = %server,
+            ttl_secs = meta.expires_at_unix - now,
+            "ensure_fresh_access_token: token still fresh",
+        );
         return Some(access);
     }
     let Ok(refresh) = fetch_oauth_refresh(server) else {
@@ -73,6 +86,10 @@ async fn refresh_with_coordinator(
             &meta.client_id,
             client_secret.as_deref(),
             refresh,
+            // TODO: persist `resource` in OauthMeta during probe so the refresh
+            // path can also pass it (RFC 8707). Currently refresh works for
+            // permissive servers (Auth0) but may fail on strict ones (Sentry).
+            None,
         )
         .await;
         let outcome = match result {

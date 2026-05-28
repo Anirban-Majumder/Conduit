@@ -488,15 +488,29 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
         let server_to_save = server_row;
         rt_for_save.spawn(async move {
             // Promote OAuth tokens from draft session → canonical server name.
+            tracing::info!(
+                server = %name,
+                has_oauth_session = oauth_session.is_some(),
+                "wizard save: starting OAuth token promotion",
+            );
             if let Some(draft) = oauth_session.as_deref() {
-                if let Err(e) = tokio::task::spawn_blocking({
-                    let draft = draft.to_string();
-                    let server = name.clone();
-                    move || conduit::daemon::secrets::promote_oauth_tokens(&draft, &server)
+                let draft = draft.to_string();
+                let server = name.clone();
+                match tokio::task::spawn_blocking(move || {
+                    conduit::daemon::secrets::promote_oauth_tokens(&draft, &server)
                 })
                 .await
                 {
-                    tracing::warn!(error = %e, "oauth token promotion join failed");
+                    Ok(Ok(())) => {}
+                    Ok(Err(secrets_err)) => tracing::error!(
+                        server = %name,
+                        error = %secrets_err,
+                        "oauth token promotion failed — server will save without working auth",
+                    ),
+                    Err(join_err) => tracing::warn!(
+                        error = %join_err,
+                        "oauth token promotion join failed",
+                    ),
                 }
             }
             let result = db.upsert_server_with_tools(server_to_save, tools).await;
