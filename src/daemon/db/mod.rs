@@ -987,12 +987,18 @@ fn init_conn(conn: &Connection) -> Result<(), DbError> {
     ensure_column(conn, "servers", "server_version", "TEXT")?;
     ensure_column(conn, "servers", "last_probed_at", "INTEGER")?;
     ensure_column(conn, "servers", "last_probe_error", "TEXT")?;
-    ensure_column(conn, "servers", "oauth_authority", "TEXT")?;
-    ensure_column(conn, "servers", "oauth_client_id", "TEXT")?;
-    ensure_column(conn, "servers", "oauth_client_secret_ref", "TEXT")?;
-    ensure_column(conn, "servers", "oauth_scopes", "TEXT")?;
     ensure_column(conn, "servers", "last_auth_error_msg", "TEXT")?;
     ensure_column(conn, "servers", "last_auth_error_at", "INTEGER")?;
+    // OAuth client_id + scopes now live in the keyring credential blob; drop the
+    // legacy write-only columns from pre-migration databases.
+    for col in [
+        "oauth_authority",
+        "oauth_client_id",
+        "oauth_client_secret_ref",
+        "oauth_scopes",
+    ] {
+        drop_column_if_exists(conn, "servers", col)?;
+    }
     ensure_column(conn, "policies", "scope", "TEXT NOT NULL DEFAULT 'tool'")?;
     ensure_policies_fk(conn)?;
     migrate_legacy_ide_tables(conn)?;
@@ -1827,6 +1833,14 @@ fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Resul
     Ok(())
 }
 
+fn drop_column_if_exists(conn: &Connection, table: &str, col: &str) -> Result<(), DbError> {
+    let exists = query_list_columns(conn, table)?.iter().any(|c| c == col);
+    if exists {
+        conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {col}"), [])?;
+    }
+    Ok(())
+}
+
 fn query_schema_version(conn: &Connection) -> Result<i64, DbError> {
     let mut stmt = conn.prepare_cached("SELECT MAX(version) FROM schema_version")?;
     let version: i64 = stmt.query_row([], |row| row.get(0))?;
@@ -2431,9 +2445,6 @@ fn decode_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
         last_probe_error: row.get(14).ok(),
         last_auth_error_msg: row.get(15).ok().flatten(),
         last_auth_error_at: row.get(16).ok().flatten(),
-        oauth_authority: row.get(17).ok().flatten(),
-        oauth_client_id: row.get(18).ok().flatten(),
-        oauth_scopes: row.get(19).ok().flatten(),
     })
 }
 
@@ -2446,9 +2457,8 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
         "INSERT INTO servers
          (name, transport, command, args_json, env_json, url, lifecycle_seconds,
           last_init_duration_ms, package_version, mcp_self_version, created_at,
-          server_name, server_version, last_probed_at, last_probe_error,
-          oauth_authority, oauth_client_id, oauth_scopes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+          server_name, server_version, last_probed_at, last_probe_error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(name) DO UPDATE SET
              transport = excluded.transport,
              command = excluded.command,
@@ -2462,10 +2472,7 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
              server_name = excluded.server_name,
              server_version = excluded.server_version,
              last_probed_at = excluded.last_probed_at,
-             last_probe_error = excluded.last_probe_error,
-             oauth_authority = excluded.oauth_authority,
-             oauth_client_id = excluded.oauth_client_id,
-             oauth_scopes = excluded.oauth_scopes",
+             last_probe_error = excluded.last_probe_error",
     )?
     .execute(params![
         &server.name,
@@ -2483,9 +2490,6 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
         &server.server_version,
         server.last_probed_at,
         &server.last_probe_error,
-        &server.oauth_authority,
-        &server.oauth_client_id,
-        &server.oauth_scopes,
     ])?;
     Ok(())
 }
@@ -2494,8 +2498,7 @@ const SERVERS_SELECT: &str = "SELECT name, transport, command, args_json, env_js
        lifecycle_seconds, last_init_duration_ms, package_version,
        mcp_self_version, created_at,
        server_name, server_version, last_probed_at, last_probe_error,
-       last_auth_error_msg, last_auth_error_at,
-       oauth_authority, oauth_client_id, oauth_scopes
+       last_auth_error_msg, last_auth_error_at
  FROM servers";
 
 fn query_get_server(conn: &Connection, name: &str) -> Result<Option<Server>, DbError> {
@@ -2560,10 +2563,8 @@ fn query_clear_server_auth_error(conn: &Connection, server: &str) -> Result<bool
 }
 
 fn insert_oauth_draft(conn: &Connection, draft_uuid: &str) -> Result<(), DbError> {
-    conn.prepare_cached(
-        "INSERT OR IGNORE INTO pending_oauth_drafts (draft_uuid) VALUES (?1)",
-    )?
-    .execute(params![draft_uuid])?;
+    conn.prepare_cached("INSERT OR IGNORE INTO pending_oauth_drafts (draft_uuid) VALUES (?1)")?
+        .execute(params![draft_uuid])?;
     Ok(())
 }
 

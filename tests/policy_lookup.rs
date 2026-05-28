@@ -22,9 +22,6 @@ fn server(name: &str) -> Server {
         last_probe_error: None,
         last_auth_error_msg: None,
         last_auth_error_at: None,
-        oauth_authority: None,
-        oauth_client_id: None,
-        oauth_scopes: None,
     }
 }
 

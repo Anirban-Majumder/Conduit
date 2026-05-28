@@ -11,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 use conduit::daemon::approval::{spawn_timeout_sweeper, ApprovalCenter};
 use conduit::daemon::cascade;
+use conduit::daemon::clients;
 use conduit::daemon::config_toml::Settings;
 use conduit::daemon::config_watcher;
 use conduit::daemon::db::types::SkillRepo;
@@ -22,7 +23,6 @@ use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
 use conduit::daemon::http_server::{self, AppState};
 use conduit::daemon::ide_detect::IdeKind;
-use conduit::daemon::clients;
 use conduit::daemon::ipc;
 use conduit::daemon::onboarding::{
     check_background_hint, mark_first_run_completed, should_show_window_at_startup,
@@ -95,7 +95,11 @@ fn main() -> Result<()> {
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
 
-    // Purge orphaned OAuth draft tokens left from abandoned wizard sessions.
+    // Purge orphaned OAuth draft tokens from abandoned wizards, and clear any
+    // pre-migration token entries for saved servers (D6 — the old 4-entry
+    // format is unreadable now, so those servers re-login; this just tidies the
+    // stale keyring entries. Idempotent: it only removes legacy suffixes, never
+    // the current `:cred` blob).
     {
         let db_purge = db.clone();
         worker.handle().spawn(async move {
@@ -114,10 +118,26 @@ fn main() -> Result<()> {
                     }
                     // Clear the tracking entries regardless — tokens are gone.
                     for d in &drafts {
-                        let _ = db_purge.delete_oauth_draft(d.clone()).await;
+                        if let Err(e) = db_purge.delete_oauth_draft(d.clone()).await {
+                            tracing::debug!(draft = %d, error = %e, "clear draft tracking failed");
+                        }
                     }
                 }
                 _ => {}
+            }
+            if let Ok(servers) = db_purge.list_servers().await {
+                let names: Vec<String> = servers.into_iter().map(|s| s.name).collect();
+                let cleanup = tokio::task::spawn_blocking(move || {
+                    for name in &names {
+                        if let Err(e) = conduit::daemon::secrets::delete_legacy_oauth_entries(name) {
+                            tracing::debug!(server = %name, error = %e, "legacy OAuth cleanup failed");
+                        }
+                    }
+                })
+                .await;
+                if let Err(e) = cleanup {
+                    tracing::debug!(error = %e, "legacy OAuth cleanup task failed");
+                }
             }
         });
     }
@@ -298,9 +318,6 @@ struct PendingWizard {
     tools: Vec<DbToolMeta>,
     descriptions: std::collections::HashMap<String, String>,
     oauth_session: Option<String>,
-    oauth_authority: Option<String>,
-    oauth_client_id: Option<String>,
-    oauth_scopes: Option<String>,
 }
 
 #[expect(
@@ -391,9 +408,6 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
             last_probe_error: None,
             last_auth_error_msg: None,
             last_auth_error_at: None,
-            oauth_authority: None,
-            oauth_client_id: None,
-            oauth_scopes: None,
         };
 
         let weak = weak.clone();
@@ -460,13 +474,12 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                         guard.tools = tools;
                         guard.descriptions = descriptions;
                         guard.oauth_session = probed.oauth_session;
-                        guard.oauth_authority = probed.oauth_authority;
-                        guard.oauth_client_id = probed.oauth_client_id;
-                        guard.oauth_scopes = probed.oauth_scopes;
                     }
                     // Track the draft in DB so startup can purge abandoned drafts.
                     if let Some(session) = draft_for_tracking {
-                        let _ = db.insert_oauth_draft(session).await;
+                        if let Err(e) = db.insert_oauth_draft(session).await {
+                            tracing::debug!(error = %e, "track oauth draft failed");
+                        }
                     }
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_add_server_busy(false);
@@ -528,10 +541,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
         let tools = staged.tools.clone();
         let name = server_row.name.clone();
         let oauth_session = staged.oauth_session.clone();
-        let mut server_to_save = server_row;
-        server_to_save.oauth_authority = staged.oauth_authority.clone();
-        server_to_save.oauth_client_id = staged.oauth_client_id.clone();
-        server_to_save.oauth_scopes = staged.oauth_scopes.clone();
+        let server_to_save = server_row;
         rt_for_save.spawn(async move {
             // Promote OAuth tokens from draft session → canonical server name.
             tracing::info!(
@@ -549,7 +559,9 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                 {
                     Ok(Ok(())) => {
                         if let Some(ref session) = oauth_session {
-                            let _ = db.delete_oauth_draft(session.clone()).await;
+                            if let Err(e) = db.delete_oauth_draft(session.clone()).await {
+                                tracing::debug!(error = %e, "delete oauth draft after save failed");
+                            }
                         }
                     }
                     Ok(Err(secrets_err)) => tracing::error!(

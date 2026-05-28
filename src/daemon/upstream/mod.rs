@@ -5,5 +5,6 @@ pub mod installer;
 pub mod lifecycle;
 pub mod manager;
 pub mod oauth;
+pub mod oauth_store;
 pub mod probe;
 pub mod stdio;
