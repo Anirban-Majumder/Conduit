@@ -95,6 +95,9 @@ export struct SkillRow {
     target_claude: bool,
     target_openclaude: bool,
     target_opencode: bool,
+    target_cursor: bool,
+    target_vscode_copilot: bool,
+    target_codex: bool,
 }
 
 export struct SkillRepoRow {
@@ -740,6 +743,9 @@ component SkillsTab inherits Rectangle {
     in property <bool> target-claude-code-active;
     in property <bool> target-openclaude-active;
     in property <bool> target-opencode-active;
+    in property <bool> target-cursor-active;
+    in property <bool> target-vscode-copilot-active;
+    in property <bool> target-codex-active;
     in-out property <string> repo-add-owner;
     in-out property <string> repo-add-name;
     in-out property <string> repo-add-branch: "main";
@@ -1053,6 +1059,27 @@ component SkillsTab inherits Rectangle {
                                 active: row.target_opencode;
                                 toggle => {
                                     root.toggle-target(row.directory, "OpenCode", !row.target_opencode);
+                                }
+                            }
+                            if root.target-cursor-active : TargetToggle {
+                                label: "Cursor";
+                                active: row.target_cursor;
+                                toggle => {
+                                    root.toggle-target(row.directory, "Cursor", !row.target_cursor);
+                                }
+                            }
+                            if root.target-vscode-copilot-active : TargetToggle {
+                                label: "VS Code";
+                                active: row.target_vscode_copilot;
+                                toggle => {
+                                    root.toggle-target(row.directory, "VsCodeCopilot", !row.target_vscode_copilot);
+                                }
+                            }
+                            if root.target-codex-active : TargetToggle {
+                                label: "Codex";
+                                active: row.target_codex;
+                                toggle => {
+                                    root.toggle-target(row.directory, "Codex", !row.target_codex);
                                 }
                             }
                         }
@@ -2041,6 +2068,9 @@ export component MainWindow inherits Window {
     in property <bool> ide-target-claude-code-active: false;
     in property <bool> ide-target-openclaude-active: false;
     in property <bool> ide-target-opencode-active: false;
+    in property <bool> ide-target-cursor-active: false;
+    in property <bool> ide-target-vscode-copilot-active: false;
+    in property <bool> ide-target-codex-active: false;
 
     callback approve-clicked(string);
     callback deny-clicked(string);
@@ -2229,6 +2259,9 @@ export component MainWindow inherits Window {
                     target-claude-code-active: root.ide-target-claude-code-active;
                     target-openclaude-active: root.ide-target-openclaude-active;
                     target-opencode-active: root.ide-target-opencode-active;
+                    target-cursor-active: root.ide-target-cursor-active;
+                    target-vscode-copilot-active: root.ide-target-vscode-copilot-active;
+                    target-codex-active: root.ide-target-codex-active;
                     repo-add-owner <=> root.skills-repo-add-owner;
                     repo-add-name <=> root.skills-repo-add-name;
                     repo-add-branch <=> root.skills-repo-add-branch;

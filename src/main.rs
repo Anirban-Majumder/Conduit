@@ -1744,6 +1744,9 @@ async fn paint_skills_with_discovery(
                     target_claude: false,
                     target_openclaude: false,
                     target_opencode: false,
+                    target_cursor: false,
+                    target_vscode_copilot: false,
+                    target_codex: false,
                 });
             }
         }
@@ -1788,6 +1791,9 @@ fn installed_skills_to_rows(installed: &[conduit::daemon::db::types::Skill]) -> 
             target_claude: skill.targets.iter().any(|x| x == "ClaudeCode"),
             target_openclaude: skill.targets.iter().any(|x| x == "OpenClaude"),
             target_opencode: skill.targets.iter().any(|x| x == "OpenCode"),
+            target_cursor: skill.targets.iter().any(|x| x == "Cursor"),
+            target_vscode_copilot: skill.targets.iter().any(|x| x == "VsCodeCopilot"),
+            target_codex: skill.targets.iter().any(|x| x == "Codex"),
         })
         .collect()
 }
@@ -2159,10 +2165,16 @@ async fn refresh_active_ide_targets(weak: &slint::Weak<MainWindow>, db: &Db) {
     let claude = actives.iter().any(|r| r.ide_kind == "ClaudeCode");
     let openclaude = actives.iter().any(|r| r.ide_kind == "OpenClaude");
     let opencode = actives.iter().any(|r| r.ide_kind == "OpenCode");
+    let cursor = actives.iter().any(|r| r.ide_kind == "Cursor");
+    let vscode_copilot = actives.iter().any(|r| r.ide_kind == "VsCodeCopilot");
+    let codex = actives.iter().any(|r| r.ide_kind == "Codex");
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_ide_target_claude_code_active(claude);
         ui.set_ide_target_openclaude_active(openclaude);
         ui.set_ide_target_opencode_active(opencode);
+        ui.set_ide_target_cursor_active(cursor);
+        ui.set_ide_target_vscode_copilot_active(vscode_copilot);
+        ui.set_ide_target_codex_active(codex);
     })
     .ok();
 }
