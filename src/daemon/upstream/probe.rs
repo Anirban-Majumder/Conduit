@@ -165,10 +165,16 @@ pub async fn probe_with_progress(
                     } else {
                         Some(meta.scopes_supported.join(" "))
                     };
+                    // RFC 8707: Use resource from PRM/AS metadata, or fall back to MCP URL.
+                    let resource_indicator = meta
+                        .resource
+                        .clone()
+                        .or_else(|| challenge.resource.clone())
+                        .unwrap_or_else(|| url.to_string());
                     tracing::info!(
                         scope_count = meta.scopes_supported.len(),
                         scopes = scope_param.as_deref().unwrap_or("<none>"),
-                        resource = meta.resource.as_deref().unwrap_or("<none>"),
+                        resource = %resource_indicator,
                         "OAuth: requesting advertised scopes",
                     );
                     let authorize_url = oauth::build_authorize_url(
@@ -178,7 +184,7 @@ pub async fn probe_with_progress(
                         &pkce.challenge,
                         state.as_str(),
                         scope_param.as_deref(),
-                        meta.resource.as_deref(),
+                        Some(&resource_indicator),
                     );
                     emit(ProbeEvent::AuthorizeUrl(authorize_url.clone()));
                     if let Err(open_err) = open::that(&authorize_url) {
@@ -197,7 +203,7 @@ pub async fn probe_with_progress(
                         &redirect_uri,
                         &code,
                         pkce.verifier.as_str(),
-                        meta.resource.as_deref(),
+                        Some(&resource_indicator),
                     )
                     .await
                     .map_err(|err| ProbeError::OauthFlow(err.to_string()))?;
@@ -387,10 +393,30 @@ type OauthPre = (
     oauth::DcrResponse,
 );
 
+/// Check whether two URLs share the same origin (scheme + host + port).
+fn is_same_origin(a: &str, b: &str) -> bool {
+    let (Ok(a), Ok(b)) = (reqwest::Url::parse(a), reqwest::Url::parse(b)) else {
+        return false;
+    };
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
 fn resource_metadata_candidates(mcp_url: &str, challenge: &oauth::OauthChallenge) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Some(advertised) = challenge.resource_metadata_url.as_deref() {
-        out.push(advertised.to_string());
+        // RFC 9728 §3.1: resource_metadata URL MUST be on the same origin as
+        // the protected resource. Reject cross-origin values to prevent SSRF.
+        if is_same_origin(mcp_url, advertised) {
+            out.push(advertised.to_string());
+        } else {
+            tracing::warn!(
+                advertised = %advertised,
+                mcp_url = %mcp_url,
+                "ignoring cross-origin resource_metadata URL (RFC 9728 §3.1)"
+            );
+        }
     }
     if let Ok(parsed) = reqwest::Url::parse(mcp_url) {
         let origin = format!(

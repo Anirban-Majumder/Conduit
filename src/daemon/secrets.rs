@@ -130,6 +130,11 @@ pub fn promote_oauth_tokens(draft: &str, server: &str) -> Result<(), SecretsErro
         has_meta = meta.is_some(),
         "promote_oauth_tokens: read from draft",
     );
+    // Store meta first — it's the most critical for refresh. If the process
+    // crashes mid-promotion, having meta means the refresh path can work.
+    if let Some(m) = &meta {
+        store_oauth_meta(server, m)?;
+    }
     if let Some(a) = &access {
         store_oauth_access(server, a)?;
     }
@@ -138,9 +143,6 @@ pub fn promote_oauth_tokens(draft: &str, server: &str) -> Result<(), SecretsErro
     }
     if let Some(s) = &client_secret {
         store_oauth_client_secret(server, s)?;
-    }
-    if let Some(m) = &meta {
-        store_oauth_meta(server, m)?;
     }
     delete_oauth_tokens(draft)?;
     tracing::info!(server = %server, "promote_oauth_tokens: completed");
