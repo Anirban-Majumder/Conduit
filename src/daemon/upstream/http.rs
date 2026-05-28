@@ -26,7 +26,10 @@ pub async fn connect(
 ) -> Result<HttpClient, UpstreamError> {
     let mut cfg = StreamableHttpClientTransportConfig::with_uri(url.to_string());
     if let Some(token) = bearer_token {
-        cfg = cfg.auth_header(format!("Bearer {token}"));
+        // rmcp applies this via reqwest `bearer_auth`, which prepends `Bearer `
+        // itself. Passing a pre-prefixed value yields `Bearer Bearer <token>`,
+        // which servers reject as invalid_token. Pass the raw token.
+        cfg = cfg.auth_header(token);
     }
     let transport = StreamableHttpClientTransport::from_config(cfg);
     let client = serve_client_with_ct((), transport, cancel)
