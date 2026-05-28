@@ -22,12 +22,18 @@ as you add, remove, or swap IDEs.
 ```sh
 git clone https://github.com/Anirban-Majumder/conduit
 cd conduit
-cargo build --release
-./target/release/conduit
+cargo run
 ```
 
 > **Linux deps:** `sudo pacman -S xdotool libxkbcommon` (Arch) or
 > `sudo apt install libxdo-dev libxkbcommon-dev` (Debian/Ubuntu).
+
+## 🔨 Build
+
+```sh
+cargo build --release
+./target/release/conduit
+```
 
 ## 🧪 Verify
 

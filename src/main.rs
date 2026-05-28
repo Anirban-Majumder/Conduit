@@ -98,7 +98,9 @@ fn main() -> Result<()> {
                 Ok(drafts) if !drafts.is_empty() => {
                     let drafts_for_purge = drafts.clone();
                     let purged = tokio::task::spawn_blocking(move || {
-                        crate::daemon::upstream::oauth::purge_draft_oauth_tokens(&drafts_for_purge)
+                        conduit::daemon::upstream::oauth::purge_draft_oauth_tokens(
+                            &drafts_for_purge,
+                        )
                     })
                     .await
                     .unwrap_or(0);
@@ -446,6 +448,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                     updated_server.server_version = Some(probed.server_version.clone());
                     updated_server.last_probed_at = Some(now);
                     updated_server.last_probe_error = None;
+                    let draft_for_tracking = probed.oauth_session.clone();
                     if let Ok(mut guard) = pending.lock() {
                         guard.server = Some(updated_server);
                         guard.tools = tools;
@@ -456,8 +459,8 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                         guard.oauth_scopes = probed.oauth_scopes;
                     }
                     // Track the draft in DB so startup can purge abandoned drafts.
-                    if let Some(ref session) = probed.oauth_session {
-                        let _ = db.insert_oauth_draft(session.clone()).await;
+                    if let Some(session) = draft_for_tracking {
+                        let _ = db.insert_oauth_draft(session).await;
                     }
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_add_server_busy(false);
