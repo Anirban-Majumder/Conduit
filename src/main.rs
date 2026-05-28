@@ -54,6 +54,11 @@ fn main() -> Result<()> {
     init_tracing();
     tracing::info!("conduit starting");
 
+    // keyring v4 / keyring-core requires registering a backend before any
+    // Entry::new(); `true` picks Secret Service over kernel keyutils on Linux,
+    // and is a no-op selector on macOS (Keychain) and Windows (Cred Manager).
+    keyring::use_native_store(true).context("activate OS keyring backend")?;
+
     let paths = Paths::from_user_dirs().context("resolve conduit config dir")?;
     paths.ensure_created().context("create state dirs")?;
     tracing::info!(root = %paths.root().display(), "state root ready");
@@ -89,6 +94,33 @@ fn main() -> Result<()> {
 
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
+
+    // Purge orphaned OAuth draft tokens left from abandoned wizard sessions.
+    {
+        let db_purge = db.clone();
+        worker.handle().spawn(async move {
+            match db_purge.list_oauth_drafts().await {
+                Ok(drafts) if !drafts.is_empty() => {
+                    let drafts_for_purge = drafts.clone();
+                    let purged = tokio::task::spawn_blocking(move || {
+                        conduit::daemon::upstream::oauth::purge_draft_oauth_tokens(
+                            &drafts_for_purge,
+                        )
+                    })
+                    .await
+                    .unwrap_or(0);
+                    if purged > 0 {
+                        tracing::info!(count = purged, "purged orphaned OAuth draft tokens");
+                    }
+                    // Clear the tracking entries regardless — tokens are gone.
+                    for d in &drafts {
+                        let _ = db_purge.delete_oauth_draft(d.clone()).await;
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
 
     let _watcher = {
         let _guard = worker.handle().enter();
@@ -256,6 +288,7 @@ fn main() -> Result<()> {
     tracing::info!("conduit stopped");
     drop(bus);
     drop(worker);
+    keyring::release_store();
     Ok(())
 }
 
@@ -267,6 +300,7 @@ struct PendingWizard {
     oauth_session: Option<String>,
     oauth_authority: Option<String>,
     oauth_client_id: Option<String>,
+    oauth_scopes: Option<String>,
 }
 
 #[expect(
@@ -357,6 +391,9 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
             last_probe_error: None,
             last_auth_error_msg: None,
             last_auth_error_at: None,
+            oauth_authority: None,
+            oauth_client_id: None,
+            oauth_scopes: None,
         };
 
         let weak = weak.clone();
@@ -417,6 +454,7 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                     updated_server.server_version = Some(probed.server_version.clone());
                     updated_server.last_probed_at = Some(now);
                     updated_server.last_probe_error = None;
+                    let draft_for_tracking = probed.oauth_session.clone();
                     if let Ok(mut guard) = pending.lock() {
                         guard.server = Some(updated_server);
                         guard.tools = tools;
@@ -424,6 +462,11 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                         guard.oauth_session = probed.oauth_session;
                         guard.oauth_authority = probed.oauth_authority;
                         guard.oauth_client_id = probed.oauth_client_id;
+                        guard.oauth_scopes = probed.oauth_scopes;
+                    }
+                    // Track the draft in DB so startup can purge abandoned drafts.
+                    if let Some(session) = draft_for_tracking {
+                        let _ = db.insert_oauth_draft(session).await;
                     }
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_add_server_busy(false);
@@ -485,7 +528,10 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
         let tools = staged.tools.clone();
         let name = server_row.name.clone();
         let oauth_session = staged.oauth_session.clone();
-        let server_to_save = server_row;
+        let mut server_to_save = server_row;
+        server_to_save.oauth_authority = staged.oauth_authority.clone();
+        server_to_save.oauth_client_id = staged.oauth_client_id.clone();
+        server_to_save.oauth_scopes = staged.oauth_scopes.clone();
         rt_for_save.spawn(async move {
             // Promote OAuth tokens from draft session → canonical server name.
             tracing::info!(
@@ -501,7 +547,11 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                 })
                 .await
                 {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => {
+                        if let Some(ref session) = oauth_session {
+                            let _ = db.delete_oauth_draft(session.clone()).await;
+                        }
+                    }
                     Ok(Err(secrets_err)) => tracing::error!(
                         server = %name,
                         error = %secrets_err,
@@ -1394,7 +1444,7 @@ async fn run_ide_detection(db: &Db) {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "Skills tab wires seven callbacks at once"
+    reason = "Skills tab wires eight callbacks at once"
 )]
 fn install_skills_callbacks(
     window: &MainWindow,
@@ -1575,6 +1625,16 @@ fn install_skills_callbacks(
         });
     });
 
+    let weak = window.as_weak();
+    window.on_skills_search_changed(move |query| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let all: Vec<SkillRow> = ui.get_skills_all().iter().collect();
+        let filtered = filter_skill_rows(&all, query.as_str());
+        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+    });
+
     let rt_for_open_folder = rt.clone();
     let skills_for_open_folder = skills.clone();
     let weak = window.as_weak();
@@ -1621,9 +1681,26 @@ async fn paint_skills_from_db(weak: &slint::Weak<MainWindow>, skills: &SkillMana
     let rows = installed_skills_to_rows(&installed);
     let repo_rows = repos_to_rows(repos);
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        ui.set_skills(ModelRc::new(VecModel::from(rows)));
+        let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
+        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
         ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
     });
+}
+
+fn filter_skill_rows(rows: &[SkillRow], query: &str) -> Vec<SkillRow> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return rows.to_vec();
+    }
+    rows.iter()
+        .filter(|r| {
+            r.name.to_lowercase().contains(q.as_str())
+                || r.description.to_lowercase().contains(q.as_str())
+                || r.repo_label.to_lowercase().contains(q.as_str())
+        })
+        .cloned()
+        .collect()
 }
 
 async fn paint_skills_with_discovery(
@@ -1667,6 +1744,9 @@ async fn paint_skills_with_discovery(
                     target_claude: false,
                     target_openclaude: false,
                     target_opencode: false,
+                    target_cursor: false,
+                    target_vscode_copilot: false,
+                    target_codex: false,
                 });
             }
         }
@@ -1680,7 +1760,9 @@ async fn paint_skills_with_discovery(
     let repo_rows = repos_to_rows(repos);
 
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        ui.set_skills(ModelRc::new(VecModel::from(rows)));
+        let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
+        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
         ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
     });
 }
@@ -1709,6 +1791,9 @@ fn installed_skills_to_rows(installed: &[conduit::daemon::db::types::Skill]) -> 
             target_claude: skill.targets.iter().any(|x| x == "ClaudeCode"),
             target_openclaude: skill.targets.iter().any(|x| x == "OpenClaude"),
             target_opencode: skill.targets.iter().any(|x| x == "OpenCode"),
+            target_cursor: skill.targets.iter().any(|x| x == "Cursor"),
+            target_vscode_copilot: skill.targets.iter().any(|x| x == "VsCodeCopilot"),
+            target_codex: skill.targets.iter().any(|x| x == "Codex"),
         })
         .collect()
 }
@@ -2080,10 +2165,16 @@ async fn refresh_active_ide_targets(weak: &slint::Weak<MainWindow>, db: &Db) {
     let claude = actives.iter().any(|r| r.ide_kind == "ClaudeCode");
     let openclaude = actives.iter().any(|r| r.ide_kind == "OpenClaude");
     let opencode = actives.iter().any(|r| r.ide_kind == "OpenCode");
+    let cursor = actives.iter().any(|r| r.ide_kind == "Cursor");
+    let vscode_copilot = actives.iter().any(|r| r.ide_kind == "VsCodeCopilot");
+    let codex = actives.iter().any(|r| r.ide_kind == "Codex");
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_ide_target_claude_code_active(claude);
         ui.set_ide_target_openclaude_active(openclaude);
         ui.set_ide_target_opencode_active(opencode);
+        ui.set_ide_target_cursor_active(cursor);
+        ui.set_ide_target_vscode_copilot_active(vscode_copilot);
+        ui.set_ide_target_codex_active(codex);
     })
     .ok();
 }

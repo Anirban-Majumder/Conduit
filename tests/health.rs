@@ -8,6 +8,7 @@ const fn fresh() -> ServerHealth {
         last_probe_error: None,
         last_call_at: None,
         last_call_error: None,
+        last_auth_error_msg: None,
         peer_alive: false,
         needs_auth: false,
         probing: false,
@@ -91,4 +92,13 @@ fn probed_with_no_call_history_is_idle() {
     h.peer_alive = false;
     h.last_call_at = None;
     assert_eq!(derive_state(&h), ServerState::Idle);
+}
+
+#[test]
+fn auth_error_msg_yields_needs_auth() {
+    let mut h = fresh();
+    h.last_probed_at = Some(500);
+    h.peer_alive = true;
+    h.last_auth_error_msg = Some("token expired".into());
+    assert_eq!(derive_state(&h), ServerState::NeedsAuth);
 }

@@ -26,7 +26,10 @@ pub async fn connect(
 ) -> Result<HttpClient, UpstreamError> {
     let mut cfg = StreamableHttpClientTransportConfig::with_uri(url.to_string());
     if let Some(token) = bearer_token {
-        cfg = cfg.auth_header(format!("Bearer {token}"));
+        // rmcp applies this via reqwest `bearer_auth`, which prepends `Bearer `
+        // itself. Passing a pre-prefixed value yields `Bearer Bearer <token>`,
+        // which servers reject as invalid_token. Pass the raw token.
+        cfg = cfg.auth_header(token);
     }
     let transport = StreamableHttpClientTransport::from_config(cfg);
     let client = serve_client_with_ct((), transport, cancel)
@@ -86,10 +89,7 @@ async fn refresh_with_coordinator(
             &meta.client_id,
             client_secret.as_deref(),
             refresh,
-            // TODO: persist `resource` in OauthMeta during probe so the refresh
-            // path can also pass it (RFC 8707). Currently refresh works for
-            // permissive servers (Auth0) but may fail on strict ones (Sentry).
-            None,
+            meta.resource.as_deref(),
         )
         .await;
         let outcome = match result {
@@ -108,6 +108,7 @@ async fn refresh_with_coordinator(
                     client_id: meta.client_id.clone(),
                     expires_at_unix: now_unix()
                         + i64::try_from(token_resp.expires_in.unwrap_or(3600)).unwrap_or(3600),
+                    resource: meta.resource.clone(),
                 };
                 if let Err(e) = store_oauth_meta(server, &new_meta) {
                     tracing::warn!(error = %e, server = %server, "store meta failed");

@@ -29,6 +29,7 @@ pub struct ServerHealth {
     pub last_probe_error: Option<String>,
     pub last_call_at: Option<i64>,
     pub last_call_error: Option<String>,
+    pub last_auth_error_msg: Option<String>,
     pub peer_alive: bool,
     pub needs_auth: bool,
     pub probing: bool,
@@ -45,7 +46,7 @@ pub const fn derive_state(h: &ServerHealth) -> ServerState {
     if h.probing {
         return ServerState::Probing;
     }
-    if h.needs_auth {
+    if h.needs_auth || h.last_auth_error_msg.is_some() {
         return ServerState::NeedsAuth;
     }
     if h.last_call_error.is_some() || h.last_probe_error.is_some() {

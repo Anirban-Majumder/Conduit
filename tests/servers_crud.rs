@@ -36,6 +36,9 @@ fn sample_server(name: &str) -> Server {
         last_probe_error: None,
         last_auth_error_msg: None,
         last_auth_error_at: None,
+        oauth_authority: None,
+        oauth_client_id: None,
+        oauth_scopes: None,
     }
 }
 
@@ -118,6 +121,9 @@ async fn http_transport_preserves_url() {
         last_probe_error: None,
         last_auth_error_msg: None,
         last_auth_error_at: None,
+        oauth_authority: None,
+        oauth_client_id: None,
+        oauth_scopes: None,
     };
     db.upsert_server(s.clone()).await.unwrap();
     assert_eq!(db.get_server("linear").await.unwrap().unwrap(), s);

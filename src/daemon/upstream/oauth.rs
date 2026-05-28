@@ -58,10 +58,17 @@ pub fn fresh_state() -> Zeroizing<String> {
     Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-/// Byte-for-byte state comparison.
+/// Constant-time CSRF state comparison (RFC 6749 §10.12).
 #[must_use]
 pub fn state_matches(expected: &str, received: &str) -> bool {
-    expected == received
+    if expected.len() != received.len() {
+        return false;
+    }
+    expected
+        .bytes()
+        .zip(received.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// Build the authorize URL with PKCE + state + scope + (optional) resource params.
@@ -186,10 +193,17 @@ pub struct TokenResponse {
 #[derive(Debug, Clone)]
 pub struct OauthChallenge {
     pub realm: Option<String>,
+    /// RFC 9728 Section 5.1: URL of the Protected Resource Metadata document.
     pub resource_metadata_url: Option<String>,
+    /// RFC 8707: Resource indicator identifying the protected resource.
+    pub resource: Option<String>,
 }
 
-/// Parse a `WWW-Authenticate: Bearer ...` header.
+/// Parse a `WWW-Authenticate: Bearer ...` header per RFC 7235 Section 2.1.
+///
+/// Correctly distinguishes `resource_metadata` (RFC 9728 Section 5.1, a URL
+/// pointing to the PRM document) from `resource` (RFC 8707, the protected
+/// resource identifier).
 #[must_use]
 pub fn parse_www_authenticate(value: &str) -> Option<OauthChallenge> {
     let lower = value.trim().to_ascii_lowercase();
@@ -198,26 +212,59 @@ pub fn parse_www_authenticate(value: &str) -> Option<OauthChallenge> {
     }
     let mut realm = None;
     let mut resource_metadata_url = None;
-    for raw in value
-        .trim_start_matches(|c: char| c.is_ascii_alphabetic())
-        .split(',')
-    {
+    let mut resource = None;
+    // Parse auth-param pairs, respecting quoted strings (RFC 7235 §2.1).
+    let params_str = value
+        .trim()
+        .trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    for raw in split_auth_params(params_str) {
         let raw = raw.trim();
         let Some((k, v)) = raw.split_once('=') else {
             continue;
         };
         let k = k.trim().to_ascii_lowercase();
         let v = v.trim().trim_matches('"');
-        if k == "realm" {
-            realm = Some(v.to_string());
-        } else if k == "resource_metadata" || k == "resource" {
-            resource_metadata_url = Some(v.to_string());
+        match k.as_str() {
+            "realm" => realm = Some(v.to_string()),
+            "resource_metadata" => resource_metadata_url = Some(v.to_string()),
+            "resource" => resource = Some(v.to_string()),
+            _ => {}
         }
     }
     Some(OauthChallenge {
         realm,
         resource_metadata_url,
+        resource,
     })
+}
+
+/// Split auth-param string on commas, respecting quoted-string boundaries.
+///
+/// RFC 7235 Section 2.1: `auth-param = token BWS "=" BWS ( token / quoted-string )`
+/// A quoted-string may contain commas, so naive `split(',')` is incorrect.
+fn split_auth_params(input: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for ch in input.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(ch);
+            }
+            ',' if !in_quotes => {
+                if !current.trim().is_empty() {
+                    params.push(current.clone());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        params.push(current);
+    }
+    params
 }
 
 #[derive(Debug, Error)]
@@ -246,6 +293,9 @@ pub enum OauthError {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthorizationServerMetadata {
+    /// RFC 8414 Section 2: REQUIRED. The authorization server's issuer identifier.
+    #[serde(default)]
+    pub issuer: Option<String>,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     #[serde(default)]
@@ -257,6 +307,9 @@ pub struct AuthorizationServerMetadata {
     /// (Atlassian, Okta) silently narrow tokens to identity scopes without it.
     #[serde(default)]
     pub resource: Option<String>,
+    /// RFC 8414: PKCE code challenge methods supported by this AS.
+    #[serde(default)]
+    pub code_challenge_methods_supported: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -309,7 +362,176 @@ pub async fn fetch_authorization_server_metadata(
     if asm.resource.is_none() {
         asm.resource = prm_resource;
     }
+    // RFC 6749 §3.1: authorization endpoint MUST use TLS.
+    if requires_https(&asm.authorization_endpoint) || requires_https(&asm.token_endpoint) {
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
     Ok(asm)
+}
+
+/// Try to fetch `AuthorizationServerMetadata` directly from well-known endpoints
+/// on the given URL's origin. No Protected Resource Metadata step.
+///
+/// Tries RFC 8414 (`oauth-authorization-server`) and OpenID Connect Discovery
+/// (`openid-configuration`) in sequence. For URLs with a non-root path, also
+/// tries path-insertion and path-appending variants (matching chrome-ai's
+/// `discoverAuthorizationServerMetadata`).
+pub async fn fetch_auth_server_metadata_direct(
+    http: &reqwest::Client,
+    mcp_url: &str,
+) -> Result<AuthorizationServerMetadata, OauthError> {
+    let parsed = reqwest::Url::parse(mcp_url)
+        .map_err(|e| OauthError::DcrRejected(format!("invalid MCP URL: {e}")))?;
+    let origin = format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or_default()
+    );
+    let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let base = format!("{origin}{port_suffix}");
+    let path = parsed.path().trim_end_matches('/');
+
+    let mut candidates: Vec<String> = Vec::new();
+    if path.is_empty() || path == "/" {
+        candidates.push(format!("{base}/.well-known/oauth-authorization-server"));
+        candidates.push(format!("{base}/.well-known/openid-configuration"));
+    } else {
+        // RFC 8414 path-insertion: /.well-known/oauth-authorization-server{path}
+        candidates.push(format!(
+            "{base}/.well-known/oauth-authorization-server{path}"
+        ));
+        // OpenID Connect path-insertion
+        candidates.push(format!("{base}/.well-known/openid-configuration{path}"));
+        // OpenID Connect path-appending: {path}/.well-known/openid-configuration
+        candidates.push(format!("{mcp_url}/.well-known/openid-configuration"));
+        // Root fallbacks
+        candidates.push(format!("{base}/.well-known/oauth-authorization-server"));
+        candidates.push(format!("{base}/.well-known/openid-configuration"));
+    }
+
+    let mut last_err: Option<String> = None;
+    for url in &candidates {
+        match fetch_auth_server_metadata_from_url(http, url).await {
+            Ok(meta) => {
+                tracing::info!(url = %url, "direct auth server metadata discovered");
+                return Ok(meta);
+            }
+            Err(e) => last_err = Some(format!("{url}: {e}")),
+        }
+    }
+    if let Some(err) = &last_err {
+        tracing::debug!(error = %err, "all direct well-known candidates failed");
+    }
+    Err(OauthError::MissingAuthorizationEndpoint)
+}
+
+/// Check whether a URL uses HTTPS (or is a localhost development URL).
+fn requires_https(url: &str) -> bool {
+    if let Ok(parsed) = reqwest::Url::parse(url) {
+        if parsed.scheme() == "https" {
+            return false; // already HTTPS
+        }
+        if parsed.scheme() == "http" {
+            if let Some(host) = parsed.host_str() {
+                return !matches!(host, "localhost" | "127.0.0.1" | "::1");
+            }
+        }
+    }
+    true // unparseable or non-HTTP scheme
+}
+
+/// Fetch and validate an `AuthorizationServerMetadata` document from a URL.
+///
+/// Validates required fields per RFC 8414 Section 2: `authorization_endpoint`
+/// and `token_endpoint` must be present and non-empty. Enforces HTTPS per
+/// RFC 6749 Section 3.1 (except localhost for development).
+async fn fetch_auth_server_metadata_from_url(
+    http: &reqwest::Client,
+    url: &str,
+) -> Result<AuthorizationServerMetadata, OauthError> {
+    let resp = http.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
+    let meta: AuthorizationServerMetadata = resp.json().await?;
+    if meta.authorization_endpoint.is_empty() || meta.token_endpoint.is_empty() {
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
+    // RFC 6749 §3.1: authorization endpoint MUST use TLS.
+    if requires_https(&meta.authorization_endpoint) {
+        tracing::warn!(
+            endpoint = %meta.authorization_endpoint,
+            "authorization_endpoint does not use HTTPS (RFC 6749 §3.1)"
+        );
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
+    if requires_https(&meta.token_endpoint) {
+        tracing::warn!(
+            endpoint = %meta.token_endpoint,
+            "token_endpoint does not use HTTPS"
+        );
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
+    if meta.issuer.is_none() {
+        tracing::warn!(url = %url, "authorization server metadata missing required 'issuer' field (RFC 8414 §2)");
+    }
+    match &meta.code_challenge_methods_supported {
+        Some(methods) if methods.iter().any(|m| m == "S256") => {}
+        Some(methods) => {
+            tracing::warn!(
+                url = %url,
+                methods = ?methods,
+                "authorization server does not advertise S256 PKCE support; proceeding anyway (OAuth 2.1 mandates PKCE)"
+            );
+        }
+        None => {
+            tracing::debug!(
+                url = %url,
+                "authorization server metadata missing 'code_challenge_methods_supported'; proceeding anyway"
+            );
+        }
+    }
+    Ok(meta)
+}
+
+/// Generate fallback OAuth endpoints by stripping common MCP path suffixes.
+///
+/// When no metadata document is discoverable, this constructs standard endpoint
+/// paths (`/authorize`, `/token`, `/register`) from the MCP URL's base. Returns
+/// `None` if the URL cannot be parsed.
+pub fn generate_fallback_endpoints(mcp_url: &str) -> Option<AuthorizationServerMetadata> {
+    let parsed = reqwest::Url::parse(mcp_url).ok()?;
+    let origin = format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or_default()
+    );
+    let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+
+    // Strip common MCP endpoint suffixes (as complete path segments) to
+    // approximate the service root.  Only match "/sse" or "/mcp" — not
+    // mid-segment substrings like "/promisse".
+    let mut path = parsed.path().trim_end_matches('/').to_string();
+    for suffix in &["/sse", "/mcp"] {
+        if let Some(stripped) = path.strip_suffix(suffix) {
+            path = stripped.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+
+    let base = format!("{origin}{port_suffix}{path}");
+    Some(AuthorizationServerMetadata {
+        issuer: Some(base.clone()),
+        authorization_endpoint: format!("{base}/authorize"),
+        token_endpoint: format!("{base}/token"),
+        registration_endpoint: Some(format!("{base}/register")),
+        // Minimal scope set to prevent scope downgrade when no metadata
+        // advertises supported scopes. Auth0 registers clients with empty
+        // allowed scopes when scope is omitted from DCR.
+        scopes_supported: vec!["openid".into(), "profile".into(), "offline_access".into()],
+        resource: None,
+        code_challenge_methods_supported: None,
+    })
 }
 
 /// POST the DCR body and return the response. Missing `client_secret` → public PKCE.
@@ -469,7 +691,12 @@ pub async fn exchange_code_for_tokens(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(OauthError::TokenRejected(format!("{status}: {txt}")));
+        let detail = if txt.len() > 200 {
+            format!("{}...", &txt[..200])
+        } else {
+            txt
+        };
+        return Err(OauthError::TokenRejected(format!("{status}: {detail}")));
     }
     Ok(resp.json::<TokenResponse>().await?)
 }
@@ -504,7 +731,12 @@ pub async fn refresh_tokens(
     if !resp.status().is_success() {
         let status = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(OauthError::TokenRejected(format!("{status}: {txt}")));
+        let detail = if txt.len() > 200 {
+            format!("{}...", &txt[..200])
+        } else {
+            txt
+        };
+        return Err(OauthError::TokenRejected(format!("{status}: {detail}")));
     }
     Ok(resp.json::<TokenResponse>().await?)
 }
@@ -694,10 +926,8 @@ mod tests {
 
     #[test]
     fn dcr_public_pkce_client_omits_scope_when_none() {
-        let req = DcrRequest::public_pkce_client(
-            "http://127.0.0.1:5000/callback".to_string(),
-            None,
-        );
+        let req =
+            DcrRequest::public_pkce_client("http://127.0.0.1:5000/callback".to_string(), None);
         let body = serde_json::to_string(&req).unwrap();
         assert!(
             !body.contains("\"scope\""),
@@ -716,13 +946,23 @@ mod tests {
     #[test]
     fn authorization_server_metadata_parses_scopes_supported() {
         let body = r#"{
+            "issuer": "https://auth.example.com",
             "authorization_endpoint": "https://auth.example.com/authorize",
             "token_endpoint": "https://auth.example.com/token",
-            "scopes_supported": ["read:jira-work", "write:jira-work", "offline_access"]
+            "scopes_supported": ["read:jira-work", "write:jira-work", "offline_access"],
+            "code_challenge_methods_supported": ["S256"]
         }"#;
         let parsed: AuthorizationServerMetadata = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.issuer.as_deref(), Some("https://auth.example.com"));
         assert_eq!(parsed.scopes_supported.len(), 3);
-        assert!(parsed.scopes_supported.iter().any(|s| s == "offline_access"));
+        assert!(parsed
+            .scopes_supported
+            .iter()
+            .any(|s| s == "offline_access"));
+        assert_eq!(
+            parsed.code_challenge_methods_supported.as_ref().unwrap(),
+            &vec!["S256".to_string()]
+        );
     }
 
     #[test]
@@ -733,6 +973,8 @@ mod tests {
         }"#;
         let parsed: AuthorizationServerMetadata = serde_json::from_str(body).unwrap();
         assert!(parsed.scopes_supported.is_empty());
+        assert!(parsed.issuer.is_none());
+        assert!(parsed.code_challenge_methods_supported.is_none());
     }
 
     #[test]
@@ -753,5 +995,51 @@ mod tests {
         assert_eq!(parsed.access_token, "a");
         assert_eq!(parsed.refresh_token.as_deref(), Some("r"));
         assert_eq!(parsed.expires_in, Some(3600));
+    }
+
+    #[test]
+    fn www_authenticate_parses_resource_metadata_only() {
+        let header = r#"Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource""#;
+        let c = parse_www_authenticate(header).unwrap();
+        assert_eq!(
+            c.resource_metadata_url.as_deref(),
+            Some("https://example.com/.well-known/oauth-protected-resource")
+        );
+        assert!(c.resource.is_none());
+    }
+
+    #[test]
+    fn www_authenticate_distinguishes_resource_from_resource_metadata() {
+        let header = r#"Bearer resource="https://api.example.com",resource_metadata="https://example.com/.well-known/oauth-protected-resource""#;
+        let c = parse_www_authenticate(header).unwrap();
+        assert_eq!(c.resource.as_deref(), Some("https://api.example.com"));
+        assert_eq!(
+            c.resource_metadata_url.as_deref(),
+            Some("https://example.com/.well-known/oauth-protected-resource")
+        );
+    }
+
+    #[test]
+    fn www_authenticate_handles_quoted_commas() {
+        let header = r#"Bearer error="insufficient_scope, try again",resource_metadata="https://example.com/meta""#;
+        let c = parse_www_authenticate(header).unwrap();
+        assert_eq!(
+            c.resource_metadata_url.as_deref(),
+            Some("https://example.com/meta")
+        );
+    }
+
+    #[test]
+    fn www_authenticate_rejects_non_bearer() {
+        assert!(parse_www_authenticate("Basic realm=\"test\"").is_none());
+    }
+
+    #[test]
+    fn split_auth_params_respects_quoted_commas() {
+        let input = r#"error="a, b",resource_metadata="https://x.com""#;
+        let params = split_auth_params(input);
+        assert_eq!(params.len(), 2);
+        assert!(params[0].starts_with("error="));
+        assert!(params[1].starts_with("resource_metadata="));
     }
 }
