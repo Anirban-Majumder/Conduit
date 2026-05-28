@@ -17,6 +17,7 @@ const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
 const V01_SQL: &str = include_str!("migrations/0002_v01.sql");
 const SKILLS_SQL: &str = include_str!("migrations/0003_skills.sql");
 const IDES_SQL: &str = include_str!("migrations/0004_ides.sql");
+const OAUTH_DRAFTS_SQL: &str = include_str!("migrations/0005_oauth_drafts.sql");
 
 #[derive(Debug, Clone)]
 pub struct CascadeTrim {
@@ -241,6 +242,17 @@ pub enum DbCmd {
     },
     ListSkills {
         reply: oneshot::Sender<Result<Vec<Skill>, DbError>>,
+    },
+    InsertOAuthDraft {
+        draft_uuid: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    DeleteOAuthDraft {
+        draft_uuid: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    ListOAuthDrafts {
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
 }
 
@@ -906,6 +918,33 @@ impl Db {
             .map_err(|_closed| DbError::ActorGone)?;
         rx.await.map_err(|_closed| DbError::ActorGone)?
     }
+
+    pub async fn insert_oauth_draft(&self, draft_uuid: String) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::InsertOAuthDraft { draft_uuid, reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn delete_oauth_draft(&self, draft_uuid: String) -> Result<(), DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::DeleteOAuthDraft { draft_uuid, reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
+
+    pub async fn list_oauth_drafts(&self) -> Result<Vec<String>, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(DbCmd::ListOAuthDrafts { reply })
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
+    }
 }
 
 fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
@@ -943,6 +982,7 @@ fn init_conn(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(V01_SQL)?;
     conn.execute_batch(SKILLS_SQL)?;
     conn.execute_batch(IDES_SQL)?;
+    conn.execute_batch(OAUTH_DRAFTS_SQL)?;
     ensure_column(conn, "servers", "server_name", "TEXT")?;
     ensure_column(conn, "servers", "server_version", "TEXT")?;
     ensure_column(conn, "servers", "last_probed_at", "INTEGER")?;
@@ -1369,6 +1409,15 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         }
         DbCmd::ListSkills { reply } => {
             reply.send(query_list_skills(conn)).ok();
+        }
+        DbCmd::InsertOAuthDraft { draft_uuid, reply } => {
+            reply.send(insert_oauth_draft(conn, &draft_uuid)).ok();
+        }
+        DbCmd::DeleteOAuthDraft { draft_uuid, reply } => {
+            reply.send(delete_oauth_draft(conn, &draft_uuid)).ok();
+        }
+        DbCmd::ListOAuthDrafts { reply } => {
+            reply.send(list_oauth_drafts(conn)).ok();
         }
     }
 }
@@ -2382,6 +2431,9 @@ fn decode_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
         last_probe_error: row.get(14).ok(),
         last_auth_error_msg: row.get(15).ok().flatten(),
         last_auth_error_at: row.get(16).ok().flatten(),
+        oauth_authority: row.get(17).ok().flatten(),
+        oauth_client_id: row.get(18).ok().flatten(),
+        oauth_scopes: row.get(19).ok().flatten(),
     })
 }
 
@@ -2394,8 +2446,9 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
         "INSERT INTO servers
          (name, transport, command, args_json, env_json, url, lifecycle_seconds,
           last_init_duration_ms, package_version, mcp_self_version, created_at,
-          server_name, server_version, last_probed_at, last_probe_error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+          server_name, server_version, last_probed_at, last_probe_error,
+          oauth_authority, oauth_client_id, oauth_scopes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(name) DO UPDATE SET
              transport = excluded.transport,
              command = excluded.command,
@@ -2409,7 +2462,10 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
              server_name = excluded.server_name,
              server_version = excluded.server_version,
              last_probed_at = excluded.last_probed_at,
-             last_probe_error = excluded.last_probe_error",
+             last_probe_error = excluded.last_probe_error,
+             oauth_authority = excluded.oauth_authority,
+             oauth_client_id = excluded.oauth_client_id,
+             oauth_scopes = excluded.oauth_scopes",
     )?
     .execute(params![
         &server.name,
@@ -2427,6 +2483,9 @@ fn query_upsert_server(conn: &Connection, server: &Server) -> Result<(), DbError
         &server.server_version,
         server.last_probed_at,
         &server.last_probe_error,
+        &server.oauth_authority,
+        &server.oauth_client_id,
+        &server.oauth_scopes,
     ])?;
     Ok(())
 }
@@ -2435,7 +2494,8 @@ const SERVERS_SELECT: &str = "SELECT name, transport, command, args_json, env_js
        lifecycle_seconds, last_init_duration_ms, package_version,
        mcp_self_version, created_at,
        server_name, server_version, last_probed_at, last_probe_error,
-       last_auth_error_msg, last_auth_error_at
+       last_auth_error_msg, last_auth_error_at,
+       oauth_authority, oauth_client_id, oauth_scopes
  FROM servers";
 
 fn query_get_server(conn: &Connection, name: &str) -> Result<Option<Server>, DbError> {
@@ -2497,4 +2557,28 @@ fn query_clear_server_auth_error(conn: &Connection, server: &str) -> Result<bool
         .execute(params![server])?;
     }
     Ok(cleared)
+}
+
+fn insert_oauth_draft(conn: &Connection, draft_uuid: &str) -> Result<(), DbError> {
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO pending_oauth_drafts (draft_uuid) VALUES (?1)",
+    )?
+    .execute(params![draft_uuid])?;
+    Ok(())
+}
+
+fn delete_oauth_draft(conn: &Connection, draft_uuid: &str) -> Result<(), DbError> {
+    conn.prepare_cached("DELETE FROM pending_oauth_drafts WHERE draft_uuid = ?1")?
+        .execute(params![draft_uuid])?;
+    Ok(())
+}
+
+fn list_oauth_drafts(conn: &Connection) -> Result<Vec<String>, DbError> {
+    let mut stmt = conn.prepare_cached("SELECT draft_uuid FROM pending_oauth_drafts")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut drafts = Vec::new();
+    for row in rows {
+        drafts.push(row?);
+    }
+    Ok(drafts)
 }
