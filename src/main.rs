@@ -1444,7 +1444,7 @@ async fn run_ide_detection(db: &Db) {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "Skills tab wires seven callbacks at once"
+    reason = "Skills tab wires eight callbacks at once"
 )]
 fn install_skills_callbacks(
     window: &MainWindow,
@@ -1625,6 +1625,16 @@ fn install_skills_callbacks(
         });
     });
 
+    let weak = window.as_weak();
+    window.on_skills_search_changed(move |query| {
+        let Some(ui) = weak.upgrade() else {
+            return;
+        };
+        let all: Vec<SkillRow> = ui.get_skills_all().iter().collect();
+        let filtered = filter_skill_rows(&all, query.as_str());
+        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+    });
+
     let rt_for_open_folder = rt.clone();
     let skills_for_open_folder = skills.clone();
     let weak = window.as_weak();
@@ -1671,9 +1681,26 @@ async fn paint_skills_from_db(weak: &slint::Weak<MainWindow>, skills: &SkillMana
     let rows = installed_skills_to_rows(&installed);
     let repo_rows = repos_to_rows(repos);
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        ui.set_skills(ModelRc::new(VecModel::from(rows)));
+        let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
+        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
         ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
     });
+}
+
+fn filter_skill_rows(rows: &[SkillRow], query: &str) -> Vec<SkillRow> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return rows.to_vec();
+    }
+    rows.iter()
+        .filter(|r| {
+            r.name.to_lowercase().contains(q.as_str())
+                || r.description.to_lowercase().contains(q.as_str())
+                || r.repo_label.to_lowercase().contains(q.as_str())
+        })
+        .cloned()
+        .collect()
 }
 
 async fn paint_skills_with_discovery(
@@ -1730,7 +1757,9 @@ async fn paint_skills_with_discovery(
     let repo_rows = repos_to_rows(repos);
 
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        ui.set_skills(ModelRc::new(VecModel::from(rows)));
+        let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
+        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
         ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
     });
 }

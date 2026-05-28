@@ -743,6 +743,8 @@ component SkillsTab inherits Rectangle {
     in-out property <string> repo-add-owner;
     in-out property <string> repo-add-name;
     in-out property <string> repo-add-branch: "main";
+    in-out property <string> search-query;
+    callback search-changed(string);
     callback refresh-clicked();
     callback open-folder-clicked();
     callback install-clicked(string, string, string, string, string, string);
@@ -932,13 +934,48 @@ component SkillsTab inherits Rectangle {
                 }
             }
 
-            Text {
-                text: rows.length == 0 ? "No skills" : "Skills (" + rows.length + ")";
-                color: Theme.text-secondary;
-                font-size: Theme.font-eyebrow;
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                Text {
+                    text: rows.length == 0 ? "No skills" : "Skills (" + rows.length + ")";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    background: Theme.bg;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    height: 32px;
+                    width: 240px;
+                    clip: true;
+                    if root.search-query == "" : Text {
+                        x: 10px;
+                        height: parent.height;
+                        text: "Search skills…";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                    TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        text <=> root.search-query;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => { root.search-changed(self.text); }
+                    }
+                }
             }
             if rows.length == 0 : EmptyState {
-                text: "Add a discovery source above (e.g. anthropics/skills) and hit Refresh, or drop a skill folder into Open folder.";
+                text: root.search-query != ""
+                    ? "No skills match \"" + root.search-query + "\"."
+                    : "Add a discovery source above (e.g. anthropics/skills) and hit Refresh, or drop a skill folder into Open folder.";
                 height: 160px;
             }
             for row in rows : Rectangle {
@@ -1948,6 +1985,8 @@ export component MainWindow inherits Window {
     in property <bool> daemon-healthy: true;
 
     in property <[SkillRow]> skills;
+    in-out property <[SkillRow]> skills-all;
+    in-out property <string> skills-search-query;
     in property <[SkillRepoRow]> skill-repos;
     in-out property <string> skills-status-message;
     in-out property <bool> skills-busy;
@@ -2039,6 +2078,7 @@ export component MainWindow inherits Window {
     callback skills-add-repo(string, string, string);
     callback skills-remove-repo(string, string);
     callback skills-toggle-repo(string, string, bool);
+    callback skills-search-changed(string);
 
     public function show-add-server() {
         root.show-add-server-dialog = true;
@@ -2192,6 +2232,8 @@ export component MainWindow inherits Window {
                     repo-add-owner <=> root.skills-repo-add-owner;
                     repo-add-name <=> root.skills-repo-add-name;
                     repo-add-branch <=> root.skills-repo-add-branch;
+                    search-query <=> root.skills-search-query;
+                    search-changed(query) => { root.skills-search-changed(query); }
                     refresh-clicked => { root.skills-refresh-clicked(); }
                     open-folder-clicked => { root.skills-open-folder-clicked(); }
                     install-clicked(owner, name, branch, dir, readme, candidate-name) => {
