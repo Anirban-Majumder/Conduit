@@ -100,6 +100,8 @@ pub struct OauthMeta {
     pub token_endpoint: String,
     pub client_id: String,
     pub expires_at_unix: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
 }
 
 fn fetch_keyring(account: &str) -> Result<String, SecretsError> {
