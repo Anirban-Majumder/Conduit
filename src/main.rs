@@ -90,6 +90,31 @@ fn main() -> Result<()> {
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
 
+    // Purge orphaned OAuth draft tokens left from abandoned wizard sessions.
+    {
+        let db_purge = db.clone();
+        worker.handle().spawn(async move {
+            match db_purge.list_oauth_drafts().await {
+                Ok(drafts) if !drafts.is_empty() => {
+                    let drafts_for_purge = drafts.clone();
+                    let purged = tokio::task::spawn_blocking(move || {
+                        crate::daemon::upstream::oauth::purge_draft_oauth_tokens(&drafts_for_purge)
+                    })
+                    .await
+                    .unwrap_or(0);
+                    if purged > 0 {
+                        tracing::info!(count = purged, "purged orphaned OAuth draft tokens");
+                    }
+                    // Clear the tracking entries regardless — tokens are gone.
+                    for d in &drafts {
+                        let _ = db_purge.delete_oauth_draft(d.clone()).await;
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+
     let _watcher = {
         let _guard = worker.handle().enter();
         config_watcher::spawn(&paths.config_toml(), bus.clone(), cancel.clone())
@@ -267,6 +292,7 @@ struct PendingWizard {
     oauth_session: Option<String>,
     oauth_authority: Option<String>,
     oauth_client_id: Option<String>,
+    oauth_scopes: Option<String>,
 }
 
 #[expect(
@@ -357,6 +383,9 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
             last_probe_error: None,
             last_auth_error_msg: None,
             last_auth_error_at: None,
+            oauth_authority: None,
+            oauth_client_id: None,
+            oauth_scopes: None,
         };
 
         let weak = weak.clone();
@@ -424,6 +453,11 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                         guard.oauth_session = probed.oauth_session;
                         guard.oauth_authority = probed.oauth_authority;
                         guard.oauth_client_id = probed.oauth_client_id;
+                        guard.oauth_scopes = probed.oauth_scopes;
+                    }
+                    // Track the draft in DB so startup can purge abandoned drafts.
+                    if let Some(ref session) = probed.oauth_session {
+                        let _ = db.insert_oauth_draft(session.clone()).await;
                     }
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_add_server_busy(false);
@@ -485,7 +519,10 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
         let tools = staged.tools.clone();
         let name = server_row.name.clone();
         let oauth_session = staged.oauth_session.clone();
-        let server_to_save = server_row;
+        let mut server_to_save = server_row;
+        server_to_save.oauth_authority = staged.oauth_authority.clone();
+        server_to_save.oauth_client_id = staged.oauth_client_id.clone();
+        server_to_save.oauth_scopes = staged.oauth_scopes.clone();
         rt_for_save.spawn(async move {
             // Promote OAuth tokens from draft session → canonical server name.
             tracing::info!(
@@ -501,7 +538,11 @@ fn install_wizard_callbacks(window: &MainWindow, db: Db, bus: Bus, rt: tokio::ru
                 })
                 .await
                 {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => {
+                        if let Some(ref session) = oauth_session {
+                            let _ = db.delete_oauth_draft(session.clone()).await;
+                        }
+                    }
                     Ok(Err(secrets_err)) => tracing::error!(
                         server = %name,
                         error = %secrets_err,

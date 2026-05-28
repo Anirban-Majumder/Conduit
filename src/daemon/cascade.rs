@@ -9,6 +9,7 @@ use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
 use crate::daemon::clients::ide_kind_from_db_name;
 use crate::daemon::clients::{self, ClientError};
+use crate::daemon::secrets;
 
 const APPLY_PARALLELISM: usize = 4;
 
@@ -96,6 +97,9 @@ pub async fn delete_server_with_cascade(
         });
     }
     report.cancelled_approvals = cancelled;
+    if let Err(e) = secrets::delete_oauth_tokens(server_name) {
+        tracing::warn!(server = %server_name, error = %e, "cascade: failed to delete OAuth tokens");
+    }
     Ok(report)
 }
 
