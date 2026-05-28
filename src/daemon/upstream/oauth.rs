@@ -312,6 +312,112 @@ pub async fn fetch_authorization_server_metadata(
     Ok(asm)
 }
 
+/// Try to fetch `AuthorizationServerMetadata` directly from well-known endpoints
+/// on the given URL's origin. No Protected Resource Metadata step.
+///
+/// Tries RFC 8414 (`oauth-authorization-server`) and OpenID Connect Discovery
+/// (`openid-configuration`) in sequence. For URLs with a non-root path, also
+/// tries path-insertion and path-appending variants (matching chrome-ai's
+/// `discoverAuthorizationServerMetadata`).
+pub async fn fetch_auth_server_metadata_direct(
+    http: &reqwest::Client,
+    mcp_url: &str,
+) -> Result<AuthorizationServerMetadata, OauthError> {
+    let parsed = reqwest::Url::parse(mcp_url)
+        .map_err(|e| OauthError::DcrRejected(format!("invalid MCP URL: {e}")))?;
+    let origin = format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or_default()
+    );
+    let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let base = format!("{origin}{port_suffix}");
+    let path = parsed.path().trim_end_matches('/');
+
+    let mut candidates: Vec<String> = Vec::new();
+    if path.is_empty() || path == "/" {
+        candidates.push(format!("{base}/.well-known/oauth-authorization-server"));
+        candidates.push(format!("{base}/.well-known/openid-configuration"));
+    } else {
+        // RFC 8414 path-insertion: /.well-known/oauth-authorization-server{path}
+        candidates.push(format!(
+            "{base}/.well-known/oauth-authorization-server{path}"
+        ));
+        // OpenID Connect path-insertion
+        candidates.push(format!("{base}/.well-known/openid-configuration{path}"));
+        // OpenID Connect path-appending: {path}/.well-known/openid-configuration
+        candidates.push(format!("{mcp_url}/.well-known/openid-configuration"));
+        // Root fallbacks
+        candidates.push(format!("{base}/.well-known/oauth-authorization-server"));
+        candidates.push(format!("{base}/.well-known/openid-configuration"));
+    }
+
+    let mut last_err: Option<String> = None;
+    for url in &candidates {
+        match fetch_auth_server_metadata_from_url(http, url).await {
+            Ok(meta) => {
+                tracing::info!(url = %url, "direct auth server metadata discovered");
+                return Ok(meta);
+            }
+            Err(e) => last_err = Some(format!("{url}: {e}")),
+        }
+    }
+    if let Some(err) = &last_err {
+        tracing::debug!(error = %err, "all direct well-known candidates failed");
+    }
+    Err(OauthError::MissingAuthorizationEndpoint)
+}
+
+/// Fetch and validate an `AuthorizationServerMetadata` document from a URL.
+async fn fetch_auth_server_metadata_from_url(
+    http: &reqwest::Client,
+    url: &str,
+) -> Result<AuthorizationServerMetadata, OauthError> {
+    let resp = http.get(url).send().await?;
+    if !resp.status().is_success() {
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
+    let meta: AuthorizationServerMetadata = resp.json().await?;
+    if meta.authorization_endpoint.is_empty() || meta.token_endpoint.is_empty() {
+        return Err(OauthError::MissingAuthorizationEndpoint);
+    }
+    Ok(meta)
+}
+
+/// Generate fallback OAuth endpoints by stripping common MCP path suffixes.
+///
+/// When no metadata document is discoverable, this constructs standard endpoint
+/// paths (`/authorize`, `/token`, `/register`) from the MCP URL's base. Returns
+/// `None` if the URL cannot be parsed.
+pub fn generate_fallback_endpoints(mcp_url: &str) -> Option<AuthorizationServerMetadata> {
+    let parsed = reqwest::Url::parse(mcp_url).ok()?;
+    let origin = format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or_default()
+    );
+    let port_suffix = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+
+    // Strip common MCP endpoint suffixes to get the service base.
+    let mut path = parsed.path().trim_end_matches('/').to_string();
+    // Remove trailing /sse, /mcp, /v1/mcp, /api/mcp/sse, etc.
+    for suffix in &["sse", "mcp"] {
+        if let Some(stripped) = path.strip_suffix(suffix) {
+            path = stripped.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+
+    let base = format!("{origin}{port_suffix}{path}");
+    Some(AuthorizationServerMetadata {
+        authorization_endpoint: format!("{base}/authorize"),
+        token_endpoint: format!("{base}/token"),
+        registration_endpoint: Some(format!("{base}/register")),
+        scopes_supported: Vec::new(),
+        resource: None,
+    })
+}
+
 /// POST the DCR body and return the response. Missing `client_secret` → public PKCE.
 pub async fn register_client(
     http: &reqwest::Client,
@@ -694,10 +800,8 @@ mod tests {
 
     #[test]
     fn dcr_public_pkce_client_omits_scope_when_none() {
-        let req = DcrRequest::public_pkce_client(
-            "http://127.0.0.1:5000/callback".to_string(),
-            None,
-        );
+        let req =
+            DcrRequest::public_pkce_client("http://127.0.0.1:5000/callback".to_string(), None);
         let body = serde_json::to_string(&req).unwrap();
         assert!(
             !body.contains("\"scope\""),
@@ -722,7 +826,10 @@ mod tests {
         }"#;
         let parsed: AuthorizationServerMetadata = serde_json::from_str(body).unwrap();
         assert_eq!(parsed.scopes_supported.len(), 3);
-        assert!(parsed.scopes_supported.iter().any(|s| s == "offline_access"));
+        assert!(parsed
+            .scopes_supported
+            .iter()
+            .any(|s| s == "offline_access"));
     }
 
     #[test]
