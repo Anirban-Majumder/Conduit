@@ -67,7 +67,7 @@ pub fn render_task_xml(exe: &Path) -> String {
     let exec = xml_escape(&exe.display().to_string());
     let user = current_user_display();
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n\
          \x20 <Triggers>\n\
          \x20   <LogonTrigger>\n\

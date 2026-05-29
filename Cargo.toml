@@ -66,7 +66,7 @@ keyring-core = { version = "1", features = ["sample"] }
 
 # Job Object (grandchild cleanup) on Windows, UnixSessionLeader on Unix.
 # Already in tree via rmcp; direct dep for CommandWrap/JobObject in stdio.rs.
-process-wrap = { version = "9", features = ["tokio1", "job-object"] }
+process-wrap = { version = "9", features = ["tokio1", "job-object", "creation-flags"] }
 
 # IDE auto-detect uses std::env / std::fs directly — no sysinfo needed in v0
 # (sysinfo's strength is process inspection, not what we want for IDE detection).
@@ -114,6 +114,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
 ] }
+# PROCESS_CREATION_FLAGS for process-wrap's CreationFlags wrapper (stdio.rs).
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [build-dependencies]
 slint-build = "1"
