@@ -1,0 +1,174 @@
+// Reusable leaf widgets used across the tabs: TabButton, StatusDot,
+// PillButton, EmptyState, SettingLine, LabeledInput, LabeledTextArea.
+// Pure markup, no data structs. Imported by main.slint and most tabs/.
+
+import { Theme } from "../theme.slint";
+
+export component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    in property <int> badge;
+    callback clicked <=> ta.clicked;
+
+    background: active ? Theme.surface-2 : transparent;
+    border-radius: Theme.radius-sm;
+    height: 36px;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+        }
+
+        if root.badge > 0 : Rectangle {
+            background: Theme.accent;
+            border-radius: 999px;
+            min-width: 18px;
+            height: 18px;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: root.badge;
+                    color: Theme.bg;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+
+    ta := TouchArea {}
+}
+
+
+export component StatusDot inherits Rectangle {
+    in property <color> tint;
+    background: root.tint;
+    border-radius: 999px;
+    width: 8px;
+    height: 8px;
+}
+
+
+export component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <color> bg-color: Theme.surface-3;
+    in property <color> fg-color: Theme.text-primary;
+    callback clicked <=> ta.clicked;
+    background: root.bg-color;
+    border-radius: Theme.radius-sm;
+    height: 28px;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.fg-color;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {}
+}
+
+
+export component EmptyState inherits Rectangle {
+    in property <string> text;
+    background: transparent;
+    VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.text;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+
+export component SettingLine inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    height: 28px;
+    HorizontalLayout {
+        spacing: Theme.gap-md;
+        alignment: space-between;
+        Text {
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component LabeledInput inherits VerticalLayout {
+    in property <string> label;
+    in property <string> text;
+    in property <bool> read-only: false;
+    callback edited(string);
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    input := TextInput {
+        text: root.text;
+        color: root.read-only ? Theme.text-tertiary : Theme.text-primary;
+        font-size: Theme.font-body;
+        single-line: true;
+        height: 32px;
+        read-only: root.read-only;
+        edited => { root.edited(self.text); }
+    }
+    Rectangle { background: Theme.border; height: 1px; }
+}
+
+
+export component LabeledTextArea inherits VerticalLayout {
+    in property <string> label;
+    in property <string> text;
+    callback edited(string);
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    Rectangle {
+        background: Theme.surface-2;
+        border-radius: Theme.radius-sm;
+        height: 120px;
+        input := TextInput {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            single-line: false;
+            wrap: word-wrap;
+            width: parent.width - 24px;
+            height: parent.height - 16px;
+            x: 12px;
+            y: 8px;
+            edited => { root.edited(self.text); }
+        }
+    }
+}
+

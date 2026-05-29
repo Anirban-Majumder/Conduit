@@ -1,3 +1,6 @@
+-- 0001_init.sql — base schema: schema_version, ide_keys, servers, policies,
+-- pending_approvals, audit_log, managed_ide_configs.
+--
 -- v0 ships exactly one schema. Idempotent: every CREATE/INSERT uses
 -- IF NOT EXISTS / OR IGNORE so the actor re-runs this on every startup.
 -- Schema grows in-place across stages until v0.5+ introduces a migration runner.

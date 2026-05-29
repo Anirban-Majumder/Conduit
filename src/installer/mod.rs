@@ -1,5 +1,10 @@
-// One-shot service install at first run. Spec §"Autostart at login".
-// Linux systemd user unit / macOS LaunchAgent plist / Windows Task Scheduler.
+//! One-shot autostart-service install at first run.
+//!
+//! Per spec §"Autostart at login". Dispatches `install` / `uninstall` /
+//! `is_installed` to the per-OS backend: a systemd user unit on Linux, a
+//! `LaunchAgent` plist on macOS, a Task Scheduler entry on Windows. All
+//! operations are idempotent; unsupported OSes return
+//! `InstallError::UnsupportedOs`.
 
 use std::path::PathBuf;
 

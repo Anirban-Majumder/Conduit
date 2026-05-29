@@ -1,4 +1,9 @@
-// Task Scheduler entry at logon with restart-on-failure. Spec §"Autostart at login".
+//! Windows autostart via a Task Scheduler logon task with restart-on-failure.
+//! Spec §"Autostart at login".
+//!
+//! Renders a task XML and registers it through `schtasks /Create /XML`.
+//! Install/uninstall/is_installed shell out to `schtasks` and are idempotent —
+//! a missing task on delete/query is treated as success.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

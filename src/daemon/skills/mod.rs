@@ -1,25 +1,39 @@
-// Skills subsystem: discover SKILL.md packages on GitHub, stash a canonical
-// copy under `<config>/conduit/skills/managed/<name>/`, and mirror that
-// copy into each agentic IDE's skills dir (`~/.claude/skills`, etc.).
+//! Skills subsystem: discover, install, and sync SKILL.md packages.
+//!
+//! Discovers SKILL.md packages on GitHub, stashes a canonical copy under
+//! `<config>/conduit/skills/managed/<name>/`, and mirrors that copy into each
+//! agentic IDE's skills dir (`~/.claude/skills`, etc.).
+//!
+//! `SkillManager` is the coordinator: it owns the HTTP client and discover
+//! cache and orchestrates install/uninstall/set-targets, persisting state via
+//! `Db` and emitting `Event::SkillsChanged`. Submodules split the work:
+//! `discover` (GitHub IO), `sync` (mirror into IDE dirs), `repos` (source-repo
+//! management and the cached discover query). Leaf path/target/time helpers
+//! live in `util`.
 
 pub mod discover;
+mod repos;
 pub mod sync;
+mod util;
 
-use std::path::PathBuf;
+use util::{
+    first_existing_skill_md, last_segment, locate_skill_md, normalize_targets, now_unix,
+    now_unix_nanos, relative_to_source, sanitize_relative, sanitize_segment,
+};
+
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::daemon::db::types::{Skill, SkillRepo};
+use crate::daemon::clients::{self, SKILL_TARGET_IDES};
+use crate::daemon::db::types::Skill;
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::clients::{self, SKILL_TARGET_IDES};
 use crate::paths::Paths;
 
-const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_AGENT: &str = "conduit-skills";
 const DOWNLOAD_FILES_PER_SKILL_LIMIT: usize = 200;
@@ -70,67 +84,6 @@ impl SkillManager {
 
     pub const fn paths(&self) -> &Paths {
         &self.paths
-    }
-
-    /// Return the set of available (not installed) skills, fetching from GitHub
-    /// when the in-memory cache is stale.
-    pub async fn discover(&self, force: bool) -> Result<Vec<SkillCandidate>, SkillError> {
-        let repos = self.db.list_skill_repos().await?;
-        let enabled: Vec<SkillRepo> = repos.into_iter().filter(|r| r.enabled).collect();
-        let fingerprint = discover::fingerprint(&enabled);
-
-        if !force {
-            let cached = self.discover_cache.lock().await.clone();
-            if let Some(cache) = cached {
-                if cache.fingerprint == fingerprint
-                    && cache.generated_at.elapsed().unwrap_or(DISCOVER_CACHE_TTL)
-                        < DISCOVER_CACHE_TTL
-                {
-                    return Ok(cache.skills);
-                }
-            }
-        }
-
-        let skills = discover::discover_skills(&self.http, &enabled).await?;
-        *self.discover_cache.lock().await = Some(DiscoverCache {
-            fingerprint,
-            generated_at: SystemTime::now(),
-            skills: skills.clone(),
-        });
-        Ok(skills)
-    }
-
-    pub async fn list_repos(&self) -> Result<Vec<SkillRepo>, SkillError> {
-        Ok(self.db.list_skill_repos().await?)
-    }
-
-    pub async fn add_repo(&self, repo: SkillRepo) -> Result<(), SkillError> {
-        validate_repo_input(&repo)?;
-        self.db.upsert_skill_repo(repo).await?;
-        self.invalidate_discover_cache().await;
-        self.bus.publish(Event::SkillsChanged);
-        Ok(())
-    }
-
-    pub async fn remove_repo(&self, owner: &str, name: &str) -> Result<(), SkillError> {
-        self.db.delete_skill_repo(owner, name).await?;
-        self.invalidate_discover_cache().await;
-        self.bus.publish(Event::SkillsChanged);
-        Ok(())
-    }
-
-    pub async fn set_repo_enabled(
-        &self,
-        owner: &str,
-        name: &str,
-        enabled: bool,
-    ) -> Result<(), SkillError> {
-        self.db.set_skill_repo_enabled(owner, name, enabled).await?;
-        // Intentionally NOT invalidating the discover cache: the cache
-        // fingerprint already reflects the enabled-set, so the next discover
-        // call sees a fingerprint mismatch and refetches naturally.
-        self.bus.publish(Event::SkillsChanged);
-        Ok(())
     }
 
     pub async fn list_installed(&self) -> Result<Vec<Skill>, SkillError> {
@@ -398,30 +351,6 @@ impl SkillManager {
         }
         Ok(count)
     }
-
-    async fn invalidate_discover_cache(&self) {
-        let mut guard = self.discover_cache.lock().await;
-        *guard = None;
-    }
-}
-
-fn validate_repo_input(repo: &SkillRepo) -> Result<(), SkillError> {
-    fn ok(value: &str) -> bool {
-        // GitHub login/repo grammar: ASCII alphanumeric + . _ -; reject all-dot
-        // strings so "." and ".." can't sneak into URLs we construct later.
-        !value.is_empty()
-            && !value.chars().all(|c| c == '.')
-            && value
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-    }
-    if !ok(&repo.owner) || !ok(&repo.name) || !ok(&repo.branch) {
-        return Err(SkillError::InvalidPath(format!(
-            "{}/{}@{}",
-            repo.owner, repo.name, repo.branch
-        )));
-    }
-    Ok(())
 }
 
 async fn apply_targets_blocking(
@@ -445,140 +374,4 @@ async fn apply_targets_blocking(
     })
     .await
     .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?
-}
-
-fn normalize_targets(targets: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = targets
-        .into_iter()
-        .filter(|t| {
-            SKILL_TARGET_IDES
-                .iter()
-                .any(|ide| clients::ide_db_name(*ide) == t)
-        })
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
-fn sanitize_segment(segment: &str) -> Option<String> {
-    let s = segment.trim();
-    if s.is_empty() || s == "." || s == ".." {
-        return None;
-    }
-    if s.contains('/') || s.contains('\\') || s.contains('\0') {
-        return None;
-    }
-    Some(s.to_string())
-}
-
-fn sanitize_relative(value: &str) -> Option<String> {
-    let raw = value.replace('\\', "/");
-    let raw = raw.trim();
-    if raw.is_empty() || raw.starts_with('/') || raw.contains('\0') {
-        return None;
-    }
-    let parts: Vec<&str> = raw.split('/').filter(|p| !p.is_empty()).collect();
-    if parts.is_empty() || parts.iter().any(|p| *p == "." || *p == "..") {
-        return None;
-    }
-    Some(parts.join("/"))
-}
-
-fn last_segment(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-fn relative_to_source(path: &str, source_dir: &str) -> String {
-    if path == source_dir {
-        last_segment(path).to_string()
-    } else {
-        let prefix = format!("{source_dir}/");
-        path.strip_prefix(&prefix).unwrap_or(path).to_string()
-    }
-}
-
-async fn locate_skill_md(dir: &std::path::Path) -> Result<PathBuf, SkillError> {
-    if let Some(p) = first_existing_skill_md(dir).await {
-        return Ok(p);
-    }
-    Err(SkillError::MissingSkillFile {
-        repo: dir.display().to_string(),
-        dir: String::new(),
-    })
-}
-
-async fn first_existing_skill_md(dir: &std::path::Path) -> Option<PathBuf> {
-    for name in ["SKILL.md", "Skill.md", "skill.md"] {
-        let candidate = dir.join(name);
-        if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn now_unix() -> i64 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
-}
-
-fn now_unix_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, reason = "test ergonomics")]
-    use super::*;
-
-    #[test]
-    fn sanitize_rejects_traversal() {
-        assert!(sanitize_relative("../etc/passwd").is_none());
-        assert!(sanitize_relative("/abs/path").is_none());
-        assert!(sanitize_relative("a/./b").is_none());
-        assert_eq!(sanitize_relative("a/b/c").unwrap(), "a/b/c");
-        assert_eq!(sanitize_relative("a\\b").unwrap(), "a/b");
-    }
-
-    #[test]
-    fn segment_strips_whitespace_and_separators() {
-        assert_eq!(sanitize_segment(" my-skill ").unwrap(), "my-skill");
-        assert!(sanitize_segment("..").is_none());
-        assert!(sanitize_segment("a/b").is_none());
-    }
-
-    #[test]
-    fn relative_to_source_strips_prefix() {
-        assert_eq!(relative_to_source("dir/SKILL.md", "dir"), "SKILL.md");
-        assert_eq!(relative_to_source("dir/a/b.md", "dir"), "a/b.md");
-        // root-level file (path == source_dir) → use file_name
-        assert_eq!(relative_to_source("SKILL.md", "SKILL.md"), "SKILL.md");
-    }
-
-    #[test]
-    fn normalize_targets_keeps_known_ides_only() {
-        let out = normalize_targets(vec![
-            "ClaudeCode".into(),
-            "Cursor".into(),
-            "OpenCode".into(),
-            "VsCodeCopilot".into(), // no global skills dir — filtered out
-            "Bogus".into(),
-            "ClaudeCode".into(),
-        ]);
-        assert_eq!(
-            out,
-            vec![
-                "ClaudeCode".to_string(),
-                "Cursor".to_string(),
-                "OpenCode".to_string(),
-            ]
-        );
-    }
 }

@@ -1,4 +1,9 @@
 //! Probe an upstream MCP server without registering it with the runtime.
+//!
+//! Drives the Add Server / Re-test flow: connect, initialize, list tools, then
+//! tear down. On HTTP 401 it runs the interactive OAuth login (loopback
+//! callback + browser) and retries. Progress is streamed to the GUI via a
+//! `ProgressSink`; the 5-minute auth wait is bounded by a timeout.
 
 use std::sync::Arc;
 use std::time::Duration;

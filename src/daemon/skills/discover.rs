@@ -1,5 +1,10 @@
-// GitHub-side IO for the skills subsystem: walk a repo's tree to find every
-// SKILL.md, pull frontmatter (name/description), and fetch raw file bytes.
+//! GitHub-side IO for the skills subsystem: walk a repo's tree to find every
+//! SKILL.md, pull frontmatter (name/description), and fetch raw file bytes.
+//!
+//! `discover_skills` fans out across the enabled `SkillRepo` list (bounded
+//! concurrency) to produce the `SkillCandidate` set shown in the UI; the raw
+//! tree/blob fetchers and frontmatter parser are reused by `SkillManager`
+//! during install. Rate-limit (429/403) responses surface as `RateLimited`.
 
 use serde::Deserialize;
 

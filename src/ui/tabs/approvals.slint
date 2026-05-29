@@ -1,0 +1,190 @@
+// Approvals tab: pending tool-call approvals with approve/deny buttons.
+// Also home to ToolPolicyRowItem / ToolPolicyTable — the per-tool allow/ask/deny
+// editor reused by the Servers tab and the Add Server wizard.
+
+import { Theme } from "../theme.slint";
+import { EmptyState, PillButton } from "../components/primitives.slint";
+import { ApprovalRow, ToolPolicyRow } from "../structs.slint";
+
+export component ApprovalsTab inherits Rectangle {
+    in property <[ApprovalRow]> rows;
+    in property <string> focused-id;
+    callback approve-clicked(string);
+    callback deny-clicked(string);
+
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Pending approvals (" + rows.length + ")" : "No pending approvals";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "When an IDE calls a tool whose policy is `ask`, the request appears here.";
+            height: 200px;
+        }
+        for row in rows : Rectangle {
+            background: row.id == root.focused-id ? Theme.surface-2 : Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: row.id == root.focused-id ? 2px : 1px;
+            border-color: row.id == root.focused-id ? Theme.accent : Theme.border;
+            min-height: 56px;
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: row.server + "." + row.tool;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                    }
+                    Text {
+                        text: row.ide_name + " · " + row.id;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: center;
+                    PillButton {
+                        label: "Approve";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.approve-clicked(row.id); }
+                    }
+                    PillButton {
+                        label: "Deny";
+                        clicked => { root.deny-clicked(row.id); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+export component ToolPolicyRowItem inherits Rectangle {
+    in property <string> name;
+    in property <string> description;
+    in property <string> decision;
+    property <bool> expanded: false;
+    callback change-decision(string);
+    background: Theme.surface;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: Theme.gap-sm;
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: Theme.gap-md;
+            alignment: space-between;
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                horizontal-stretch: 1;
+                ta := TouchArea {
+                    clicked => { root.expanded = !root.expanded; }
+                    Text {
+                        text: root.name;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: center;
+                PillButton {
+                    label: "Allow";
+                    bg-color: root.decision == "allow" ? Theme.accent : Theme.surface-3;
+                    fg-color: root.decision == "allow" ? Theme.bg : Theme.text-secondary;
+                    clicked => { root.change-decision("allow"); }
+                }
+                PillButton {
+                    label: "Ask";
+                    bg-color: root.decision == "ask" ? Theme.warning : Theme.surface-3;
+                    fg-color: root.decision == "ask" ? Theme.bg : Theme.text-secondary;
+                    clicked => { root.change-decision("ask"); }
+                }
+                PillButton {
+                    label: "Deny";
+                    bg-color: root.decision == "deny" ? Theme.danger : Theme.surface-3;
+                    fg-color: root.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
+                    clicked => { root.change-decision("deny"); }
+                }
+            }
+        }
+        if root.description != "" : Text {
+            text: root.description;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+            wrap: word-wrap;
+            overflow: elide;
+            height: root.expanded ? self.preferred-height : 32px;
+        }
+        if root.description != "" : Rectangle {
+            height: 16px;
+            background: transparent;
+            TouchArea {
+                clicked => { root.expanded = !root.expanded; }
+                Text {
+                    text: root.expanded ? "Show less ▴" : "Show more ▾";
+                    color: Theme.accent;
+                    font-size: Theme.font-body-sm;
+                }
+            }
+        }
+    }
+}
+
+
+export component ToolPolicyTable inherits Rectangle {
+    in property <[ToolPolicyRow]> rows;
+    in property <length> list-max-height: 360px;
+    callback change-decision(string, string);
+    VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: Theme.gap-sm;
+            alignment: end;
+            Text {
+                text: "Set all:";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                vertical-alignment: center;
+            }
+            PillButton {
+                label: "🟢";
+                clicked => { root.change-decision("*", "allow"); }
+            }
+            PillButton {
+                label: "🟡";
+                clicked => { root.change-decision("*", "ask"); }
+            }
+            PillButton {
+                label: "🔴";
+                clicked => { root.change-decision("*", "deny"); }
+            }
+        }
+        Flickable {
+            height: min(root.list-max-height, content-layout.preferred-height);
+            viewport-height: content-layout.preferred-height;
+            content-layout := VerticalLayout {
+                spacing: 6px;
+                for tool in rows : ToolPolicyRowItem {
+                    name: tool.name;
+                    description: tool.description;
+                    decision: tool.decision;
+                    change-decision(d) => { root.change-decision(tool.name, d); }
+                }
+            }
+        }
+    }
+}
+

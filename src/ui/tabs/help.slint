@@ -1,0 +1,33 @@
+// Help tab: static about/reference text (URL pattern, log location).
+// Instantiated by main.slint when the Help tab is active.
+
+import { Theme } from "../theme.slint";
+
+export component HelpTab inherits Rectangle {
+    VerticalLayout {
+        spacing: Theme.gap-md;
+        alignment: start;
+        Text {
+            text: "Conduit v0";
+            color: Theme.text-primary;
+            font-size: Theme.font-h3;
+        }
+        Text {
+            text: "MCPs and skills, synced to every IDE. Routes IDE → MCP server traffic with per-tool approval gates, logs every tool call.";
+            color: Theme.text-secondary;
+            font-size: Theme.font-body;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "URL pattern · http://127.0.0.1:<port>/<ide-key>/<server>/mcp";
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+        }
+        Text {
+            text: "Daemon logs · <state_root>/logs/daemon.log";
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body-sm;
+        }
+    }
+}
+

@@ -1,5 +1,9 @@
-// ~/Library/LaunchAgents/com.mcprouter.plist. Spec §"Autostart at login".
-// RunAtLoad=true + KeepAlive={SuccessfulExit: false}.
+//! macOS autostart via a LaunchAgent at `~/Library/LaunchAgents/com.mcprouter.plist`.
+//! Spec §"Autostart at login".
+//!
+//! Writes the plist atomically (`RunAtLoad=true`, `KeepAlive={SuccessfulExit:false}`).
+//! Install/uninstall/is_installed are idempotent. We deliberately don't shell out
+//! to `launchctl`; the user loads it once or the OS picks it up at next login.
 
 use std::fs;
 use std::path::{Path, PathBuf};

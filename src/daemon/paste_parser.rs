@@ -1,13 +1,11 @@
-// Vercel-style paste-magic parser for the Add MCP server import modal.
-// Spec §Add MCP server flow > Import modal.
-//
-// Inputs (any of):
-//   - Full MCP JSON `{ "mcpServers": {...} }`
-//   - JSON fragment `{ "command": ..., "env": ... }`
-//   - Plain JSON object of env vars
-//   - Dotenv-style lines (handles `export`, quotes, comments, blank lines)
-//   - KEY=value single line
-//   - YAML-ish KEY: value lines
+//! Vercel-style "paste-magic" parser for the Add MCP server import modal.
+//! Spec §Add MCP server flow > Import modal.
+//!
+//! `parse` sniffs the format and returns a `ParsedServer`: full MCP JSON
+//! (`{ "mcpServers": {...} }`), a bare command/url fragment, a plain env-var JSON
+//! object, dotenv lines, or `KEY: value`/`KEY=value` pairs. Env/header names
+//! matching `SECRET_KEYWORDS` are flagged `is_secret` so the wizard routes them
+//! to the keyring.
 
 use serde_json::Value;
 use thiserror::Error;

@@ -1,3 +1,11 @@
+//! OS notification bridge: emits a toast for every pending approval.
+//!
+//! Listens on the event bus and spawns one blocking `std::thread` per toast
+//! (notify-rust's action wait blocks). User clicks are forwarded as
+//! `NotificationAction`s to `notification_router`. Linux registers Approve /
+//! Deny / Approve-always actions; macOS/Windows fall back to fire-and-forget
+//! (those backends silently drop unregistered actions).
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

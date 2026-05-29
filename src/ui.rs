@@ -1,5 +1,9 @@
-// Slint-generated module. The lint rules in CLAUDE.md don't apply to code we
-// don't author — slint-build emits the generated tree here.
+//! Re-exports the Slint-generated UI types and the tab-index constants.
+//!
+//! `include_modules!()` pulls in the tree emitted by `slint-build` from
+//! `src/ui/main.slint`. The crate's lint rules don't apply to generated code, so
+//! the blanket `#![allow(...)]` below silences it.
+
 #![allow(
     clippy::all,
     clippy::pedantic,

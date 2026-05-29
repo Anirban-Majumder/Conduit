@@ -1,6 +1,9 @@
-// Built-in lifecycle allow-list. Spec Appendix A — 30 top MCP servers with
-// recommended lifecycle_seconds. Used on Add Server to seed defaults; user
-// can override in GUI.
+//! Built-in lifecycle allow-list (spec Appendix A).
+//!
+//! Roughly 30 top MCP servers with recommended `lifecycle_seconds`. Used on
+//! Add Server to seed defaults; the user can override in the GUI.
+//! `lifecycle::detect_lifecycle` consults `lookup` and `is_browser_pkg` during
+//! auto-detection.
 
 const TABLE: &[(&str, i32)] = &[
     ("@modelcontextprotocol/server-filesystem", 30),

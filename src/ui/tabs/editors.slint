@@ -1,0 +1,221 @@
+// Editors tab: master/detail over detected IDEs, with an inline editor for the
+// selected IDE's MCP config and track/retrack/remove actions.
+// Instantiated by main.slint when the Editors tab is active.
+
+import { Theme } from "../theme.slint";
+import { EmptyState, PillButton } from "../components/primitives.slint";
+import { IdeRow } from "../structs.slint";
+
+export component EditorsTab inherits Rectangle {
+    in property <[IdeRow]> rows;
+    in-out property <string> selected;
+    in property <string> selected-status;
+    in property <string> selected-display;
+    in property <string> selected-config-text;
+    in property <string> selected-config-status;
+    in property <bool> selected-config-status-is-error;
+    in property <bool> selected-config-dirty;
+    in property <bool> refreshing;
+    callback remove-clicked(string);
+    callback retrack-clicked(string);
+    callback refresh-clicked();
+    callback reveal-clicked(string);
+    callback select(string);
+    callback edit-text(string);
+    callback save();
+    callback reload();
+    min-height: 480px;
+    HorizontalLayout {
+        spacing: Theme.gap-md;
+
+        VerticalLayout {
+            width: 300px;
+            spacing: Theme.gap-sm;
+            alignment: start;
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: rows.length > 0 ? "IDEs (" + rows.length + ")" : "No IDEs detected";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                }
+                PillButton {
+                    label: root.refreshing ? "Scanning…" : "Refresh";
+                    bg-color: Theme.surface-3;
+                    fg-color: Theme.text-primary;
+                    clicked => {
+                        if (!root.refreshing) { root.refresh-clicked(); }
+                    }
+                }
+            }
+            if rows.length == 0 : EmptyState {
+                text: "No supported IDEs found on this machine. Install one and click Refresh.";
+                height: 160px;
+            }
+            for row in rows : Rectangle {
+                background: row.kind == root.selected ? Theme.surface-2 : Theme.surface;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: row.kind == root.selected ? Theme.accent : Theme.border;
+                height: 72px;
+                TouchArea {
+                    clicked => { root.select(row.kind); }
+                }
+                VerticalLayout {
+                    padding: Theme.gap-sm;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        Text {
+                            text: row.display_name;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body;
+                            vertical-alignment: center;
+                        }
+                        if row.status == "stale" : Rectangle {
+                            background: Theme.warning;
+                            border-radius: 999px;
+                            height: 16px;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "removed?";
+                                    color: Theme.bg;
+                                    font-size: Theme.font-eyebrow;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if row.status == "not_tracked" : Rectangle {
+                            background: Theme.text-tertiary;
+                            border-radius: 999px;
+                            height: 16px;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                Text {
+                                    text: "not tracked";
+                                    color: Theme.bg;
+                                    font-size: Theme.font-eyebrow;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "key " + row.key;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border;
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: Theme.gap-sm;
+                if root.selected == "" : Text {
+                    text: "Select an IDE on the left.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    vertical-stretch: 1;
+                }
+                if root.selected != "" : HorizontalLayout {
+                    alignment: space-between;
+                    spacing: Theme.gap-sm;
+                    Text {
+                        text: root.selected-display;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-h3;
+                        vertical-alignment: center;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        if root.selected-status == "active" : PillButton {
+                            label: "Reveal";
+                            clicked => { root.reveal-clicked(root.selected); }
+                        }
+                        if root.selected-status == "active" : PillButton {
+                            label: "Reload";
+                            clicked => { root.reload(); }
+                        }
+                        if root.selected-status == "active" : PillButton {
+                            label: root.selected-config-dirty ? "Save *" : "Save";
+                            bg-color: root.selected-config-dirty ? Theme.accent : Theme.surface-3;
+                            fg-color: root.selected-config-dirty ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.save(); }
+                        }
+                        if root.selected-status != "not_tracked" : PillButton {
+                            label: "Remove";
+                            clicked => { root.remove-clicked(root.selected); }
+                        }
+                        if root.selected-status == "not_tracked" : PillButton {
+                            label: "Track this IDE";
+                            bg-color: Theme.accent;
+                            fg-color: Theme.bg;
+                            clicked => { root.retrack-clicked(root.selected); }
+                        }
+                    }
+                }
+                if root.selected != "" && root.selected-config-status != "" : Rectangle {
+                    background: root.selected-config-status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 28px;
+                    HorizontalLayout {
+                        padding: 6px;
+                        Text {
+                            text: root.selected-config-status;
+                            color: root.selected-config-status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if root.selected != "" && root.selected-status == "active" : Rectangle {
+                    background: Theme.bg;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    vertical-stretch: 1;
+                    Flickable {
+                        viewport-height: editor.preferred-height;
+                        editor := TextInput {
+                            text: root.selected-config-text;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            font-family: "Space Mono";
+                            single-line: false;
+                            wrap: word-wrap;
+                            edited => { root.edit-text(self.text); }
+                        }
+                    }
+                }
+                if root.selected != "" && root.selected-status == "stale" : Text {
+                    text: "This IDE is no longer on disk. Its bindings are preserved; reinstall + Refresh to bring it back.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                if root.selected != "" && root.selected-status == "not_tracked" : Text {
+                    text: "Conduit has purged its MCP entries from this IDE. Click Track this IDE to start managing it again.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+

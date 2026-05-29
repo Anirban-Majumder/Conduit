@@ -1,12 +1,15 @@
-// Mirror a managed-skill directory into each agentic IDE's skills folder.
-// Prefer a directory symlink (cheap, edits propagate); fall back to recursive
-// copy when symlinks aren't available (sandboxed Windows accounts, etc.).
+//! Mirror a managed-skill directory into each agentic IDE's skills folder.
+//!
+//! Prefer a directory symlink (cheap, edits propagate); fall back to recursive
+//! copy when symlinks aren't available (sandboxed Windows accounts, etc.).
+//! Writes go through a sibling staging path then atomic rename. Synchronous
+//! `std::fs` by design — callers invoke these from `spawn_blocking`.
 
 use std::fs;
 use std::path::Path;
 
-use crate::daemon::errors::SkillError;
 use crate::daemon::clients::{self, ide_kind_from_db_name};
+use crate::daemon::errors::SkillError;
 
 pub fn sync_to_target(source: &Path, ide_db_name: &str) -> Result<(), SkillError> {
     let ide = ide_kind_from_db_name(ide_db_name)

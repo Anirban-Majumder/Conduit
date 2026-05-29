@@ -1,6 +1,11 @@
-// Auto-detect lifecycle_seconds rules per spec §"Server lifecycle" (rule precedence).
-//
-// Auto-detection only UPGRADES (longer-lived), never downgrades.
+//! Auto-detects `lifecycle_seconds` per spec §"Server lifecycle".
+//!
+//! `detect_lifecycle` reads init signals and the `allow_list` to decide a
+//! value (rule precedence); `lifecycle_seconds` is `0` = ephemeral,
+//! `-1` = persistent, `N > 0` = idle TTL seconds.
+//!
+//! Load-bearing invariant: auto-detection only UPGRADES (longer-lived), never
+//! downgrades.
 
 use std::time::Duration;
 

@@ -1,4 +1,9 @@
-//! Dispatch tray-toast button clicks back into the daemon.
+//! Dispatch notification-toast button clicks back into the daemon.
+//!
+//! `notifications.rs` forwards `NotificationAction`s here; this module resolves
+//! the approval via `ApprovalCenter` and (for "Approve always") upgrades the
+//! policy. Dispatch is idempotent — stale ids are no-ops because `resolve`
+//! checks the row's current status.
 
 use std::sync::Arc;
 

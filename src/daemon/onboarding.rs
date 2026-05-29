@@ -1,4 +1,11 @@
-//! Headless-startup gating: window-on-startup + first-run + background hint.
+//! Headless-startup gating: decides whether to show the window at launch, tracks
+//! first-run completion, and fires the one-time "running in background" hint.
+//!
+//! All state lives in `settings_kv` (`has_completed_first_run`,
+//! `open_window_at_startup`, `shown_background_hint`). Before onboarding completes
+//! the window always shows; afterwards it honors the saved preference.
+//! `check_background_hint` flips its flag before returning `Fire`, so it is safe
+//! to call repeatedly.
 
 use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;

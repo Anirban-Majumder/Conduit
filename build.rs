@@ -1,3 +1,5 @@
+//! Build script: compiles `src/ui/main.slint` into Rust via `slint-build`.
+
 #[expect(
     clippy::expect_used,
     reason = "build scripts panic on failure by convention"

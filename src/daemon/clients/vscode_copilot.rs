@@ -1,3 +1,5 @@
+//! VS Code Copilot config-path resolution (no global skills directory).
+
 // Repo:   https://github.com/microsoft/vscode-copilot-chat
 // MCP:    <Code/User>/mcp.json — top-level `servers`; schema `{type:"http", url}`. Source: https://code.visualstudio.com/docs/copilot/reference/mcp-configuration
 // Skills: not supported (prompt files are workspace-scoped only: .github/prompts/*.prompt.md). Source: https://code.visualstudio.com/docs/copilot/customization/prompt-files

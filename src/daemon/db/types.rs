@@ -1,3 +1,10 @@
+//! Shared row/value types for the DB layer.
+//!
+//! Plain data structs mirroring the `state.db` tables (`Server`, `Policy`,
+//! `PendingApproval`, `AuditEntry`, `IdeRecord`, `Skill`, ...) plus the small
+//! enums (`Decision`, `ApprovalStatus`, `IdeStatus`, ...) with `as_db_str` /
+//! `from_db_str` mapping to their textual DB representations. No SQL here.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
