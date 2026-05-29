@@ -271,6 +271,12 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         auth_failure_msg: SharedString::from(
             server.last_auth_error_msg.clone().unwrap_or_default(),
         ),
+        latency_label: SharedString::from(
+            server
+                .last_init_duration_ms
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_default(),
+        ),
     };
 
     let name_owned = name.to_string();
