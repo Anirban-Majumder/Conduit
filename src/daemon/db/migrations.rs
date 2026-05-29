@@ -5,8 +5,6 @@
 //! FK rebuild, legacy `ide_keys`/`managed_ide_configs` → `ides` migration).
 //! Everything here must be safe to re-run on an already-migrated database.
 
-use std::path::{Path, PathBuf};
-
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
@@ -24,13 +22,13 @@ const IDES_SQL: &str = include_str!("migrations/0004_ides.sql");
 const OAUTH_DRAFTS_SQL: &str = include_str!("migrations/0005_oauth_drafts.sql");
 
 #[cfg(all(unix, not(debug_assertions)))]
-pub(super) fn restrict_db_perms(path: &Path) {
+pub(super) fn restrict_db_perms(path: &std::path::Path) {
     use std::ffi::OsString;
     use std::os::unix::fs::PermissionsExt;
     for suffix in ["", "-wal", "-shm"] {
         let mut name: OsString = path.as_os_str().to_os_string();
         name.push(suffix);
-        let p = PathBuf::from(name);
+        let p = std::path::PathBuf::from(name);
         if !p.exists() {
             continue;
         }
@@ -41,7 +39,7 @@ pub(super) fn restrict_db_perms(path: &Path) {
 }
 
 #[cfg(all(windows, not(debug_assertions)))]
-pub(super) fn restrict_db_perms(path: &Path) {
+pub(super) fn restrict_db_perms(path: &std::path::Path) {
     use std::ffi::OsString;
     let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
         (Ok(domain), Ok(name)) => format!("{domain}\\{name}"),
@@ -54,7 +52,7 @@ pub(super) fn restrict_db_perms(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let mut name: OsString = path.as_os_str().to_os_string();
         name.push(suffix);
-        let p = PathBuf::from(&name);
+        let p = std::path::PathBuf::from(&name);
         if !p.exists() {
             continue;
         }
