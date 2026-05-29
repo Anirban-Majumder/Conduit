@@ -1,0 +1,286 @@
+// Dashboard tab: at-a-glance overview and the app's landing tab (tab 0).
+// Composes four KPI stat cards, Servers/Skills mini-lists, and a recent-activity
+// feed — all reusing the servers/skills/audit models already pushed by the glue,
+// plus DashboardStats for the numeric headline counts. Cards and rows are
+// clickable; navigation is delegated to main.slint via open-tab / open-server.
+
+import { Theme } from "../theme.slint";
+import { StatusDot } from "../components/primitives.slint";
+import { DashboardStats, ServerRow, SkillRow, AuditRow } from "../structs.slint";
+
+component StatCard inherits Rectangle {
+    in property <string> label;
+    in property <int> value;
+    in property <string> sub;
+    in property <color> tint: Theme.accent;
+    callback clicked <=> ta.clicked;
+
+    background: Theme.surface;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: ta.has-hover ? Theme.border-strong : Theme.border;
+    horizontal-stretch: 1;
+    height: 96px;
+
+    ta := TouchArea {
+        VerticalLayout {
+            padding: Theme.gap-md;
+            spacing: 4px;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text-tertiary;
+                font-size: Theme.font-eyebrow;
+            }
+            Text {
+                text: root.value;
+                color: root.tint;
+                font-size: Theme.font-h2;
+                font-weight: 700;
+            }
+            Text {
+                text: root.sub;
+                color: Theme.text-secondary;
+                font-size: Theme.font-body-sm;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component SectionPanel inherits Rectangle {
+    in property <string> title;
+    background: Theme.surface;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border;
+    horizontal-stretch: 1;
+}
+
+export component DashboardTab inherits Rectangle {
+    in property <DashboardStats> stats;
+    in property <[ServerRow]> servers;
+    in property <[SkillRow]> skills;
+    in property <[AuditRow]> audit;
+    callback open-tab(int);
+    callback open-server(string);
+
+    VerticalLayout {
+        spacing: Theme.gap-md;
+
+        HorizontalLayout {
+            spacing: Theme.gap-md;
+            StatCard {
+                label: "SERVERS";
+                value: root.stats.server_count;
+                sub: root.stats.server_auth_failures > 0
+                    ? root.stats.server_live + " live · " + root.stats.server_auth_failures + " need auth"
+                    : root.stats.server_live + " live";
+                clicked => { root.open-tab(1); }
+            }
+            StatCard {
+                label: "SKILLS";
+                value: root.stats.skill_count;
+                sub: "installed";
+                clicked => { root.open-tab(3); }
+            }
+            StatCard {
+                label: "EDITORS";
+                value: root.stats.editor_count;
+                sub: "connected";
+                clicked => { root.open-tab(2); }
+            }
+            StatCard {
+                label: "CALLS (24H)";
+                value: root.stats.calls_24h;
+                sub: root.stats.denied_24h + " denied";
+                tint: root.stats.denied_24h > 0 ? Theme.warning : Theme.accent;
+                clicked => { root.open-tab(4); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.gap-md;
+            vertical-stretch: 1;
+
+            SectionPanel {
+                title: "Servers";
+                VerticalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-sm;
+                    Text {
+                        text: "SERVERS";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    if root.servers.length == 0 : Text {
+                        text: "No servers configured yet.";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                    Flickable {
+                        viewport-height: servers-stack.preferred-height;
+                        servers-stack := VerticalLayout {
+                            spacing: 2px;
+                            for s in root.servers : Rectangle {
+                                height: 36px;
+                                background: srv-ta.has-hover ? Theme.surface-2 : transparent;
+                                border-radius: Theme.radius-sm;
+                                srv-ta := TouchArea {
+                                    clicked => { root.open-server(s.name); }
+                                    HorizontalLayout {
+                                        padding-left: Theme.gap-sm;
+                                        padding-right: Theme.gap-sm;
+                                        spacing: Theme.gap-sm;
+                                        alignment: space-between;
+                                        HorizontalLayout {
+                                            spacing: Theme.gap-sm;
+                                            alignment: start;
+                                            StatusDot {
+                                                tint: s.auth_failure ? Theme.warning : Theme.success;
+                                            }
+                                            Text {
+                                                text: s.name;
+                                                color: Theme.text-primary;
+                                                font-size: Theme.font-body-sm;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        Text {
+                                            text: s.auth_failure ? "needs auth" : s.tool_count_label;
+                                            color: s.auth_failure ? Theme.warning : Theme.text-tertiary;
+                                            font-size: Theme.font-body-sm;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            SectionPanel {
+                title: "Skills";
+                VerticalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-sm;
+                    Text {
+                        text: "SKILLS";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    if root.skills.length == 0 : Text {
+                        text: "No skills installed yet.";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                    Flickable {
+                        viewport-height: skills-stack.preferred-height;
+                        skills-stack := VerticalLayout {
+                            spacing: 2px;
+                            for sk in root.skills : Rectangle {
+                                height: 36px;
+                                background: skl-ta.has-hover ? Theme.surface-2 : transparent;
+                                border-radius: Theme.radius-sm;
+                                skl-ta := TouchArea {
+                                    clicked => { root.open-tab(3); }
+                                    HorizontalLayout {
+                                        padding-left: Theme.gap-sm;
+                                        padding-right: Theme.gap-sm;
+                                        spacing: Theme.gap-sm;
+                                        alignment: space-between;
+                                        Text {
+                                            text: sk.name;
+                                            color: Theme.text-primary;
+                                            font-size: Theme.font-body-sm;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: sk.repo_label;
+                                            color: Theme.text-tertiary;
+                                            font-size: Theme.font-body-sm;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        SectionPanel {
+            title: "Recent activity";
+            height: 200px;
+            VerticalLayout {
+                padding: Theme.gap-md;
+                spacing: Theme.gap-sm;
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "RECENT ACTIVITY";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    TouchArea {
+                        width: 60px;
+                        clicked => { root.open-tab(4); }
+                        Text {
+                            text: "View log →";
+                            color: Theme.accent;
+                            font-size: Theme.font-body-sm;
+                            horizontal-alignment: right;
+                        }
+                    }
+                }
+                if root.audit.length == 0 : Text {
+                    text: "No tool calls recorded yet.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                }
+                Flickable {
+                    viewport-height: activity-stack.preferred-height;
+                    activity-stack := VerticalLayout {
+                        spacing: 2px;
+                        for a in root.audit : Rectangle {
+                            height: 28px;
+                            HorizontalLayout {
+                                spacing: Theme.gap-sm;
+                                alignment: space-between;
+                                Text {
+                                    text: a.ide_name + " → " + a.server + "." + a.tool;
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: a.decision;
+                                    color: (a.decision == "deny" || a.decision == "ask_denied" || a.decision == "ask_timeout" || a.decision == "error")
+                                        ? Theme.danger
+                                        : Theme.text-tertiary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: a.latency_label;
+                                    color: Theme.text-tertiary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    width: 56px;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

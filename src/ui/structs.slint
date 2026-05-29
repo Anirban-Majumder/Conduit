@@ -9,6 +9,17 @@ export struct ApprovalRow {
     server: string,
     tool: string,
     created_at: string,
+    args_json: string,
+}
+
+export struct DashboardStats {
+    server_count: int,
+    server_live: int,
+    server_auth_failures: int,
+    skill_count: int,
+    editor_count: int,
+    calls_24h: int,
+    denied_24h: int,
 }
 
 export struct ServerRow {

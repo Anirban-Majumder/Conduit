@@ -1,12 +1,12 @@
 // Servers tab: master/detail view of configured MCP servers.
 // Defines HealthCard (probe status) and TargetToggle (the per-IDE on/off chip,
 // also reused by the Skills tab), plus ServersTab which composes them with the
-// shared ToolPolicyTable from approvals.slint.
+// shared ToolPolicyTable from components/tool_policy.slint.
 
 import { Theme } from "../theme.slint";
 import { PillButton, StatusDot } from "../components/primitives.slint";
 import { ServerDetail, ServerIdeTarget, ServerRow, ToolPolicyRow } from "../structs.slint";
-import { ToolPolicyTable } from "../tabs/approvals.slint";
+import { ToolPolicyTable } from "../components/tool_policy.slint";
 
 export component HealthCard inherits Rectangle {
     in property <ServerDetail> detail;

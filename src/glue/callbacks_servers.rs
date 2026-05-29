@@ -59,6 +59,27 @@ pub(crate) fn install_server_callbacks(
         });
     });
 
+    let approvals_for_always = approvals.clone();
+    let db_for_always = db.clone();
+    let rt_for_always = rt.clone();
+    window.on_approve_always_clicked(move |id, server, tool| {
+        let approvals = approvals_for_always.clone();
+        let db = db_for_always.clone();
+        let (id, server, tool) = (id.to_string(), server.to_string(), tool.to_string());
+        rt_for_always.spawn(async move {
+            if let Err(e) = approvals.resolve(&id, ApprovalStatus::Approved).await {
+                tracing::warn!(error = %e, "approve always resolve failed");
+                return;
+            }
+            if let Err(e) = db
+                .set_policy(&server, &tool, Decision::Allow, DecisionSource::User)
+                .await
+            {
+                tracing::warn!(error = %e, server = %server, tool = %tool, "approve always policy upgrade failed");
+            }
+        });
+    });
+
     let db_for_remove_server = db.clone();
     let bus_for_remove_server = bus.clone();
     let rt_for_remove_server = rt.clone();
