@@ -38,6 +38,7 @@ component KpiCard inherits GlassPanel {
     callback clicked <=> ta.clicked;
     border-color: ta.has-hover ? Theme.border-strong : Theme.border;
     horizontal-stretch: 1;
+    height: 116px;
 
     ta := TouchArea {
         VerticalLayout {
@@ -88,10 +89,11 @@ export component DashboardTab inherits Rectangle {
     VerticalLayout {
         spacing: Theme.gap-lg;
 
-        // Hero + KPI grid.
+        // Hero + KPI grid. Height follows the KPI grid (2 × card + gap) so the
+        // bottom cards never overflow into the panels below.
         HorizontalLayout {
             spacing: Theme.gap-lg;
-            height: 260px;
+            vertical-stretch: 0;
 
             // Health ring hero.
             GlassPanel {
@@ -250,6 +252,7 @@ export component DashboardTab inherits Rectangle {
                         font-size: Theme.font-body-sm;
                     }
                     Flickable {
+                        vertical-stretch: 1;
                         viewport-height: srv-stack.preferred-height;
                         srv-stack := VerticalLayout {
                             spacing: Theme.gap-sm;
@@ -380,6 +383,7 @@ export component DashboardTab inherits Rectangle {
                         font-size: Theme.font-body-sm;
                     }
                     Flickable {
+                        vertical-stretch: 1;
                         viewport-height: act-stack.preferred-height;
                         act-stack := VerticalLayout {
                             spacing: 0px;

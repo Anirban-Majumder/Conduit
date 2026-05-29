@@ -181,6 +181,7 @@ export component ServersTab inherits Rectangle {
                 wrap: word-wrap;
             }
             Flickable {
+                vertical-stretch: 1;
                 viewport-height: srv-list.preferred-height;
                 srv-list := VerticalLayout {
                     spacing: Theme.gap-sm;
