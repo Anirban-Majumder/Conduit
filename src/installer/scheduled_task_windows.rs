@@ -2,7 +2,7 @@
 //! Spec §"Autostart at login".
 //!
 //! Renders a task XML and registers it through `schtasks /Create /XML`.
-//! Install/uninstall/is_installed shell out to `schtasks` and are idempotent —
+//! `Install/uninstall/is_installed` shell out to `schtasks` and are idempotent —
 //! a missing task on delete/query is treated as success.
 
 use std::path::{Path, PathBuf};
