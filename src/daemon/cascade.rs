@@ -1,14 +1,22 @@
+//! Server deletion with cascade: purge the server's managed entries from every
+//! IDE config, cancel its pending approvals, and drop its OAuth tokens.
+//!
+//! `delete_server_with_cascade` plans targets from `managed_ide_configs`, rewrites
+//! each IDE file off-thread (bounded by `APPLY_PARALLELISM`), then commits the DB
+//! delete with the surviving entries. Per-IDE failures are collected into the
+//! report and skipped, never aborting the whole cascade.
+
 use std::path::PathBuf;
 
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::daemon::clients::ide_kind_from_db_name;
+use crate::daemon::clients::{self, ClientError};
 use crate::daemon::db::types::{ApprovalStatus, ManagedIdeConfig};
 use crate::daemon::db::{CascadeTrim, Db};
 use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::clients::ide_kind_from_db_name;
-use crate::daemon::clients::{self, ClientError};
 use crate::daemon::secrets;
 
 const APPLY_PARALLELISM: usize = 4;

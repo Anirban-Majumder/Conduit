@@ -1,3 +1,9 @@
+//! Resolves all on-disk locations under the Conduit config root.
+//!
+//! `from_user_dirs` anchors at the OS config dir (`dirs::config_dir`) so paths
+//! stay correct across Linux/macOS/Windows; `under` is for tests. Every other
+//! method derives a child path (state.db, config.toml, installs, skills, logs).
+
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;

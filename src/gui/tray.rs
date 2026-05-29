@@ -1,3 +1,11 @@
+//! System tray icon, menu, and attention-badge updater.
+//!
+//! The tray thread owns the `!Send` `TrayIcon`/`MenuItem`s and runs its own
+//! poll loop (menu events + command mpsc). A separate tokio task watches the
+//! event bus and pushes pending-approval / auth-failure counts in as `TrayCmd`s,
+//! driving the attention-dot icon swap. Returns `None` when no SNI host is
+//! present (Linux without a tray daemon); the caller keeps the handle alive.
+
 use std::sync::{
     atomic::{AtomicI64, Ordering},
     mpsc, Arc,

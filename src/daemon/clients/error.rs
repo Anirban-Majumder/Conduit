@@ -1,3 +1,9 @@
+//! Error type for the IDE config writers.
+//!
+//! `ClientError` covers the failure modes of reading/parsing/writing an IDE's
+//! MCP config (JSON or TOML), missing per-OS path mappings, and non-UTF-8
+//! paths. Returned by every public function in this `clients` module.
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

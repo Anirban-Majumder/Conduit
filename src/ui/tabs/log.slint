@@ -1,0 +1,58 @@
+// Log tab: read-only list of recent audit rows (tool call, policy decision,
+// latency) with a status dot colored by decision.
+// Instantiated by main.slint when the Log tab is active.
+
+import { Theme } from "../theme.slint";
+import { EmptyState, StatusDot } from "../components/primitives.slint";
+import { AuditRow } from "../structs.slint";
+
+export component LogTab inherits Rectangle {
+    in property <[AuditRow]> rows;
+    VerticalLayout {
+        spacing: Theme.gap-sm;
+        Text {
+            text: rows.length > 0 ? "Recent audit (" + rows.length + ")" : "Audit log empty";
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        if rows.length == 0 : EmptyState {
+            text: "Every tool call is logged here with the policy decision + latency.";
+            height: 200px;
+        }
+        for row in rows : Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border;
+            height: 48px;
+            HorizontalLayout {
+                padding-left: Theme.gap-md;
+                padding-right: Theme.gap-md;
+                spacing: Theme.gap-md;
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: Theme.gap-md;
+                    alignment: center;
+                    StatusDot {
+                        tint: row.decision == "allow" || row.decision == "ask-approved" ? Theme.success
+                             : row.decision == "deny" || row.decision == "ask-denied" ? Theme.danger
+                             : Theme.warning;
+                    }
+                    Text {
+                        text: row.ide_name + " → " + row.server + "." + row.tool;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: row.decision + " · " + row.latency_label;
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+

@@ -1,5 +1,9 @@
-// Global hotkey. Spec §"Open questions" — Wayland-no-SNI fallback to reach the
-// GUI window when the tray is unavailable.
+//! Global focus hotkey (Ctrl+Alt+Shift+M) to raise the GUI window.
+//!
+//! Wayland-no-SNI fallback for when the tray is unavailable (spec §"Open
+//! questions"). The registration handle lives for the process lifetime — main
+//! holds it and dropping it unregisters. The event pump runs on its own
+//! `std::thread` and invokes the caller-supplied focus closure.
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};

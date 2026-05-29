@@ -1,3 +1,10 @@
+//! `config.toml` schema and loader for user-tunable settings.
+//!
+//! `Settings` (daemon/gui/notifications sections) deserializes with `serde(default)`
+//! so a partial or absent file always yields a valid value. `config.toml` is
+//! authoritative for these settings, not the DB. The config watcher reloads via
+//! `load_or_default` and publishes `Event::ConfigReloaded`.
+
 use std::path::Path;
 
 use serde::Deserialize;

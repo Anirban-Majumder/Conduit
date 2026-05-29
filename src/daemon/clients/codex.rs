@@ -1,3 +1,5 @@
+//! Codex config-path and skills-dir resolution (TOML config; honors `$CODEX_HOME`).
+
 // Repo:   https://github.com/openai/codex
 // MCP:    $CODEX_HOME/config.toml (default ~/.codex/config.toml) — top-level `[mcp_servers.<name>]`; remote uses `url` only (transport inferred, no `type`). Source: https://raw.githubusercontent.com/openai/codex/main/codex-rs/config/src/mcp_types.rs
 // Skills: ~/.codex/skills (deprecated; current is ~/.agents/skills, plus repo-local .agents/skills). Source: https://raw.githubusercontent.com/openai/codex/main/codex-rs/core-skills/src/loader.rs

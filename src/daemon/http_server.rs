@@ -1,5 +1,12 @@
-// axum HTTP server bound to 127.0.0.1. Spec §"Transport: HTTP MCP".
-// URL: http://localhost:<port>/<ide-key>/<server>/mcp
+//! axum HTTP server bound to 127.0.0.1 — the MCP wire endpoint IDEs connect to.
+//! Spec §"Transport: HTTP MCP". URL: `http://localhost:<port>/<ide-key>/<server>/mcp`.
+//!
+//! `handle_mcp` parses the JSON-RPC envelope, short-circuits notifications,
+//! handles `initialize`/`ping` locally, validates the IDE key and server, then
+//! hands tool traffic to `mcp_proxy::route_tool_call`. Outcomes map to JSON-RPC
+//! results or the spec's error codes (`USER_DENIED` … `INTERNAL`). `AppState` is
+//! the shared handle every handler clones. Serves until the `CancellationToken`
+//! fires (graceful shutdown).
 
 use std::sync::Arc;
 

@@ -1,3 +1,11 @@
+//! Streamable-HTTP transport for HTTP MCP upstreams.
+//!
+//! `connect` handles static-bearer / no-auth servers; `connect_oauth` drives
+//! the rmcp `AuthClient` path against credentials in `KeyringCredentialStore`,
+//! which auto-refreshes tokens. A keyring miss or read failure deliberately
+//! falls through to the non-OAuth path so a broken keyring can't brick plain
+//! HTTP servers.
+
 use rmcp::service::{serve_client_with_ct, RoleClient, RunningService};
 use rmcp::transport::auth::{AuthClient, AuthorizationManager, CredentialStore};
 use rmcp::transport::streamable_http_client::{

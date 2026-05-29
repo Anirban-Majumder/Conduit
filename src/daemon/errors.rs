@@ -1,3 +1,10 @@
+//! Shared `thiserror` error enums for the daemon's library modules.
+//!
+//! Each enum is typed (not erased to `anyhow`) so callers can match on specific
+//! failures — `ConfigError`, `WatcherError`, `DbError`, `RuntimeError`, `SkillError`.
+//! Module-local error types (e.g. `ApprovalError`, `ProxyError`, `IpcError`) live
+//! beside their code and often wrap these via `#[from]`.
+
 use std::path::PathBuf;
 
 use thiserror::Error;

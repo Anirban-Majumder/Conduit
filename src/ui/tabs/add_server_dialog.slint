@@ -1,0 +1,352 @@
+// Add/Edit MCP Server wizard dialog: connection form (step 1), probe + OAuth
+// sign-in hold (step 2), and per-tool policy (step 3). Wrapped in ModalShell.
+// Instantiated by main.slint behind the show-add-server-dialog flag.
+
+import { Theme } from "../theme.slint";
+import { ModalShell, WizardStepIndicator } from "../components/modal.slint";
+import { LabeledInput, LabeledTextArea, PillButton } from "../components/primitives.slint";
+import { ToolPolicyRow } from "../structs.slint";
+import { ToolPolicyTable } from "../tabs/approvals.slint";
+
+export component AddServerDialog inherits Rectangle {
+    in-out property <string> name;
+    in-out property <string> command;
+    in-out property <string> args;
+    in-out property <string> url;
+    in-out property <string> headers;
+    in-out property <string> transport;
+    in-out property <string> paste;
+    in-out property <string> status;
+    in-out property <bool> status-is-error: false;
+    in-out property <bool> busy: false;
+    in-out property <string> lifecycle-mode: "auto";
+    in-out property <string> lifecycle-custom: "300";
+    in property <int> step;
+    in property <string> phase-status;
+    in property <string> oauth-url;
+    in property <[ToolPolicyRow]> tools;
+    in property <bool> edit-mode: false;
+    callback start-probe();
+    callback wizard-save();
+    callback wizard-back();
+    callback change-tool-policy(string, string);
+    callback dismiss();
+    callback parse();
+    callback copy-oauth-url();
+
+    ModalShell {
+        title: root.edit-mode ? "Edit MCP Server" : "Add MCP Server";
+        dismiss => { root.dismiss(); }
+
+        VerticalLayout {
+            spacing: Theme.gap-md;
+
+            WizardStepIndicator { step: root.step; }
+
+            if root.step == 1 : VerticalLayout {
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    PillButton {
+                        label: "http";
+                        bg-color: root.transport == "http" ? Theme.accent : Theme.surface-3;
+                        fg-color: root.transport == "http" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.transport = "http"; }
+                    }
+                    PillButton {
+                        label: "stdio";
+                        bg-color: root.transport == "stdio" ? Theme.accent : Theme.surface-3;
+                        fg-color: root.transport == "stdio" ? Theme.bg : Theme.text-secondary;
+                        clicked => { root.transport = "stdio"; }
+                    }
+                }
+                LabeledInput {
+                    label: root.edit-mode
+                        ? "Name (locked — delete + recreate to rename)"
+                        : "Name (letters, digits, _, -, 1–64 chars)";
+                    text: root.name;
+                    read-only: root.edit-mode;
+                    edited(t) => { root.name = t; }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Lifecycle";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        PillButton {
+                            label: "Auto";
+                            bg-color: root.lifecycle-mode == "auto" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "auto" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "auto"; }
+                        }
+                        PillButton {
+                            label: "Ephemeral";
+                            bg-color: root.lifecycle-mode == "ephemeral" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "ephemeral" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "ephemeral"; }
+                        }
+                        PillButton {
+                            label: "Persistent";
+                            bg-color: root.lifecycle-mode == "persistent" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "persistent" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "persistent"; }
+                        }
+                        PillButton {
+                            label: "Custom";
+                            bg-color: root.lifecycle-mode == "custom" ? Theme.accent : Theme.surface-3;
+                            fg-color: root.lifecycle-mode == "custom" ? Theme.bg : Theme.text-secondary;
+                            clicked => { root.lifecycle-mode = "custom"; }
+                        }
+                    }
+                    if root.lifecycle-mode == "custom" : LabeledInput {
+                        label: "Idle TTL (seconds)";
+                        text: root.lifecycle-custom;
+                        edited(t) => { root.lifecycle-custom = t; }
+                    }
+                    Text {
+                        text: root.lifecycle-mode == "auto" ? "Auto-detect from allow-list (default 300s idle, can upgrade to persistent based on capabilities)"
+                            : root.lifecycle-mode == "ephemeral" ? "Spawn, single call, kill on return"
+                            : root.lifecycle-mode == "persistent" ? "Lazy spawn on first use; keep alive while daemon runs"
+                            : "Kill after N seconds of no calls";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.transport == "stdio" : LabeledInput {
+                    label: "Command";
+                    text: root.command;
+                    edited(t) => { root.command = t; }
+                }
+                if root.transport == "stdio" : LabeledInput {
+                    label: "Args, space-separated";
+                    text: root.args;
+                    edited(t) => { root.args = t; }
+                }
+                if root.transport == "http" : LabeledInput {
+                    label: "URL";
+                    text: root.url;
+                    edited(t) => { root.url = t; }
+                }
+                if root.transport == "http" : LabeledInput {
+                    label: "Headers (KEY=value, comma separated)";
+                    text: root.headers;
+                    edited(t) => { root.headers = t; }
+                }
+                LabeledTextArea {
+                    label: "Paste full MCP JSON to auto-fill — parses as you type";
+                    text: root.paste;
+                    edited(t) => {
+                        root.paste = t;
+                        paste-debounce.running = false;
+                        paste-debounce.running = true;
+                    }
+                }
+                paste-debounce := Timer {
+                    interval: 600ms;
+                    running: false;
+                    triggered => {
+                        self.running = false;
+                        if (root.paste != "") { root.parse(); }
+                    }
+                }
+
+                if root.status != "" : Rectangle {
+                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        Text {
+                            text: root.status;
+                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        label: "Test connection";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.start-probe(); }
+                    }
+                }
+            }
+
+            if root.step == 2 && root.oauth-url == "" : VerticalLayout {
+                spacing: Theme.gap-md;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: start;
+                    Text { text: "⟳"; font-size: 24px; color: Theme.accent; vertical-alignment: center; }
+                    Text {
+                        text: root.phase-status != "" ? root.phase-status : "Probing upstream...";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: "Spawning, calling initialize, fetching tools — up to ~30 seconds per phase.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                if root.status != "" : Rectangle {
+                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        Text {
+                            text: root.status;
+                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        label: "← Back to edit";
+                        clicked => { root.wizard-back(); }
+                    }
+                }
+            }
+
+            if root.step == 2 && root.oauth-url != "" : VerticalLayout {
+                spacing: Theme.gap-md;
+                Rectangle {
+                    background: Theme.surface-2;
+                    border-radius: Theme.radius-md;
+                    min-height: 64px;
+                    HorizontalLayout {
+                        padding: Theme.gap-md;
+                        spacing: Theme.gap-md;
+                        Text {
+                            text: "🔐";
+                            font-size: 28px;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Sign in required";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-h3;
+                            }
+                            Text {
+                                text: "This server uses OAuth. We opened a browser tab — sign in and approve, then return here.";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body-sm;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: start;
+                    Rectangle {
+                        background: Theme.warning;
+                        border-radius: 5px;
+                        width: 10px;
+                        height: 10px;
+                        y: 5px;
+                    }
+                    Text {
+                        text: root.phase-status != "" ? root.phase-status : "Waiting for sign-in...";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: "If the tab didn't open, copy this URL into your browser:";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    background: Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 36px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        spacing: Theme.gap-sm;
+                        Text {
+                            text: root.oauth-url;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        PillButton {
+                            label: "Copy URL";
+                            clicked => { root.copy-oauth-url(); }
+                        }
+                    }
+                }
+                if root.status != "" : Rectangle {
+                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
+                    border-radius: Theme.radius-sm;
+                    min-height: 32px;
+                    HorizontalLayout {
+                        padding: Theme.gap-sm;
+                        Text {
+                            text: root.status;
+                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    PillButton {
+                        label: "← Back to edit";
+                        clicked => { root.wizard-back(); }
+                    }
+                }
+            }
+
+            if root.step == 3 : VerticalLayout {
+                spacing: Theme.gap-md;
+                Text {
+                    text: root.tools.length + " tools discovered. Default: Ask. Set Allow to auto-approve.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-body-sm;
+                    wrap: word-wrap;
+                }
+                ToolPolicyTable {
+                    rows: root.tools;
+                    change-decision(tool, decision) => { root.change-tool-policy(tool, decision); }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: end;
+                    PillButton {
+                        label: "← Back";
+                        clicked => { root.wizard-back(); }
+                    }
+                    PillButton {
+                        label: "Save";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.bg;
+                        clicked => { root.wizard-save(); }
+                    }
+                }
+            }
+        }
+    }
+}
+

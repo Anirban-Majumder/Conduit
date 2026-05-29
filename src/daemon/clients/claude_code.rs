@@ -1,3 +1,5 @@
+//! Claude Code config-path and skills-dir resolution.
+
 // Repo:   N/A (closed-source CLI; SDK at https://github.com/anthropics/claude-code-sdk-ts)
 // MCP:    ~/.claude.json — top-level `mcpServers` (user scope); schema `{type:"http", url}`. Source: https://code.claude.com/docs/en/mcp.md
 // Skills: ~/.claude/skills/<name>/SKILL.md — auto-loaded at startup. Source: https://code.claude.com/docs/en/skills.md

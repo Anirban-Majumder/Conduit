@@ -1,3 +1,7 @@
+-- 0004_ides.sql — adds the `ides` table: detected IDEs, their managed MCP
+-- entries, and tracking status. Supersedes the older managed_ide_configs flow.
+-- Idempotent statements only.
+
 CREATE TABLE IF NOT EXISTS ides (
     ide_kind             TEXT NOT NULL PRIMARY KEY,
     display_name         TEXT NOT NULL,
