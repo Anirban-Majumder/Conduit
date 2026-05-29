@@ -24,7 +24,7 @@ use crate::ui::{
 
 use crate::glue::skills::{installed_skills_to_rows, refresh_skills};
 use crate::glue::util::{
-    fire_auth_failure_notification, lifecycle_label, relative_time, run_ide_detection,
+    clock_hms, fire_auth_failure_notification, lifecycle_label, relative_time, run_ide_detection,
     settings_to_row, unix_now,
 };
 
@@ -45,8 +45,10 @@ pub(crate) fn push_initial_models(
         run_ide_detection(&db_for_refresh).await;
         refresh_all(&weak, &db_for_refresh).await;
         refresh_active_ide_targets(&weak, &db_for_refresh).await;
-        refresh_skills(&weak_for_skills, &skills).await;
+        // Before refresh_skills — that runs slow network discovery and would
+        // otherwise delay the dashboard's first paint.
         refresh_dashboard(&weak, &db_for_refresh, &skills).await;
+        refresh_skills(&weak_for_skills, &skills).await;
         let auto = db_for_refresh
             .get_settings_kv("open_window_at_startup")
             .await
@@ -159,7 +161,12 @@ pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
+        let still_pending = rows.iter().any(|r| r.id == ui.get_selected_approval().id);
         ui.set_approvals(ModelRc::new(VecModel::from(rows)));
+        // Close the detail modal if the approval it showed is no longer pending.
+        if ui.get_show_approval_detail() && !still_pending {
+            ui.set_show_approval_detail(false);
+        }
     })
     .ok();
 }
@@ -441,7 +448,7 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
     let rows: Vec<AuditRow> = entries
         .into_iter()
         .map(|e| AuditRow {
-            ts_label: SharedString::from(e.ts.to_string()),
+            ts_label: SharedString::from(clock_hms(e.ts)),
             ide_name: SharedString::from(e.ide_name.unwrap_or_else(|| "?".to_string())),
             server: SharedString::from(e.server),
             tool: SharedString::from(e.tool.unwrap_or_default()),

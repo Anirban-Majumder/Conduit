@@ -403,9 +403,9 @@ pub(crate) fn build_draft(
 pub(crate) fn lifecycle_from_picker(mode: &str, custom: &str) -> i32 {
     match mode {
         "ephemeral" => 0,
-        "persistent" => -1,
         "custom" => custom.trim().parse::<i32>().unwrap_or(300).max(-1),
-        _ => 300,
+        // "persistent" and any unknown mode → persistent (the default).
+        _ => -1,
     }
 }
 
@@ -413,7 +413,6 @@ pub(crate) fn picker_from_lifecycle(secs: i32) -> (&'static str, String) {
     match secs {
         0 => ("ephemeral", String::new()),
         -1 => ("persistent", String::new()),
-        300 => ("auto", String::new()),
         other => ("custom", other.to_string()),
     }
 }

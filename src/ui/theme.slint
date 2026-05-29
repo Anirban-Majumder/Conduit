@@ -1,33 +1,43 @@
 // Theme: the global design-token set (colors, type scale, radii, spacing).
 // Imported by every other .slint file so they share one source of names.
 //
-// Verge editorial palette. Polished pass against DESIGN.md is a Stage 4.5 item;
-// this is the load-bearing token set so all .slint files reach the same names.
+// "Nocturnal Glassmorphism" per docs/DESIGN.md: deep ink canvas, mint primary,
+// faux-glass surfaces (Slint has no real backdrop blur — we approximate with
+// translucent fills + 1px luminous borders + drop-shadow glows). Hanken Grotesk
+// is the default family (registered via the .ttf imports in main.slint).
 
 export global Theme {
-    // Surface
+    // Surface ladder — Level 0 canvas up through glass panels/overlays.
     out property <color> bg: #0a0a0a;
-    out property <color> surface: #131313;
-    out property <color> surface-2: #1a1a1a;
-    out property <color> surface-3: #232323;
+    out property <color> surface: #131316;
+    out property <color> surface-2: #1a1c20;
+    out property <color> surface-3: #232529;
+    // Subtle white overlay used for the top-edge "rim of glass" highlight.
+    out property <color> glass-rim: #ffffff14;
+    out property <color> scrim: #000000bf;
 
     // Text
-    out property <color> text-primary: #f4f4f4;
-    out property <color> text-secondary: #a8a8a8;
-    out property <color> text-tertiary: #6a6a6a;
+    out property <color> text-primary: #e5e2e1;
+    out property <color> text-secondary: #bccac2;
+    out property <color> text-tertiary: #86948d;
 
-    // Accent (mint per spec — tray glyph etc.)
+    // Accent (mint)
     out property <color> accent: #7fffd4;
-    out property <color> accent-dim: #4a8b78;
+    out property <color> accent-bright: #79f9ce;
+    out property <color> accent-dim: #5adcb3;
+    out property <color> on-accent: #003829;          // text/glyph on a mint fill
+    out property <color> accent-glow: #7fffd440;
+    out property <color> accent-tint: #7fffd41a;       // faint mint wash for chips
 
     // States
     out property <color> warning: #ffb86b;
-    out property <color> danger: #ff6b6b;
+    out property <color> danger: #ffb4ab;
+    out property <color> danger-tint: #ffb4ab1f;
     out property <color> success: #7fffd4;
 
     // Borders
-    out property <color> border: #2a2a2a;
-    out property <color> border-strong: #3a3a3a;
+    out property <color> border: #2c322f;
+    out property <color> border-strong: #3d4a44;
 
     // Type scale (px)
     out property <length> font-eyebrow: 11px;
@@ -37,11 +47,17 @@ export global Theme {
     out property <length> font-h3: 20px;
     out property <length> font-h2: 28px;
     out property <length> font-h1: 40px;
+    out property <length> font-headline-sm: 24px;
+    out property <length> font-headline: 32px;
+    out property <length> font-display: 48px;
 
     // Radii
     out property <length> radius-sm: 4px;
     out property <length> radius-md: 8px;
     out property <length> radius-lg: 12px;
+    out property <length> radius-input: 12px;
+    out property <length> radius-card: 22px;
+    out property <length> radius-pill: 9999px;
 
     // Spacing
     out property <length> gap-xs: 4px;
