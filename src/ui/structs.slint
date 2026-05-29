@@ -9,6 +9,22 @@ export struct ApprovalRow {
     server: string,
     tool: string,
     created_at: string,
+    args_json: string,
+}
+
+export struct EnvVarRow {
+    key: string,
+    value: string,
+}
+
+export struct DashboardStats {
+    server_count: int,
+    server_live: int,
+    server_auth_failures: int,
+    skill_count: int,
+    editor_count: int,
+    calls_24h: int,
+    denied_24h: int,
 }
 
 export struct ServerRow {
@@ -58,6 +74,7 @@ export struct ServerDetail {
     last_error: string,             // empty if no error
     tool_count_label: string,       // "12 tools"
     auth_failure_msg: string,       // empty if no auth failure
+    latency_label: string,          // "14ms" init duration, empty if unknown
 }
 
 

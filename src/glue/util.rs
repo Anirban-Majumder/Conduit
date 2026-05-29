@@ -31,6 +31,15 @@ pub(crate) fn relative_time(delta_secs: i64) -> String {
     format!("{}d ago", hours / 24)
 }
 
+/// Local wall-clock `HH:MM:SS` for an epoch-seconds timestamp; empty on overflow.
+pub(crate) fn clock_hms(ts: i64) -> String {
+    use chrono::{Local, TimeZone};
+    Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .map_or_else(String::new, |dt| dt.format("%H:%M:%S").to_string())
+}
+
 pub(crate) fn unix_now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let s = SystemTime::now()

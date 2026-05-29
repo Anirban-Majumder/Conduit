@@ -1,26 +1,96 @@
-// Add/Edit MCP Server wizard dialog: connection form (step 1), probe + OAuth
-// sign-in hold (step 2), and per-tool policy (step 3). Wrapped in ModalShell.
-// Instantiated by main.slint behind the show-add-server-dialog flag.
+// Add/Edit MCP Server wizard: connection form (step 1), probe + OAuth sign-in
+// hold (step 2), and per-tool policy (step 3). Wrapped in ModalShell.
+// The Arguments field doubles as a paste-to-autofill input (parse on edit).
+// Env-var/header rows are backed by a Rust-owned model (env-* callbacks).
 
 import { Theme } from "../theme.slint";
 import { ModalShell, WizardStepIndicator } from "../components/modal.slint";
-import { LabeledInput, LabeledTextArea, PillButton } from "../components/primitives.slint";
-import { ToolPolicyRow } from "../structs.slint";
-import { ToolPolicyTable } from "../tabs/approvals.slint";
+import { PillButton, Icon } from "../components/primitives.slint";
+import { EnvVarRow, ToolPolicyRow } from "../structs.slint";
+import { ToolPolicyTable } from "../components/tool_policy.slint";
+
+component Seg inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked <=> ta.clicked;
+    background: root.active ? Theme.surface-3 : transparent;
+    border-radius: Theme.radius-pill;
+    height: 30px;
+    horizontal-stretch: 1;
+    ta := TouchArea {
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: root.active ? Theme.text-primary : Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component SegGroup inherits Rectangle {
+    background: Theme.bg;
+    border-radius: Theme.radius-pill;
+    border-width: 1px;
+    border-color: Theme.border;
+    height: 36px;
+}
+
+component FieldLabel inherits Text {
+    color: Theme.text-tertiary;
+    font-size: Theme.font-eyebrow;
+    font-weight: 600;
+}
+
+component FormInput inherits Rectangle {
+    in property <string> text;
+    in property <string> placeholder;
+    in property <bool> read-only: false;
+    callback edited(string);
+    background: Theme.bg;
+    border-radius: Theme.radius-input;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    height: 44px;
+    HorizontalLayout {
+        padding-left: Theme.gap-md;
+        padding-right: Theme.gap-md;
+        input := TextInput {
+            text: root.text;
+            color: root.read-only ? Theme.text-tertiary : Theme.text-primary;
+            font-size: Theme.font-body;
+            vertical-alignment: center;
+            single-line: true;
+            read-only: root.read-only;
+            edited => { root.edited(self.text); }
+        }
+    }
+    if root.text == "" && root.placeholder != "" : Text {
+        x: Theme.gap-md;
+        text: root.placeholder;
+        color: Theme.text-tertiary;
+        font-size: Theme.font-body;
+        vertical-alignment: center;
+    }
+}
 
 export component AddServerDialog inherits Rectangle {
     in-out property <string> name;
     in-out property <string> command;
     in-out property <string> args;
     in-out property <string> url;
-    in-out property <string> headers;
     in-out property <string> transport;
-    in-out property <string> paste;
     in-out property <string> status;
     in-out property <bool> status-is-error: false;
     in-out property <bool> busy: false;
-    in-out property <string> lifecycle-mode: "auto";
+    in-out property <string> lifecycle-mode: "persistent";
     in-out property <string> lifecycle-custom: "300";
+    in property <[EnvVarRow]> env-rows;
     in property <int> step;
     in property <string> phase-status;
     in property <string> oauth-url;
@@ -33,149 +103,247 @@ export component AddServerDialog inherits Rectangle {
     callback dismiss();
     callback parse();
     callback copy-oauth-url();
+    callback env-add();
+    callback env-remove(int);
+    callback env-set-key(int, string);
+    callback env-set-value(int, string);
 
     ModalShell {
         title: root.edit-mode ? "Edit MCP Server" : "Add MCP Server";
         dismiss => { root.dismiss(); }
 
         VerticalLayout {
-            spacing: Theme.gap-md;
+            spacing: Theme.gap-lg;
 
             WizardStepIndicator { step: root.step; }
 
             if root.step == 1 : VerticalLayout {
-                spacing: 6px;
+                spacing: Theme.gap-md;
+
                 HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    PillButton {
-                        label: "http";
-                        bg-color: root.transport == "http" ? Theme.accent : Theme.surface-3;
-                        fg-color: root.transport == "http" ? Theme.bg : Theme.text-secondary;
-                        clicked => { root.transport = "http"; }
+                    spacing: Theme.gap-lg;
+                    VerticalLayout {
+                        spacing: 6px;
+                        horizontal-stretch: 1;
+                        FieldLabel { text: "TRANSPORT TYPE"; }
+                        SegGroup {
+                            HorizontalLayout {
+                                padding: 3px;
+                                spacing: 3px;
+                                Seg {
+                                    label: "Stdio";
+                                    active: root.transport == "stdio";
+                                    clicked => { root.transport = "stdio"; }
+                                }
+                                Seg {
+                                    label: "HTTP / SSE";
+                                    active: root.transport == "http";
+                                    clicked => { root.transport = "http"; }
+                                }
+                            }
+                        }
                     }
-                    PillButton {
-                        label: "stdio";
-                        bg-color: root.transport == "stdio" ? Theme.accent : Theme.surface-3;
-                        fg-color: root.transport == "stdio" ? Theme.bg : Theme.text-secondary;
-                        clicked => { root.transport = "stdio"; }
+                    VerticalLayout {
+                        spacing: 6px;
+                        horizontal-stretch: 1;
+                        FieldLabel { text: "LIFECYCLE"; }
+                        SegGroup {
+                            HorizontalLayout {
+                                padding: 3px;
+                                spacing: 3px;
+                                Seg {
+                                    label: "Ephemeral";
+                                    active: root.lifecycle-mode == "ephemeral";
+                                    clicked => { root.lifecycle-mode = "ephemeral"; }
+                                }
+                                Seg {
+                                    label: "Persistent";
+                                    active: root.lifecycle-mode == "persistent";
+                                    clicked => { root.lifecycle-mode = "persistent"; }
+                                }
+                                Seg {
+                                    label: "Custom";
+                                    active: root.lifecycle-mode == "custom";
+                                    clicked => { root.lifecycle-mode = "custom"; }
+                                }
+                            }
+                        }
                     }
                 }
-                LabeledInput {
-                    label: root.edit-mode
-                        ? "Name (locked — delete + recreate to rename)"
-                        : "Name (letters, digits, _, -, 1–64 chars)";
-                    text: root.name;
-                    read-only: root.edit-mode;
-                    edited(t) => { root.name = t; }
-                }
-                VerticalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Lifecycle";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-eyebrow;
-                    }
-                    HorizontalLayout {
-                        spacing: Theme.gap-sm;
-                        PillButton {
-                            label: "Auto";
-                            bg-color: root.lifecycle-mode == "auto" ? Theme.accent : Theme.surface-3;
-                            fg-color: root.lifecycle-mode == "auto" ? Theme.bg : Theme.text-secondary;
-                            clicked => { root.lifecycle-mode = "auto"; }
-                        }
-                        PillButton {
-                            label: "Ephemeral";
-                            bg-color: root.lifecycle-mode == "ephemeral" ? Theme.accent : Theme.surface-3;
-                            fg-color: root.lifecycle-mode == "ephemeral" ? Theme.bg : Theme.text-secondary;
-                            clicked => { root.lifecycle-mode = "ephemeral"; }
-                        }
-                        PillButton {
-                            label: "Persistent";
-                            bg-color: root.lifecycle-mode == "persistent" ? Theme.accent : Theme.surface-3;
-                            fg-color: root.lifecycle-mode == "persistent" ? Theme.bg : Theme.text-secondary;
-                            clicked => { root.lifecycle-mode = "persistent"; }
-                        }
-                        PillButton {
-                            label: "Custom";
-                            bg-color: root.lifecycle-mode == "custom" ? Theme.accent : Theme.surface-3;
-                            fg-color: root.lifecycle-mode == "custom" ? Theme.bg : Theme.text-secondary;
-                            clicked => { root.lifecycle-mode = "custom"; }
-                        }
-                    }
-                    if root.lifecycle-mode == "custom" : LabeledInput {
-                        label: "Idle TTL (seconds)";
+
+                if root.lifecycle-mode == "custom" : VerticalLayout {
+                    spacing: 6px;
+                    FieldLabel { text: "IDLE TTL (SECONDS)"; }
+                    FormInput {
                         text: root.lifecycle-custom;
+                        placeholder: "300";
                         edited(t) => { root.lifecycle-custom = t; }
                     }
-                    Text {
-                        text: root.lifecycle-mode == "auto" ? "Auto-detect from allow-list (default 300s idle, can upgrade to persistent based on capabilities)"
-                            : root.lifecycle-mode == "ephemeral" ? "Spawn, single call, kill on return"
-                            : root.lifecycle-mode == "persistent" ? "Lazy spawn on first use; keep alive while daemon runs"
-                            : "Kill after N seconds of no calls";
-                        color: Theme.text-tertiary;
-                        font-size: Theme.font-body-sm;
-                        wrap: word-wrap;
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    FieldLabel {
+                        text: root.edit-mode ? "SERVER NAME (LOCKED)" : "SERVER NAME";
+                    }
+                    FormInput {
+                        text: root.name;
+                        placeholder: "e.g. postgres-readonly";
+                        read-only: root.edit-mode;
+                        edited(t) => { root.name = t; }
                     }
                 }
-                if root.transport == "stdio" : LabeledInput {
-                    label: "Command";
-                    text: root.command;
-                    edited(t) => { root.command = t; }
-                }
-                if root.transport == "stdio" : LabeledInput {
-                    label: "Args, space-separated";
-                    text: root.args;
-                    edited(t) => { root.args = t; }
-                }
-                if root.transport == "http" : LabeledInput {
-                    label: "URL";
-                    text: root.url;
-                    edited(t) => { root.url = t; }
-                }
-                if root.transport == "http" : LabeledInput {
-                    label: "Headers (KEY=value, comma separated)";
-                    text: root.headers;
-                    edited(t) => { root.headers = t; }
-                }
-                LabeledTextArea {
-                    label: "Paste full MCP JSON to auto-fill — parses as you type";
-                    text: root.paste;
-                    edited(t) => {
-                        root.paste = t;
-                        paste-debounce.running = false;
-                        paste-debounce.running = true;
+
+                if root.transport == "stdio" : VerticalLayout {
+                    spacing: 6px;
+                    FieldLabel { text: "COMMAND"; }
+                    FormInput {
+                        text: root.command;
+                        placeholder: "e.g. npx, docker, /usr/bin/python3";
+                        edited(t) => { root.command = t; }
                     }
                 }
-                paste-debounce := Timer {
-                    interval: 600ms;
-                    running: false;
-                    triggered => {
-                        self.running = false;
-                        if (root.paste != "") { root.parse(); }
+
+                if root.transport == "http" : VerticalLayout {
+                    spacing: 6px;
+                    FieldLabel { text: "URL"; }
+                    FormInput {
+                        text: root.url;
+                        placeholder: "https://mcp.example.com/sse";
+                        edited(t) => { root.url = t; }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    FieldLabel {
+                        text: root.transport == "stdio"
+                            ? "ARGUMENTS (one per line, or paste full MCP JSON to autofill)"
+                            : "ARGUMENTS / PASTE MCP JSON TO AUTOFILL";
+                    }
+                    Rectangle {
+                        background: Theme.bg;
+                        border-radius: Theme.radius-input;
+                        border-width: 1px;
+                        border-color: args-input.has-focus ? Theme.accent : Theme.border;
+                        height: 96px;
+                        args-input := TextInput {
+                            x: Theme.gap-md;
+                            y: Theme.gap-sm;
+                            width: parent.width - 2 * Theme.gap-md;
+                            height: parent.height - 2 * Theme.gap-sm;
+                            text: root.args;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            font-family: "Space Mono";
+                            wrap: word-wrap;
+                            single-line: false;
+                            edited => {
+                                root.args = self.text;
+                                parse-debounce.running = false;
+                                parse-debounce.running = true;
+                            }
+                        }
+                    }
+                    parse-debounce := Timer {
+                        interval: 500ms;
+                        running: false;
+                        triggered => {
+                            self.running = false;
+                            root.parse();
+                        }
+                    }
+                }
+
+                // Environment variables / headers.
+                VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        FieldLabel {
+                            text: root.transport == "http" ? "HEADERS" : "ENVIRONMENT VARIABLES";
+                        }
+                        addvar-ta := TouchArea {
+                            width: 64px;
+                            clicked => { root.env-add(); }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: end;
+                                Icon {
+                                    source: @image-url("../../../assets/icons/plus.svg");
+                                    tint: Theme.accent;
+                                    size: 14px;
+                                }
+                                Text {
+                                    text: "Add";
+                                    color: Theme.accent;
+                                    font-size: Theme.font-body-sm;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                    for row[i] in root.env-rows : HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        FormInput {
+                            horizontal-stretch: 1;
+                            text: row.key;
+                            placeholder: "KEY";
+                            edited(t) => { root.env-set-key(i, t); }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "="; color: Theme.text-tertiary; font-size: Theme.font-body; }
+                        }
+                        FormInput {
+                            horizontal-stretch: 1;
+                            text: row.value;
+                            placeholder: "value";
+                            edited(t) => { root.env-set-value(i, t); }
+                        }
+                        rm-ta := TouchArea {
+                            width: 32px;
+                            clicked => { root.env-remove(i); }
+                            Text {
+                                text: "✕";
+                                color: rm-ta.has-hover ? Theme.danger : Theme.text-tertiary;
+                                font-size: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
 
                 if root.status != "" : Rectangle {
-                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
-                    border-radius: Theme.radius-sm;
-                    min-height: 32px;
+                    background: root.status-is-error ? Theme.danger-tint : Theme.surface-2;
+                    border-radius: Theme.radius-input;
+                    min-height: 36px;
                     HorizontalLayout {
                         padding: Theme.gap-sm;
                         Text {
                             text: root.status;
-                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            color: root.status-is-error ? Theme.danger : Theme.text-secondary;
                             font-size: Theme.font-body-sm;
                             wrap: word-wrap;
                         }
                     }
                 }
 
+                Rectangle { background: Theme.border; height: 1px; }
                 HorizontalLayout {
-                    alignment: end;
+                    alignment: space-between;
                     PillButton {
-                        label: "Test connection";
+                        label: "Cancel";
+                        bg-color: transparent;
+                        fg-color: Theme.text-secondary;
+                        clicked => { root.dismiss(); }
+                    }
+                    PillButton {
+                        label: "Next Step  →";
                         bg-color: Theme.accent;
-                        fg-color: Theme.bg;
+                        fg-color: Theme.on-accent;
                         clicked => { root.start-probe(); }
                     }
                 }
@@ -201,14 +369,14 @@ export component AddServerDialog inherits Rectangle {
                     wrap: word-wrap;
                 }
                 if root.status != "" : Rectangle {
-                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
-                    border-radius: Theme.radius-sm;
+                    background: root.status-is-error ? Theme.danger-tint : Theme.surface-2;
+                    border-radius: Theme.radius-input;
                     min-height: 32px;
                     HorizontalLayout {
                         padding: Theme.gap-sm;
                         Text {
                             text: root.status;
-                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
+                            color: root.status-is-error ? Theme.danger : Theme.text-secondary;
                             font-size: Theme.font-body-sm;
                             wrap: word-wrap;
                         }
@@ -218,6 +386,8 @@ export component AddServerDialog inherits Rectangle {
                     alignment: end;
                     PillButton {
                         label: "← Back to edit";
+                        outline: true;
+                        bg-color: transparent;
                         clicked => { root.wizard-back(); }
                     }
                 }
@@ -232,11 +402,7 @@ export component AddServerDialog inherits Rectangle {
                     HorizontalLayout {
                         padding: Theme.gap-md;
                         spacing: Theme.gap-md;
-                        Text {
-                            text: "🔐";
-                            font-size: 28px;
-                            vertical-alignment: center;
-                        }
+                        Text { text: "🔐"; font-size: 28px; vertical-alignment: center; }
                         VerticalLayout {
                             spacing: 4px;
                             Text {
@@ -253,23 +419,6 @@ export component AddServerDialog inherits Rectangle {
                         }
                     }
                 }
-                HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    alignment: start;
-                    Rectangle {
-                        background: Theme.warning;
-                        border-radius: 5px;
-                        width: 10px;
-                        height: 10px;
-                        y: 5px;
-                    }
-                    Text {
-                        text: root.phase-status != "" ? root.phase-status : "Waiting for sign-in...";
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body-sm;
-                        vertical-alignment: center;
-                    }
-                }
                 Text {
                     text: "If the tab didn't open, copy this URL into your browser:";
                     color: Theme.text-tertiary;
@@ -278,7 +427,7 @@ export component AddServerDialog inherits Rectangle {
                 }
                 Rectangle {
                     background: Theme.surface-2;
-                    border-radius: Theme.radius-sm;
+                    border-radius: Theme.radius-input;
                     min-height: 36px;
                     HorizontalLayout {
                         padding: Theme.gap-sm;
@@ -292,21 +441,9 @@ export component AddServerDialog inherits Rectangle {
                         }
                         PillButton {
                             label: "Copy URL";
+                            outline: true;
+                            bg-color: transparent;
                             clicked => { root.copy-oauth-url(); }
-                        }
-                    }
-                }
-                if root.status != "" : Rectangle {
-                    background: root.status-is-error ? #4d1f1f : Theme.surface-2;
-                    border-radius: Theme.radius-sm;
-                    min-height: 32px;
-                    HorizontalLayout {
-                        padding: Theme.gap-sm;
-                        Text {
-                            text: root.status;
-                            color: root.status-is-error ? #ffaaaa : Theme.text-secondary;
-                            font-size: Theme.font-body-sm;
-                            wrap: word-wrap;
                         }
                     }
                 }
@@ -314,6 +451,8 @@ export component AddServerDialog inherits Rectangle {
                     alignment: end;
                     PillButton {
                         label: "← Back to edit";
+                        outline: true;
+                        bg-color: transparent;
                         clicked => { root.wizard-back(); }
                     }
                 }
@@ -336,12 +475,14 @@ export component AddServerDialog inherits Rectangle {
                     alignment: end;
                     PillButton {
                         label: "← Back";
+                        outline: true;
+                        bg-color: transparent;
                         clicked => { root.wizard-back(); }
                     }
                     PillButton {
                         label: "Save";
                         bg-color: Theme.accent;
-                        fg-color: Theme.bg;
+                        fg-color: Theme.on-accent;
                         clicked => { root.wizard-save(); }
                     }
                 }
@@ -349,4 +490,3 @@ export component AddServerDialog inherits Rectangle {
         }
     }
 }
-

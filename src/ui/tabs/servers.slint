@@ -1,96 +1,139 @@
-// Servers tab: master/detail view of configured MCP servers.
-// Defines HealthCard (probe status) and TargetToggle (the per-IDE on/off chip,
-// also reused by the Skills tab), plus ServersTab which composes them with the
-// shared ToolPolicyTable from approvals.slint.
+// Servers tab: master/detail view of configured MCP servers (docs/DESIGN.md
+// mockup). Left = server cards; right = detail header (Re-test/Edit/Delete),
+// Health + Connected Editors cards, and the per-tool policy table.
+// TargetToggle is the shared on/off chip, also reused by the Skills tab.
 
 import { Theme } from "../theme.slint";
-import { PillButton, StatusDot } from "../components/primitives.slint";
+import { PillButton, StatusDot, Icon, Chip } from "../components/primitives.slint";
 import { ServerDetail, ServerIdeTarget, ServerRow, ToolPolicyRow } from "../structs.slint";
-import { ToolPolicyTable } from "../tabs/approvals.slint";
+import { ToolPolicyTable } from "../components/tool_policy.slint";
 
-export component HealthCard inherits Rectangle {
-    in property <ServerDetail> detail;
-    callback copy-error();
-    background: Theme.surface;
-    border-radius: Theme.radius-md;
-    border-width: 1px;
-    border-color: Theme.border;
-    VerticalLayout {
-        padding: Theme.gap-md;
-        spacing: 4px;
-        HorizontalLayout {
-            spacing: Theme.gap-sm;
-            alignment: start;
-            StatusDot {
-                tint: detail.health-state == "live" ? Theme.success
-                     : detail.health-state == "idle" ? Theme.text-tertiary
-                     : detail.health-state == "needsauth" ? Theme.warning
-                     : detail.health-state == "paused" ? Theme.text-tertiary
-                     : detail.health-state == "down" ? Theme.danger
-                     : Theme.text-tertiary;
-            }
-            Text {
-                text: detail.health-state == "live" ? "Live"
-                     : detail.health-state == "idle" ? "Idle"
-                     : detail.health-state == "needsauth" ? "Needs sign-in"
-                     : detail.health-state == "paused" ? "Paused"
-                     : detail.health-state == "down" ? "Down"
-                     : detail.health-state == "unprobed" ? "Unprobed"
-                     : detail.health-state;
-                color: Theme.text-primary;
-                font-size: Theme.font-body;
-                vertical-alignment: center;
-            }
-        }
-        Text {
-            text: "Last probe: " + detail.last-probe-label;
-            color: Theme.text-tertiary;
-            font-size: Theme.font-body-sm;
-        }
-        if detail.last-error != "" : VerticalLayout {
-            spacing: 4px;
-            Text {
-                text: detail.last-error;
-                color: Theme.danger;
-                font-size: Theme.font-body-sm;
-                wrap: word-wrap;
-            }
-            HorizontalLayout {
-                alignment: end;
-                PillButton {
-                    label: "Copy error";
-                    clicked => { root.copy-error(); }
-                }
-            }
-        }
-    }
-}
-
-// Shared on/off chip: bright (accent) when active, muted (surface-3) when not.
-// Used both by the Servers tab (per-IDE enable/disable for an MCP server) and
-// the Skills tab (per-IDE sync targets for an installed skill).
-
+// Shared on/off chip: mint (active) when the server/skill is enabled for that
+// IDE, outlined+muted when not. Used by the Servers tab and the Skills tab.
 export component TargetToggle inherits Rectangle {
     in property <string> label;
     in property <bool> active;
     callback toggle();
-    background: root.active ? Theme.accent : Theme.surface-3;
-    border-radius: Theme.radius-sm;
-    height: 28px;
+    background: root.active ? Theme.accent-tint : transparent;
+    border-radius: Theme.radius-pill;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border;
+    height: 32px;
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
         alignment: center;
         Text {
             text: root.label;
-            color: root.active ? Theme.bg : Theme.text-secondary;
+            color: root.active ? Theme.accent : Theme.text-secondary;
             font-size: Theme.font-body-sm;
+            font-weight: 600;
             vertical-alignment: center;
         }
     }
     TouchArea { clicked => { root.toggle(); } }
 }
 
+component GlassPanel inherits Rectangle {
+    background: Theme.surface;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+}
+
+// Rounded-square icon badge used in the server cards + detail header.
+component IconBadge inherits Rectangle {
+    in property <length> box: 44px;
+    width: root.box;
+    height: root.box;
+    background: Theme.surface-3;
+    border-radius: Theme.radius-md;
+    Icon {
+        source: @image-url("../../../assets/icons/server.svg");
+        tint: Theme.text-secondary;
+        size: root.box * 0.5;
+    }
+}
+
+component HealthCard inherits Rectangle {
+    in property <ServerDetail> detail;
+    callback copy-error();
+    background: Theme.surface-2;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        padding: Theme.gap-md;
+        spacing: Theme.gap-sm;
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Icon {
+                source: @image-url("../../../assets/icons/activity.svg");
+                tint: Theme.text-tertiary;
+                size: 14px;
+            }
+            Text {
+                text: "HEALTH STATUS";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-eyebrow;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.gap-sm;
+            alignment: start;
+            VerticalLayout {
+                alignment: center;
+                StatusDot {
+                    tint: detail.health-state == "live" ? Theme.success
+                         : detail.health-state == "needsauth" ? Theme.warning
+                         : detail.health-state == "down" ? Theme.danger
+                         : Theme.text-tertiary;
+                }
+            }
+            VerticalLayout {
+                spacing: 2px;
+                Text {
+                    text: detail.health-state == "live" ? "Connected & Healthy"
+                         : detail.health-state == "idle" ? "Idle"
+                         : detail.health-state == "needsauth" ? "Needs sign-in"
+                         : detail.health-state == "down" ? "Down"
+                         : detail.health-state == "unprobed" ? "Unprobed"
+                         : detail.health-state;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-body-lg;
+                    font-weight: 600;
+                }
+                Text {
+                    text: detail.latency-label != ""
+                        ? "Last probe: " + detail.last-probe-label + " · Latency: " + detail.latency-label
+                        : "Last probe: " + detail.last-probe-label;
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                }
+            }
+        }
+        if detail.last-error != "" : Text {
+            text: detail.last-error;
+            color: Theme.danger;
+            font-size: Theme.font-body-sm;
+            wrap: word-wrap;
+        }
+        if detail.last-error != "" : HorizontalLayout {
+            alignment: start;
+            PillButton {
+                label: "Copy error";
+                outline: true;
+                bg-color: transparent;
+                clicked => { root.copy-error(); }
+            }
+        }
+    }
+}
 
 export component ServersTab inherits Rectangle {
     in property <[ServerRow]> rows;
@@ -102,94 +145,88 @@ export component ServersTab inherits Rectangle {
     callback delete-clicked(string);
     callback retest-clicked(string);
     callback edit-clicked(string);
-    callback change-tool-policy(string, string, string);   // server, tool, decision
-    callback toggle-target(string, string, bool);  // server, ide_kind, enable
+    callback change-tool-policy(string, string, string);
+    callback toggle-target(string, string, bool);
     callback add-clicked();
     callback copy-error-clicked(string);
 
     HorizontalLayout {
-        spacing: Theme.gap-md;
+        spacing: Theme.gap-lg;
 
-        Rectangle {
-            width: 240px;
-            background: Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: Theme.gap-sm;
-                spacing: Theme.gap-sm;
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text {
-                        text: "Servers";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-eyebrow;
-                        vertical-alignment: center;
-                    }
-                    PillButton {
-                        label: "+ Add";
-                        bg-color: Theme.accent;
-                        fg-color: Theme.bg;
-                        clicked => { root.add-clicked(); }
-                    }
+        // Left: server list.
+        VerticalLayout {
+            width: 300px;
+            spacing: Theme.gap-md;
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "MCP Servers";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-headline-sm;
+                    font-weight: 700;
+                    vertical-alignment: center;
                 }
-                if rows.length == 0 : Text {
-                    text: "No MCP servers yet. Click Add to begin.";
-                    color: Theme.text-tertiary;
-                    font-size: Theme.font-body-sm;
-                    wrap: word-wrap;
+                PillButton {
+                    label: "+ Add Server";
+                    outline: true;
+                    bg-color: transparent;
+                    fg-color: Theme.accent;
+                    clicked => { root.add-clicked(); }
                 }
-                for row in rows : Rectangle {
-                    background: row.name == root.selected ? Theme.surface-2 : transparent;
-                    border-radius: Theme.radius-sm;
-                    min-height: 40px;
-                    ta := TouchArea {
-                        clicked => { root.select-server(row.name); }
-                    }
-                    HorizontalLayout {
-                        padding-left: Theme.gap-sm;
-                        padding-right: Theme.gap-sm;
-                        spacing: Theme.gap-sm;
-                        alignment: start;
-                        StatusDot {
-                            tint: row.status == "live" ? Theme.success
-                                 : row.status == "down" ? Theme.danger
-                                 : row.status == "needsauth" ? Theme.warning
-                                 : Theme.text-tertiary;
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 0px;
+            }
+            if rows.length == 0 : Text {
+                text: "No MCP servers yet. Click Add Server to begin.";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                wrap: word-wrap;
+            }
+            Flickable {
+                vertical-stretch: 1;
+                viewport-height: srv-list.preferred-height;
+                srv-list := VerticalLayout {
+                    spacing: Theme.gap-sm;
+                    for row in rows : Rectangle {
+                        background: row.name == root.selected ? Theme.surface-2 : Theme.surface;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: row.name == root.selected ? Theme.accent : Theme.border;
+                        height: 68px;
+                        ta := TouchArea {
+                            clicked => { root.select-server(row.name); }
                             HorizontalLayout {
-                                spacing: 6px;
+                                padding: Theme.gap-sm;
+                                spacing: Theme.gap-sm;
                                 alignment: start;
-                                Text {
-                                    text: row.name;
-                                    color: Theme.text-primary;
-                                    font-size: Theme.font-body-sm;
-                                    vertical-alignment: center;
+                                VerticalLayout {
+                                    alignment: center;
+                                    IconBadge { box: 40px; }
                                 }
-                                if row.auth_failure : Rectangle {
-                                    background: Theme.danger;
-                                    border-radius: 999px;
-                                    height: 16px;
-                                    HorizontalLayout {
-                                        padding-left: 6px;
-                                        padding-right: 6px;
-                                        Text {
-                                            text: "auth";
-                                            color: Theme.bg;
-                                            font-size: Theme.font-eyebrow;
-                                            vertical-alignment: center;
-                                        }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 3px;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: row.name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-body;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: row.auth_failure
+                                            ? "needs auth · " + row.transport
+                                            : row.tool_count_label + " · " + row.transport;
+                                        color: row.auth_failure ? Theme.warning : Theme.text-tertiary;
+                                        font-size: Theme.font-body-sm;
+                                        overflow: elide;
                                     }
                                 }
-                            }
-                            Text {
-                                text: row.transport + " · " + row.tool_count_label;
-                                color: Theme.text-tertiary;
-                                font-size: Theme.font-body-sm;
+                                VerticalLayout {
+                                    alignment: start;
+                                    StatusDot {
+                                        tint: row.auth_failure ? Theme.warning : Theme.success;
+                                    }
+                                }
                             }
                         }
                     }
@@ -197,46 +234,59 @@ export component ServersTab inherits Rectangle {
             }
         }
 
-        Rectangle {
+        // Right: detail.
+        GlassPanel {
             horizontal-stretch: 1;
-            background: Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: Theme.gap-md;
-                spacing: Theme.gap-md;
-                if root.selected == "" : Text {
-                    text: "Select a server on the left, or click Add.";
+            if root.selected == "" : VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "Select a server on the left, or click Add Server.";
                     color: Theme.text-tertiary;
-                    font-size: Theme.font-body-sm;
+                    font-size: Theme.font-body;
+                    horizontal-alignment: center;
                 }
-                if root.selected != "" : VerticalLayout {
-                    spacing: Theme.gap-md;
+            }
+            if root.selected != "" : Flickable {
+                viewport-height: detail-col.preferred-height;
+                detail-col := VerticalLayout {
+                    padding: Theme.gap-lg;
+                    spacing: Theme.gap-lg;
+
                     HorizontalLayout {
+                        spacing: Theme.gap-md;
                         alignment: space-between;
-                        VerticalLayout {
-                            spacing: 2px;
-                            Text {
-                                text: detail.name;
-                                color: Theme.text-primary;
-                                font-size: 18px;
-                            }
-                            Text {
-                                text: detail.version != "" ? detail.version : "—";
-                                color: Theme.text-secondary;
-                                font-size: Theme.font-body-sm;
-                            }
-                            Text {
-                                text: detail.transport + " · " + detail.command-or-url;
-                                color: Theme.text-tertiary;
-                                font-size: Theme.font-body-sm;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: detail.lifecycle-label + " · " + detail.tool-count-label;
-                                color: Theme.text-tertiary;
-                                font-size: Theme.font-body-sm;
+                        HorizontalLayout {
+                            spacing: Theme.gap-md;
+                            alignment: start;
+                            IconBadge {}
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 3px;
+                                HorizontalLayout {
+                                    spacing: Theme.gap-sm;
+                                    alignment: start;
+                                    Text {
+                                        text: detail.name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.font-headline-sm;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    if detail.version != "" : VerticalLayout {
+                                        alignment: center;
+                                        Chip {
+                                            label: detail.version;
+                                            fg: Theme.text-secondary;
+                                            bg: Theme.surface-3;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: detail.transport + " · " + detail.command-or-url;
+                                    color: Theme.text-tertiary;
+                                    font-size: Theme.font-body-sm;
+                                    overflow: elide;
+                                }
                             }
                         }
                         HorizontalLayout {
@@ -244,30 +294,75 @@ export component ServersTab inherits Rectangle {
                             alignment: center;
                             PillButton {
                                 label: "Re-test";
+                                outline: true;
+                                bg-color: transparent;
+                                fg-color: Theme.accent;
                                 clicked => { root.retest-clicked(root.selected); }
                             }
                             PillButton {
                                 label: "Edit";
+                                outline: true;
+                                bg-color: transparent;
                                 clicked => { root.edit-clicked(root.selected); }
                             }
                             PillButton {
                                 label: "Delete";
-                                bg-color: Theme.danger;
-                                fg-color: Theme.bg;
+                                bg-color: Theme.danger-tint;
+                                fg-color: Theme.danger;
                                 clicked => { root.delete-clicked(root.selected); }
                             }
                         }
                     }
-                    HealthCard {
-                        detail: root.detail;
-                        copy-error => { root.copy-error-clicked(root.detail.last-error); }
+
+                    HorizontalLayout {
+                        spacing: Theme.gap-md;
+                        HealthCard {
+                            detail: root.detail;
+                            copy-error => { root.copy-error-clicked(root.detail.last-error); }
+                        }
+                        Rectangle {
+                            background: Theme.surface-2;
+                            border-radius: Theme.radius-md;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            horizontal-stretch: 1;
+                            VerticalLayout {
+                                padding: Theme.gap-md;
+                                spacing: Theme.gap-sm;
+                                Text {
+                                    text: "CONNECTED EDITORS";
+                                    color: Theme.text-tertiary;
+                                    font-size: Theme.font-eyebrow;
+                                    font-weight: 600;
+                                }
+                                if targets.length == 0 : Text {
+                                    text: "No active editors detected.";
+                                    color: Theme.text-tertiary;
+                                    font-size: Theme.font-body-sm;
+                                }
+                                Flickable {
+                                    viewport-height: ide-wrap.preferred-height;
+                                    ide-wrap := VerticalLayout {
+                                        spacing: 6px;
+                                        for t in targets : TargetToggle {
+                                            label: t.label;
+                                            active: t.active;
+                                            toggle => {
+                                                root.toggle-target(root.selected, t.ide-kind, !t.active);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
+
                     if root.detail.auth-failure-msg != "" : Rectangle {
-                        background: #4d1f1f;
-                        border-radius: Theme.radius-sm;
+                        background: Theme.danger-tint;
+                        border-radius: Theme.radius-md;
                         min-height: 56px;
                         HorizontalLayout {
-                            padding: Theme.gap-sm;
+                            padding: Theme.gap-md;
                             spacing: Theme.gap-sm;
                             alignment: space-between;
                             VerticalLayout {
@@ -276,51 +371,44 @@ export component ServersTab inherits Rectangle {
                                 horizontal-stretch: 1;
                                 Text {
                                     text: "Authentication failed";
-                                    color: #ffaaaa;
+                                    color: Theme.danger;
                                     font-size: Theme.font-body;
+                                    font-weight: 600;
                                 }
                                 Text {
                                     text: root.detail.auth-failure-msg;
-                                    color: #ffaaaa;
+                                    color: Theme.danger;
                                     font-size: Theme.font-body-sm;
                                     wrap: word-wrap;
                                 }
                             }
-                            PillButton {
-                                label: "Edit";
-                                bg-color: Theme.accent;
-                                fg-color: Theme.bg;
-                                clicked => { root.edit-clicked(root.selected); }
-                            }
-                        }
-                    }
-                    // Per-IDE enable/disable. Same TargetToggle component as the
-                    // Skills tab — bright when the server is in that IDE's MCP
-                    // config, muted when it isn't.
-                    if targets.length > 0 : Text {
-                        text: "IDEs";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-eyebrow;
-                    }
-                    if targets.length > 0 : Flickable {
-                        viewport-width: ide-row.preferred-width;
-                        viewport-height: self.height;
-                        height: 36px;
-                        ide-row := HorizontalLayout {
-                            spacing: 6px;
-                            for t in targets : TargetToggle {
-                                label: t.label;
-                                active: t.active;
-                                toggle => {
-                                    root.toggle-target(root.selected, t.ide-kind, !t.active);
+                            VerticalLayout {
+                                alignment: center;
+                                PillButton {
+                                    label: "Edit";
+                                    bg-color: Theme.accent;
+                                    fg-color: Theme.on-accent;
+                                    clicked => { root.edit-clicked(root.selected); }
                                 }
                             }
                         }
                     }
-                    if tools.length > 0 : Text {
-                        text: "Tools (" + tools.length + ")";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-eyebrow;
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        Icon {
+                            source: @image-url("../../../assets/icons/list-filter.svg");
+                            tint: Theme.text-secondary;
+                            size: 16px;
+                        }
+                        Text {
+                            text: "Exposed Tools (" + tools.length + ")";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-lg;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
                     }
                     if tools.length > 0 : ToolPolicyTable {
                         rows: root.tools;
@@ -338,4 +426,3 @@ export component ServersTab inherits Rectangle {
         }
     }
 }
-

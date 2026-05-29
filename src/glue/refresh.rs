@@ -11,20 +11,20 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use conduit::daemon::clients;
 use conduit::daemon::config_toml::Settings;
-use conduit::daemon::db::types::{IdeKey, TRANSPORT_STDIO};
+use conduit::daemon::db::types::{AuditDecision, AuditFilter, IdeKey, TRANSPORT_STDIO};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::Event;
 use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::SkillManager;
 
 use crate::ui::{
-    ApprovalRow, AuditRow, IdeRow, MainWindow, PolicyRow, ServerDetail, ServerIdeTarget, ServerRow,
-    ToolPolicyRow as ToolPolicyUiRow,
+    ApprovalRow, AuditRow, DashboardStats, IdeRow, MainWindow, PolicyRow, ServerDetail,
+    ServerIdeTarget, ServerRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
-use crate::glue::skills::refresh_skills;
+use crate::glue::skills::{installed_skills_to_rows, refresh_skills};
 use crate::glue::util::{
-    fire_auth_failure_notification, lifecycle_label, relative_time, run_ide_detection,
+    clock_hms, fire_auth_failure_notification, lifecycle_label, relative_time, run_ide_detection,
     settings_to_row, unix_now,
 };
 
@@ -45,6 +45,9 @@ pub(crate) fn push_initial_models(
         run_ide_detection(&db_for_refresh).await;
         refresh_all(&weak, &db_for_refresh).await;
         refresh_active_ide_targets(&weak, &db_for_refresh).await;
+        // Before refresh_skills — that runs slow network discovery and would
+        // otherwise delay the dashboard's first paint.
+        refresh_dashboard(&weak, &db_for_refresh, &skills).await;
         refresh_skills(&weak_for_skills, &skills).await;
         let auto = db_for_refresh
             .get_settings_kv("open_window_at_startup")
@@ -77,9 +80,13 @@ pub(crate) fn spawn_event_bridge(
     rt.spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(Event::ApprovalPending { .. } | Event::ApprovalResolved { .. }) => {
+                Ok(Event::ApprovalPending { .. }) => {
+                    refresh_pending(&weak, &db).await;
+                }
+                Ok(Event::ApprovalResolved { .. }) => {
                     refresh_pending(&weak, &db).await;
                     refresh_audit(&weak, &db).await;
+                    refresh_dashboard(&weak, &db, &skills).await;
                 }
                 Ok(Event::ConfigReloaded { settings }) => {
                     let row = settings_to_row(&settings);
@@ -89,6 +96,7 @@ pub(crate) fn spawn_event_bridge(
                 Ok(Event::ServerHealthChanged { name }) => {
                     tracing::debug!(server = %name, "health changed; consumer to refresh");
                     refresh_servers(&weak, &db).await;
+                    refresh_dashboard(&weak, &db, &skills).await;
                 }
                 Ok(Event::FocusApproval { id }) => {
                     let id_for_ui = id.clone();
@@ -100,17 +108,20 @@ pub(crate) fn spawn_event_bridge(
                 }
                 Ok(Event::SkillsChanged) => {
                     refresh_skills(&weak, &skills).await;
+                    refresh_dashboard(&weak, &db, &skills).await;
                 }
                 Ok(Event::AuthFailure { server, message }) => {
                     tracing::warn!(server = %server, message = %message, "auth failure");
                     fire_auth_failure_notification(&server, &message);
                     refresh_servers(&weak, &db).await;
                     refresh_server_detail(&weak, &db, &server).await;
+                    refresh_dashboard(&weak, &db, &skills).await;
                 }
                 Ok(Event::AuthCleared { server }) => {
                     tracing::info!(server = %server, "auth cleared");
                     refresh_servers(&weak, &db).await;
                     refresh_server_detail(&weak, &db, &server).await;
+                    refresh_dashboard(&weak, &db, &skills).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "event bridge lagged");
@@ -132,6 +143,7 @@ pub(crate) async fn refresh_all(weak: &slint::Weak<MainWindow>, db: &Db) {
 pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
     let pending = db.list_pending_approvals().await.unwrap_or_default();
     let ide_names = lookup_ide_names_for_keys(db, pending.iter().map(|p| p.ide_key.as_str())).await;
+    let now = unix_now();
     let rows: Vec<ApprovalRow> = pending
         .into_iter()
         .map(|p| ApprovalRow {
@@ -144,11 +156,17 @@ pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
             ),
             server: SharedString::from(p.server),
             tool: SharedString::from(p.tool),
-            created_at: SharedString::from(p.created_at.to_string()),
+            created_at: SharedString::from(relative_time(now - p.created_at)),
+            args_json: SharedString::from(p.args_json),
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
+        let still_pending = rows.iter().any(|r| r.id == ui.get_selected_approval().id);
         ui.set_approvals(ModelRc::new(VecModel::from(rows)));
+        // Close the detail modal if the approval it showed is no longer pending.
+        if ui.get_show_approval_detail() && !still_pending {
+            ui.set_show_approval_detail(false);
+        }
     })
     .ok();
 }
@@ -252,6 +270,12 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         tool_count_label: SharedString::from(format!("{} tools", tool_rows.len())),
         auth_failure_msg: SharedString::from(
             server.last_auth_error_msg.clone().unwrap_or_default(),
+        ),
+        latency_label: SharedString::from(
+            server
+                .last_init_duration_ms
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_default(),
         ),
     };
 
@@ -422,7 +446,7 @@ pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
 }
 
 pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
-    let filter = conduit::daemon::db::types::AuditFilter {
+    let filter = AuditFilter {
         limit: Some(100),
         ..Default::default()
     };
@@ -430,7 +454,7 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
     let rows: Vec<AuditRow> = entries
         .into_iter()
         .map(|e| AuditRow {
-            ts_label: SharedString::from(e.ts.to_string()),
+            ts_label: SharedString::from(clock_hms(e.ts)),
             ide_name: SharedString::from(e.ide_name.unwrap_or_else(|| "?".to_string())),
             server: SharedString::from(e.server),
             tool: SharedString::from(e.tool.unwrap_or_default()),
@@ -442,6 +466,68 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_audit(ModelRc::new(VecModel::from(rows)));
+    })
+    .ok();
+}
+
+pub(crate) async fn refresh_dashboard(
+    weak: &slint::Weak<MainWindow>,
+    db: &Db,
+    skills: &SkillManager,
+) {
+    let servers = db.list_servers().await.unwrap_or_default();
+    let server_count = servers.len();
+    let server_auth_failures = servers
+        .iter()
+        .filter(|s| s.last_auth_error_msg.is_some())
+        .count();
+    let server_live = servers
+        .iter()
+        .filter(|s| {
+            s.last_auth_error_msg.is_none()
+                && s.last_probe_error.is_none()
+                && s.last_probed_at.is_some()
+        })
+        .count();
+
+    let editor_count = db.list_active_ides().await.unwrap_or_default().len();
+    let installed_skills = skills.list_installed().await.unwrap_or_default();
+    let skill_count = installed_skills.len();
+    let skill_rows = installed_skills_to_rows(&installed_skills);
+
+    let since = unix_now() - 86_400;
+    let recent = db
+        .query_audit_log(AuditFilter {
+            since_ts: Some(since),
+            limit: Some(10_000),
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+    let calls_24h = recent.len();
+    let denied_24h = recent
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.decision,
+                AuditDecision::Deny | AuditDecision::AskDenied | AuditDecision::AskTimeout
+            )
+        })
+        .count();
+
+    let to_i32 = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+    let stats = DashboardStats {
+        server_count: to_i32(server_count),
+        server_live: to_i32(server_live),
+        server_auth_failures: to_i32(server_auth_failures),
+        skill_count: to_i32(skill_count),
+        editor_count: to_i32(editor_count),
+        calls_24h: to_i32(calls_24h),
+        denied_24h: to_i32(denied_24h),
+    };
+    weak.upgrade_in_event_loop(move |ui| {
+        ui.set_dashboard_stats(stats);
+        ui.set_dashboard_skills(ModelRc::new(VecModel::from(skill_rows)));
     })
     .ok();
 }

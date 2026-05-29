@@ -1,10 +1,19 @@
-// Editors tab: master/detail over detected IDEs, with an inline editor for the
-// selected IDE's MCP config and track/retrack/remove actions.
+// Editors tab: master/detail over detected IDEs (docs/DESIGN.md mockup). Left =
+// editor cards with live status; right = the selected IDE's managed config with
+// an inline JSON editor + Reveal/Reload/Save and track/retrack/remove actions.
 // Instantiated by main.slint when the Editors tab is active.
 
 import { Theme } from "../theme.slint";
-import { EmptyState, PillButton } from "../components/primitives.slint";
+import { EmptyState, PillButton, Icon, StatusDot, Chip } from "../components/primitives.slint";
 import { IdeRow } from "../structs.slint";
+
+component GlassPanel inherits Rectangle {
+    background: Theme.surface;
+    border-radius: Theme.radius-card;
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+}
 
 export component EditorsTab inherits Rectangle {
     in property <[IdeRow]> rows;
@@ -25,197 +34,286 @@ export component EditorsTab inherits Rectangle {
     callback save();
     callback reload();
     min-height: 480px;
-    HorizontalLayout {
-        spacing: Theme.gap-md;
 
+    HorizontalLayout {
+        spacing: Theme.gap-lg;
+
+        // Left: editors list.
         VerticalLayout {
             width: 300px;
-            spacing: Theme.gap-sm;
-            alignment: start;
+            spacing: Theme.gap-md;
             HorizontalLayout {
                 alignment: space-between;
                 Text {
-                    text: rows.length > 0 ? "IDEs (" + rows.length + ")" : "No IDEs detected";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-eyebrow;
+                    text: "Editors";
+                    color: Theme.text-primary;
+                    font-size: Theme.font-headline-sm;
+                    font-weight: 700;
                     vertical-alignment: center;
                 }
-                PillButton {
-                    label: root.refreshing ? "Scanning…" : "Refresh";
-                    bg-color: Theme.surface-3;
-                    fg-color: Theme.text-primary;
+                refresh-ta := TouchArea {
+                    width: 26px;
+                    height: 26px;
                     clicked => {
                         if (!root.refreshing) { root.refresh-clicked(); }
+                    }
+                    Icon {
+                        source: @image-url("../../../assets/icons/plus.svg");
+                        tint: refresh-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                        size: 20px;
                     }
                 }
             }
             if rows.length == 0 : EmptyState {
-                text: "No supported IDEs found on this machine. Install one and click Refresh.";
+                text: "No supported editors found. Install one and click +.";
                 height: 160px;
             }
-            for row in rows : Rectangle {
-                background: row.kind == root.selected ? Theme.surface-2 : Theme.surface;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: row.kind == root.selected ? Theme.accent : Theme.border;
-                height: 72px;
-                TouchArea {
-                    clicked => { root.select(row.kind); }
+            Flickable {
+                viewport-height: ed-list.preferred-height;
+                vertical-stretch: 1;
+                ed-list := VerticalLayout {
+                    spacing: Theme.gap-sm;
+                    for row in rows : Rectangle {
+                        background: row.kind == root.selected ? Theme.surface-2 : Theme.surface;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: row.kind == root.selected ? Theme.accent : Theme.border;
+                        height: 64px;
+                        TouchArea { clicked => { root.select(row.kind); } }
+                        HorizontalLayout {
+                            padding: Theme.gap-sm;
+                            spacing: Theme.gap-sm;
+                            alignment: start;
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                background: Theme.surface-3;
+                                border-radius: Theme.radius-md;
+                                Icon {
+                                    source: @image-url("../../../assets/icons/terminal.svg");
+                                    tint: Theme.text-secondary;
+                                    size: 20px;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 3px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: row.display_name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: row.status == "active" ? "Active Session"
+                                         : row.status == "stale" ? "Disconnected"
+                                         : row.status == "not_tracked" ? "Standby"
+                                         : row.status;
+                                    color: Theme.text-tertiary;
+                                    font-size: Theme.font-body-sm;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                StatusDot {
+                                    tint: row.status == "active" ? Theme.success
+                                         : row.status == "stale" ? Theme.danger
+                                         : Theme.text-tertiary;
+                                }
+                            }
+                        }
+                    }
                 }
-                VerticalLayout {
-                    padding: Theme.gap-sm;
-                    spacing: 2px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        alignment: start;
-                        Text {
-                            text: row.display_name;
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body;
-                            vertical-alignment: center;
-                        }
-                        if row.status == "stale" : Rectangle {
-                            background: Theme.warning;
-                            border-radius: 999px;
-                            height: 16px;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                Text {
-                                    text: "removed?";
-                                    color: Theme.bg;
-                                    font-size: Theme.font-eyebrow;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                        if row.status == "not_tracked" : Rectangle {
-                            background: Theme.text-tertiary;
-                            border-radius: 999px;
-                            height: 16px;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                Text {
-                                    text: "not tracked";
-                                    color: Theme.bg;
-                                    font-size: Theme.font-eyebrow;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
-                    Text {
-                        text: "key " + row.key;
-                        color: Theme.text-tertiary;
-                        font-size: Theme.font-body-sm;
-                    }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Icon {
+                    source: @image-url("../../../assets/icons/activity.svg");
+                    tint: Theme.text-tertiary;
+                    size: 13px;
+                }
+                Text {
+                    text: root.refreshing ? "Scanning…" : "Auto-sync enabled";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    vertical-alignment: center;
                 }
             }
         }
 
-        Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border;
+        // Right: config detail.
+        GlassPanel {
             horizontal-stretch: 1;
-            VerticalLayout {
-                padding: Theme.gap-md;
-                spacing: Theme.gap-sm;
-                if root.selected == "" : Text {
-                    text: "Select an IDE on the left.";
+            if root.selected == "" : VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "Select an editor on the left.";
                     color: Theme.text-tertiary;
-                    font-size: Theme.font-body-sm;
+                    font-size: Theme.font-body;
                     horizontal-alignment: center;
-                    vertical-alignment: center;
-                    vertical-stretch: 1;
                 }
-                if root.selected != "" : HorizontalLayout {
+            }
+            if root.selected != "" : VerticalLayout {
+                padding: Theme.gap-lg;
+                spacing: Theme.gap-md;
+
+                HorizontalLayout {
                     alignment: space-between;
                     spacing: Theme.gap-sm;
-                    Text {
-                        text: root.selected-display;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-h3;
-                        vertical-alignment: center;
+                    VerticalLayout {
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            spacing: Theme.gap-sm;
+                            alignment: start;
+                            Text {
+                                text: root.selected-display + " Settings";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-headline-sm;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Chip {
+                                    label: "JSON";
+                                    fg: Theme.accent;
+                                    bg: Theme.accent-tint;
+                                }
+                            }
+                        }
                     }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        if root.selected-status == "active" : PillButton {
-                            label: "Reveal";
+                    if root.selected-status == "active" : VerticalLayout {
+                        alignment: center;
+                        reveal-ta := TouchArea {
+                            width: 130px;
                             clicked => { root.reveal-clicked(root.selected); }
-                        }
-                        if root.selected-status == "active" : PillButton {
-                            label: "Reload";
-                            clicked => { root.reload(); }
-                        }
-                        if root.selected-status == "active" : PillButton {
-                            label: root.selected-config-dirty ? "Save *" : "Save";
-                            bg-color: root.selected-config-dirty ? Theme.accent : Theme.surface-3;
-                            fg-color: root.selected-config-dirty ? Theme.bg : Theme.text-secondary;
-                            clicked => { root.save(); }
-                        }
-                        if root.selected-status != "not_tracked" : PillButton {
-                            label: "Remove";
-                            clicked => { root.remove-clicked(root.selected); }
-                        }
-                        if root.selected-status == "not_tracked" : PillButton {
-                            label: "Track this IDE";
-                            bg-color: Theme.accent;
-                            fg-color: Theme.bg;
-                            clicked => { root.retrack-clicked(root.selected); }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: end;
+                                Icon {
+                                    source: @image-url("../../../assets/icons/list-filter.svg");
+                                    tint: reveal-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                                    size: 15px;
+                                }
+                                Text {
+                                    text: "Reveal in files";
+                                    color: reveal-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                 }
-                if root.selected != "" && root.selected-config-status != "" : Rectangle {
-                    background: root.selected-config-status-is-error ? #4d1f1f : Theme.surface-2;
-                    border-radius: Theme.radius-sm;
+
+                if root.selected-config-status != "" : Rectangle {
+                    background: root.selected-config-status-is-error ? Theme.danger-tint : Theme.surface-2;
+                    border-radius: Theme.radius-input;
                     min-height: 28px;
                     HorizontalLayout {
                         padding: 6px;
                         Text {
                             text: root.selected-config-status;
-                            color: root.selected-config-status-is-error ? #ffaaaa : Theme.text-secondary;
+                            color: root.selected-config-status-is-error ? Theme.danger : Theme.text-secondary;
                             font-size: Theme.font-body-sm;
                             wrap: word-wrap;
                         }
                     }
                 }
-                if root.selected != "" && root.selected-status == "active" : Rectangle {
+
+                if root.selected-status == "active" : Rectangle {
                     background: Theme.bg;
-                    border-radius: Theme.radius-sm;
+                    border-radius: Theme.radius-md;
                     border-width: 1px;
                     border-color: Theme.border;
                     vertical-stretch: 1;
-                    Flickable {
-                        viewport-height: editor.preferred-height;
-                        editor := TextInput {
-                            text: root.selected-config-text;
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body-sm;
-                            font-family: "Space Mono";
-                            single-line: false;
-                            wrap: word-wrap;
-                            edited => { root.edit-text(self.text); }
+                    clip: true;
+                    VerticalLayout {
+                        padding: 0px;
+                        Rectangle {
+                            height: 34px;
+                            background: Theme.surface-2;
+                            Rectangle {
+                                y: parent.height - 1px;
+                                height: 1px;
+                                background: Theme.border;
+                            }
+                            HorizontalLayout {
+                                padding-left: Theme.gap-md;
+                                alignment: start;
+                                Text {
+                                    text: "{ } settings.json";
+                                    color: Theme.text-tertiary;
+                                    font-size: Theme.font-body-sm;
+                                    font-family: "Space Mono";
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        Flickable {
+                            viewport-height: editor.preferred-height;
+                            editor := TextInput {
+                                x: Theme.gap-md;
+                                width: parent.width - 2 * Theme.gap-md;
+                                text: root.selected-config-text;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body-sm;
+                                font-family: "Space Mono";
+                                single-line: false;
+                                wrap: word-wrap;
+                                edited => { root.edit-text(self.text); }
+                            }
                         }
                     }
                 }
-                if root.selected != "" && root.selected-status == "stale" : Text {
-                    text: "This IDE is no longer on disk. Its bindings are preserved; reinstall + Refresh to bring it back.";
+
+                if root.selected-status == "stale" : Text {
+                    text: "This editor is no longer on disk. Its bindings are preserved; reinstall + click + to bring it back.";
                     color: Theme.text-tertiary;
                     font-size: Theme.font-body-sm;
                     wrap: word-wrap;
                 }
-                if root.selected != "" && root.selected-status == "not_tracked" : Text {
-                    text: "Conduit has purged its MCP entries from this IDE. Click Track this IDE to start managing it again.";
+                if root.selected-status == "not_tracked" : Text {
+                    text: "Conduit has purged its MCP entries from this editor. Click Track to manage it again.";
                     color: Theme.text-tertiary;
                     font-size: Theme.font-body-sm;
                     wrap: word-wrap;
+                }
+
+                Rectangle { background: Theme.border; height: 1px; }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: end;
+                    if root.selected-status != "not_tracked" : PillButton {
+                        label: "Remove";
+                        outline: true;
+                        bg-color: transparent;
+                        clicked => { root.remove-clicked(root.selected); }
+                    }
+                    if root.selected-status == "not_tracked" : PillButton {
+                        label: "Track this editor";
+                        bg-color: Theme.accent;
+                        fg-color: Theme.on-accent;
+                        clicked => { root.retrack-clicked(root.selected); }
+                    }
+                    if root.selected-status == "active" : PillButton {
+                        label: "Reload";
+                        outline: true;
+                        bg-color: transparent;
+                        clicked => { root.reload(); }
+                    }
+                    if root.selected-status == "active" : PillButton {
+                        label: root.selected-config-dirty ? "Save Changes *" : "Save Changes";
+                        bg-color: root.selected-config-dirty ? Theme.accent : Theme.surface-3;
+                        fg-color: root.selected-config-dirty ? Theme.on-accent : Theme.text-secondary;
+                        clicked => { root.save(); }
+                    }
                 }
             }
         }
     }
 }
-
-
