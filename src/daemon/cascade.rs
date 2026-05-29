@@ -44,46 +44,7 @@ pub async fn delete_server_with_cascade(
     delete_audit_history: bool,
 ) -> Result<CascadeReport, DbError> {
     let plan = plan_targets(db, server_name).await?;
-
-    let mut joinset = JoinSet::new();
-    let sem = std::sync::Arc::new(Semaphore::new(APPLY_PARALLELISM));
-    for target in &plan {
-        let permit = match sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_closed) => break,
-        };
-        let Some(ide) = ide_kind_from_db_name(&target.ide_name) else {
-            tracing::warn!(ide = %target.ide_name, "cascade: unknown IDE in plan; skipping");
-            continue;
-        };
-        let path = target.config_path.clone();
-        let ide_key = target.ide_key.clone();
-        let server = server_name.to_string();
-        let target_clone = target.clone();
-        joinset.spawn_blocking(move || {
-            let _permit = permit;
-            let result = clients::purge_one_server_for_ide(ide, &path, port, &ide_key, &server);
-            (target_clone, result)
-        });
-    }
-
-    let mut report = CascadeReport::default();
-    while let Some(joined) = joinset.join_next().await {
-        match joined {
-            Ok((target, Ok(()))) => report.ides_trimmed.push(target),
-            Ok((target, Err(e))) => {
-                let reason = describe(&e);
-                tracing::warn!(
-                    ide = %target.ide_name,
-                    key = %target.ide_key,
-                    error = %reason,
-                    "cascade: skipping IDE",
-                );
-                report.ides_skipped.push((target, reason));
-            }
-            Err(e) => tracing::warn!(error = %e, "cascade apply join failed"),
-        }
-    }
+    let mut report = apply_targets_parallel(&plan, server_name, port).await;
 
     let trimmed_for_commit: Vec<CascadeTrim> = report
         .ides_trimmed
@@ -109,6 +70,66 @@ pub async fn delete_server_with_cascade(
         tracing::warn!(server = %server_name, error = %e, "cascade: failed to delete OAuth tokens");
     }
     Ok(report)
+}
+
+async fn apply_targets_parallel(plan: &[TargetIde], server_name: &str, port: u16) -> CascadeReport {
+    let mut joinset = spawn_purge_tasks(plan, server_name, port).await;
+    let mut report = CascadeReport::default();
+    while let Some(joined) = joinset.join_next().await {
+        collect_purge_result(joined, &mut report);
+    }
+    report
+}
+
+fn collect_purge_result(
+    joined: Result<PurgeResult, tokio::task::JoinError>,
+    report: &mut CascadeReport,
+) {
+    match joined {
+        Ok((target, Ok(()))) => report.ides_trimmed.push(target),
+        Ok((target, Err(e))) => {
+            let reason = describe(&e);
+            tracing::warn!(
+                ide = %target.ide_name,
+                key = %target.ide_key,
+                error = %reason,
+                "cascade: skipping IDE",
+            );
+            report.ides_skipped.push((target, reason));
+        }
+        Err(e) => tracing::warn!(error = %e, "cascade apply join failed"),
+    }
+}
+
+type PurgeResult = (TargetIde, Result<(), ClientError>);
+
+async fn spawn_purge_tasks(
+    plan: &[TargetIde],
+    server_name: &str,
+    port: u16,
+) -> JoinSet<PurgeResult> {
+    let mut joinset = JoinSet::new();
+    let sem = std::sync::Arc::new(Semaphore::new(APPLY_PARALLELISM));
+    for target in plan {
+        let permit = match sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_closed) => break,
+        };
+        let Some(ide) = ide_kind_from_db_name(&target.ide_name) else {
+            tracing::warn!(ide = %target.ide_name, "cascade: unknown IDE in plan; skipping");
+            continue;
+        };
+        let path = target.config_path.clone();
+        let ide_key = target.ide_key.clone();
+        let server = server_name.to_string();
+        let target_clone = target.clone();
+        joinset.spawn_blocking(move || {
+            let _permit = permit;
+            let result = clients::purge_one_server_for_ide(ide, &path, port, &ide_key, &server);
+            (target_clone, result)
+        });
+    }
+    joinset
 }
 
 async fn plan_targets(db: &Db, server_name: &str) -> Result<Vec<TargetIde>, DbError> {

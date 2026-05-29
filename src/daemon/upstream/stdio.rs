@@ -1,13 +1,3 @@
-//! rmcp child-process transport for stdio MCP servers.
-//!
-//! Per spec §"Add MCP server flow". `connect` spawns the upstream binary and
-//! hands rmcp the piped stdio; the returned client is owned by
-//! `UpstreamManager`.
-//!
-//! TODO(v0.5): wrap the child in a process group (Unix `setsid`) / Windows Job
-//! Object so Node/Python workers don't leak. `kill_on_drop(true)` only kills
-//! the direct child (CLAUDE.md gotcha).
-
 use std::process::Stdio;
 
 use rmcp::service::{serve_client_with_ct, RoleClient, RunningService};
@@ -42,7 +32,16 @@ pub async fn connect(
         cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
 
+    #[cfg(windows)]
+    let transport = {
+        use process_wrap::tokio::{CommandWrap, JobObject};
+        let mut wrapped = CommandWrap::from(cmd);
+        wrapped.wrap(JobObject);
+        TokioChildProcess::new(wrapped)?
+    };
+    #[cfg(not(windows))]
     let transport = TokioChildProcess::new(cmd)?;
+
     let client = serve_client_with_ct((), transport, cancel)
         .await
         .map_err(|e| UpstreamError::InitFailed(e.to_string()))?;

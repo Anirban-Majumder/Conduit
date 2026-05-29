@@ -13,16 +13,12 @@ pub(crate) fn config_path_under(home: &Path) -> PathBuf {
 }
 
 pub(crate) fn config_path() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
+    if cfg!(target_os = "windows") {
         let appdata = dirs::config_dir()?;
         return Some(appdata.join("Cursor").join("mcp.json"));
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = dirs::home_dir()?;
-        Some(config_path_under(&home))
-    }
+    let home = dirs::home_dir()?;
+    Some(config_path_under(&home))
 }
 
 pub(crate) fn skills_dir_under(home: &Path) -> PathBuf {

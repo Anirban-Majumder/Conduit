@@ -58,6 +58,10 @@ use glue::util::fire_background_hint;
     clippy::too_many_lines,
     reason = "single-binary entrypoint wires every subsystem"
 )]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "single-binary entrypoint: init + IPC + DB + HTTP + tray + event loop"
+)]
 fn main() -> Result<()> {
     init_tracing();
     tracing::info!("conduit starting");
