@@ -4,10 +4,16 @@
 // structs from structs.slint so the generated Rust bindings expose them.
 // This is the file build.rs compiles; nothing imports it.
 
+import "../../assets/fonts/HankenGrotesk-Regular.ttf";
+import "../../assets/fonts/HankenGrotesk-Medium.ttf";
+import "../../assets/fonts/HankenGrotesk-SemiBold.ttf";
+import "../../assets/fonts/HankenGrotesk-Bold.ttf";
+
 import { Theme } from "theme.slint";
 import { ModalShell } from "components/modal.slint";
-import { PillButton, StatusDot, TabButton } from "components/primitives.slint";
+import { PillButton, StatusDot, TabButton, Icon } from "components/primitives.slint";
 import { ApprovalsPopup } from "components/approvals_popup.slint";
+import { ApprovalDetailModal } from "components/approval_modal.slint";
 import { ApprovalRow, AuditRow, DashboardStats, IdeRow, PolicyRow, ServerDetail, ServerIdeTarget, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
 import { AddServerDialog } from "tabs/add_server_dialog.slint";
 import { DashboardTab } from "tabs/dashboard.slint";
@@ -26,6 +32,8 @@ export component MainWindow inherits Window {
     min-width: 720px;
     min-height: 480px;
     background: Theme.bg;
+    default-font-family: "Hanken Grotesk";
+    default-font-size: Theme.font-body;
 
     in property <[ApprovalRow]> approvals;
     in property <DashboardStats> dashboard-stats;
@@ -50,6 +58,8 @@ export component MainWindow inherits Window {
 
     in-out property <int> active-tab: 0;
     in-out property <string> focused-approval: "";
+    in-out property <bool> show-approval-detail: false;
+    in-out property <ApprovalRow> selected-approval;
     in-out property <bool> show-add-server-dialog: false;
     in-out property <bool> show-delete-server-confirm: false;
     in-out property <string> pending-delete-server: "";
@@ -76,7 +86,7 @@ export component MainWindow inherits Window {
     in-out property <string> add-server-transport: "http";
     in-out property <string> add-server-paste;
     in-out property <string> add-server-headers;
-    in-out property <string> add-server-lifecycle-mode: "auto";
+    in-out property <string> add-server-lifecycle-mode: "persistent";
     in-out property <string> add-server-lifecycle-custom: "300";
     in-out property <bool> wizard-edit-mode: false;
     in-out property <string> wizard-oauth-url;
@@ -152,7 +162,7 @@ export component MainWindow inherits Window {
         root.add-server-status = "";
         root.add-server-status-is-error = false;
         root.add-server-busy = false;
-        root.add-server-lifecycle-mode = "auto";
+        root.add-server-lifecycle-mode = "persistent";
         root.add-server-lifecycle-custom = "300";
         root.wizard-phase-status = "";
         root.wizard-oauth-url = "";
@@ -162,59 +172,67 @@ export component MainWindow inherits Window {
         padding: 0px;
         spacing: 0px;
 
+        // Floating glassmorphic nav bar — card positioned against root.width to
+        // avoid a layout binding loop, centered manually.
         Rectangle {
-            background: Theme.surface;
-            height: 56px;
-            HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: Theme.gap-md;
-                alignment: space-between;
+            height: 76px;
+            Rectangle {
+                width: min(1200px, root.width - 2 * Theme.gap-lg);
+                height: 56px;
+                x: (parent.width - self.width) / 2;
+                y: Theme.gap-md;
+                background: Theme.surface;
+                border-radius: Theme.radius-pill;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 28px;
+                drop-shadow-color: #00000066;
+                drop-shadow-offset-y: 6px;
                 HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    alignment: center;
-                    Rectangle {
-                        background: Theme.accent;
-                        border-radius: 4px;
-                        width: 12px;
-                        height: 12px;
+                    padding-left: Theme.gap-lg;
+                    padding-right: Theme.gap-lg;
+                    spacing: Theme.gap-md;
+                    logo-ta := TouchArea {
+                        width: logo-text.preferred-width;
+                        clicked => {
+                            root.active-tab = 0;
+                            root.focused-approval = "";
+                        }
+                        logo-text := Text {
+                            text: "Conduit";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-lg;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
                     }
-                    Text {
-                        text: "MCP ROUTER";
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body-lg;
-                        font-weight: 700;
-                        vertical-alignment: center;
+                    Rectangle { horizontal-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 2px;
+                        alignment: center;
+                        for label[i] in ["Dashboard", "Servers", "Editors", "Skills", "Log", "Settings"] : TabButton {
+                            label: label;
+                            active: root.active-tab == i;
+                            clicked => {
+                                root.active-tab = i;
+                                root.focused-approval = "";
+                            }
+                        }
                     }
-                }
-                HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    alignment: center;
-                    StatusDot { tint: root.daemon-healthy ? Theme.success : Theme.warning; }
-                    Text {
-                        text: root.status-message;
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-body-sm;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            background: Theme.surface;
-            height: 48px;
-            HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: 4px;
-                alignment: start;
-                for label[i] in ["Dashboard", "Servers", "Editors", "Skills", "Log", "Settings", "Help"] : TabButton {
-                    label: label;
-                    active: root.active-tab == i;
-                    clicked => {
-                        root.active-tab = i;
-                        root.focused-approval = "";
+                    Rectangle { horizontal-stretch: 1; }
+                    help-ta := TouchArea {
+                        width: 22px;
+                        height: 22px;
+                        clicked => {
+                            root.active-tab = 6;
+                            root.focused-approval = "";
+                        }
+                        Icon {
+                            source: @image-url("../../assets/icons/circle-help.svg");
+                            tint: root.active-tab == 6 ? Theme.accent
+                                : help-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            size: 20px;
+                        }
                     }
                 }
             }
@@ -223,9 +241,9 @@ export component MainWindow inherits Window {
         Rectangle {
             background: Theme.bg;
             vertical-stretch: 1;
+            clip: true;
             VerticalLayout {
                 padding: Theme.gap-lg;
-                alignment: start;
                 if root.active-tab == 0 : DashboardTab {
                     vertical-stretch: 1;
                     stats: root.dashboard-stats;
@@ -241,6 +259,7 @@ export component MainWindow inherits Window {
                         root.selected-server = name;
                         root.select-server(name);
                     }
+                    add-server => { root.show-add-server(); }
                 }
                 if root.active-tab == 1 : ServersTab {
                     rows: root.servers;
@@ -331,6 +350,41 @@ export component MainWindow inherits Window {
                 if root.active-tab == 6 : HelpTab {}
             }
         }
+
+        // Blended status strip — daemon health + version, no heavy chrome.
+        Rectangle {
+            height: 30px;
+            HorizontalLayout {
+                padding-left: Theme.gap-lg + Theme.gap-md;
+                padding-right: Theme.gap-lg + Theme.gap-md;
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        StatusDot { tint: root.daemon-healthy ? Theme.success : Theme.warning; }
+                    }
+                    Text {
+                        text: root.status-message;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+                docs-ta := TouchArea {
+                    width: 180px;
+                    clicked => { root.active-tab = 6; }
+                    Text {
+                        text: "Conduit · Documentation";
+                        color: docs-ta.has-hover ? Theme.text-secondary : Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
     }
 
     // Modal dialog overlays — sit on top of everything when shown.
@@ -418,6 +472,29 @@ export component MainWindow inherits Window {
         approve-always(id, server, tool) => {
             root.approve-always-clicked(id, server, tool);
         }
+        open-details(r) => {
+            root.selected-approval = r;
+            root.show-approval-detail = true;
+        }
+    }
+
+    if root.show-approval-detail : ApprovalDetailModal {
+        width: root.width;
+        height: root.height;
+        data: root.selected-approval;
+        approve(id) => {
+            root.approve-clicked(id);
+            root.show-approval-detail = false;
+        }
+        deny(id) => {
+            root.deny-clicked(id);
+            root.show-approval-detail = false;
+        }
+        approve-always(id, server, tool) => {
+            root.approve-always-clicked(id, server, tool);
+            root.show-approval-detail = false;
+        }
+        dismiss => { root.show-approval-detail = false; }
     }
 }
 

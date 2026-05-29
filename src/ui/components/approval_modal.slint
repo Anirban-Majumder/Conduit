@@ -1,0 +1,249 @@
+// Centered "Approval Required" detail modal (docs/DESIGN.md mockup): opened from
+// the bottom-right popup to review one pending tool call in full — Server /
+// Requester cards, the tool name, and the payload arguments — then Approve,
+// Deny, or Approve-always. Shown behind main.slint's show-approval-detail flag.
+
+import { Theme } from "../theme.slint";
+import { PillButton, Icon, Chip } from "primitives.slint";
+import { ApprovalRow } from "../structs.slint";
+
+component MetaCard inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <image> icon;
+    background: Theme.surface-2;
+    border-radius: Theme.radius-input;
+    border-width: 1px;
+    border-color: Theme.border;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        padding: Theme.gap-md;
+        spacing: 6px;
+        Text {
+            text: root.label;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-eyebrow;
+            font-weight: 600;
+        }
+        HorizontalLayout {
+            spacing: Theme.gap-sm;
+            alignment: start;
+            Icon { source: root.icon; tint: Theme.accent; size: 18px; }
+            Text {
+                text: root.value;
+                color: Theme.text-primary;
+                font-size: Theme.font-body;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export component ApprovalDetailModal inherits Rectangle {
+    in property <ApprovalRow> data;
+    callback approve(string);
+    callback deny(string);
+    callback approve-always(string, string, string);
+    callback dismiss();
+
+    background: Theme.scrim;
+    TouchArea { clicked => { root.dismiss(); } }
+
+    Rectangle {
+        width: 600px;
+        height: min(680px, root.height - 80px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.surface;
+        border-radius: Theme.radius-card;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+        drop-shadow-blur: 48px;
+        drop-shadow-color: #000000cc;
+        drop-shadow-offset-y: 16px;
+        // Swallow clicks so they don't fall through to the dismiss scrim.
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 0px;
+
+            // Header.
+            Rectangle {
+                height: header-row.preferred-height + 2 * Theme.gap-lg;
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.border;
+                }
+                header-row := HorizontalLayout {
+                    x: Theme.gap-lg;
+                    y: Theme.gap-lg;
+                    width: parent.width - 2 * Theme.gap-lg;
+                    spacing: Theme.gap-md;
+                    alignment: space-between;
+                    HorizontalLayout {
+                        spacing: Theme.gap-md;
+                        alignment: start;
+                        Rectangle {
+                            width: 40px;
+                            height: 40px;
+                            border-radius: Theme.radius-input;
+                            background: Theme.accent-tint;
+                            Icon {
+                                source: @image-url("../../../assets/icons/shield-check.svg");
+                                tint: Theme.accent;
+                                size: 22px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            Text {
+                                text: "Approval Required";
+                                color: Theme.text-primary;
+                                font-size: Theme.font-headline-sm;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "Review pending tool execution request";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-body-sm;
+                            }
+                        }
+                    }
+                    close-ta := TouchArea {
+                        width: 28px;
+                        height: 28px;
+                        clicked => { root.dismiss(); }
+                        Text {
+                            text: "✕";
+                            color: close-ta.has-hover ? Theme.text-primary : Theme.text-tertiary;
+                            font-size: Theme.font-body-lg;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Body.
+            VerticalLayout {
+                padding: Theme.gap-lg;
+                spacing: Theme.gap-md;
+                vertical-stretch: 1;
+
+                HorizontalLayout {
+                    spacing: Theme.gap-md;
+                    MetaCard {
+                        label: "SERVER";
+                        value: root.data.server;
+                        icon: @image-url("../../../assets/icons/server.svg");
+                    }
+                    MetaCard {
+                        label: "REQUESTER";
+                        value: root.data.ide_name;
+                        icon: @image-url("../../../assets/icons/bot.svg");
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "Tool Execution";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                    Chip {
+                        label: root.data.tool;
+                        fg: Theme.text-primary;
+                        bg: Theme.surface-3;
+                    }
+                }
+
+                Text {
+                    text: "Payload Arguments";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-body;
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: Theme.bg;
+                    border-radius: Theme.radius-input;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    Flickable {
+                        x: Theme.gap-md;
+                        y: Theme.gap-md;
+                        width: parent.width - 2 * Theme.gap-md;
+                        height: parent.height - 2 * Theme.gap-md;
+                        viewport-height: payload.preferred-height;
+                        payload := Text {
+                            width: parent.width;
+                            text: root.data.args_json == "" ? "(no arguments)" : root.data.args_json;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                            font-family: "Space Mono";
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // Footer.
+            Rectangle {
+                height: footer-row.preferred-height + 2 * Theme.gap-md;
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: Theme.border;
+                }
+                footer-row := HorizontalLayout {
+                    x: Theme.gap-lg;
+                    width: parent.width - 2 * Theme.gap-lg;
+                    height: parent.height;
+                    spacing: Theme.gap-md;
+                    alignment: space-between;
+                    always-ta := TouchArea {
+                        width: 180px;
+                        clicked => {
+                            root.approve-always(root.data.id, root.data.server, root.data.tool);
+                        }
+                        Text {
+                            text: "Approve always for this tool";
+                            color: always-ta.has-hover ? Theme.accent-bright : Theme.accent;
+                            font-size: Theme.font-body-sm;
+                            vertical-alignment: center;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        alignment: end;
+                        VerticalLayout {
+                            alignment: center;
+                            PillButton {
+                                label: "Deny";
+                                outline: true;
+                                bg-color: transparent;
+                                fg-color: Theme.text-primary;
+                                clicked => { root.deny(root.data.id); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            PillButton {
+                                label: "Approve  ✓";
+                                bg-color: Theme.accent;
+                                fg-color: Theme.on-accent;
+                                clicked => { root.approve(root.data.id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

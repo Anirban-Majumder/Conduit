@@ -1,33 +1,33 @@
-// Bottom-right approvals popup: shows every pending tool-call request as a
-// scrollable stack of cards. Replaces the old full-page Approvals tab — it only
-// renders while approvals.length > 0 (placed behind that guard in main.slint).
-// Each card expands to reveal the request body; emits approve / deny /
-// approve-always back to the Rust glue.
+// Bottom-right approvals popup: the non-blocking queue of pending tool-call
+// requests. Renders only while approvals.length > 0 (guarded in main.slint) and
+// auto-dismisses when the queue empties. Each compact card offers Approve /
+// Deny / Approve-always inline; clicking the card body opens the full
+// "Approval Required" detail modal (open-details).
 
 import { Theme } from "../theme.slint";
-import { PillButton, StatusDot } from "primitives.slint";
+import { PillButton, Icon, StatusDot } from "primitives.slint";
 import { ApprovalRow } from "../structs.slint";
 
 component ApprovalCard inherits Rectangle {
     in property <ApprovalRow> data;
     in property <bool> focused;
-    property <bool> expanded: false;
     callback approve(string);
     callback deny(string);
     callback approve-always(string, string, string);
+    callback open-details(ApprovalRow);
 
     background: Theme.surface-2;
-    border-radius: Theme.radius-md;
+    border-radius: Theme.radius-input;
     border-width: root.focused ? 2px : 1px;
     border-color: root.focused ? Theme.accent : Theme.border;
 
     VerticalLayout {
-        padding: Theme.gap-sm;
-        spacing: 6px;
+        padding: Theme.gap-md;
+        spacing: Theme.gap-sm;
 
-        header := TouchArea {
+        info-ta := TouchArea {
             height: title-col.preferred-height;
-            clicked => { root.expanded = !root.expanded; }
+            clicked => { root.open-details(root.data); }
             HorizontalLayout {
                 spacing: Theme.gap-sm;
                 alignment: space-between;
@@ -38,6 +38,7 @@ component ApprovalCard inherits Rectangle {
                         text: root.data.server + " · " + root.data.tool;
                         color: Theme.text-primary;
                         font-size: Theme.font-body;
+                        font-weight: 600;
                         overflow: elide;
                     }
                     Text {
@@ -47,32 +48,10 @@ component ApprovalCard inherits Rectangle {
                         overflow: elide;
                     }
                 }
-                Text {
-                    text: root.expanded ? "▴" : "▾";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-body;
-                    vertical-alignment: center;
-                }
-            }
-        }
-
-        if root.expanded : Rectangle {
-            background: Theme.bg;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.border;
-            height: min(160px, body-text.preferred-height + 16px);
-            Flickable {
-                viewport-height: body-text.preferred-height;
-                body-text := Text {
-                    x: 8px;
-                    y: 8px;
-                    width: parent.width - 16px;
-                    text: root.data.args_json == "" ? "(no arguments)" : root.data.args_json;
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-body-sm;
-                    font-family: "Space Mono";
-                    wrap: word-wrap;
+                Icon {
+                    source: @image-url("../../../assets/icons/circle-help.svg");
+                    tint: info-ta.has-hover ? Theme.accent : Theme.text-tertiary;
+                    size: 16px;
                 }
             }
         }
@@ -82,22 +61,25 @@ component ApprovalCard inherits Rectangle {
             PillButton {
                 label: "Approve";
                 bg-color: Theme.accent;
-                fg-color: Theme.bg;
+                fg-color: Theme.on-accent;
                 clicked => { root.approve(root.data.id); }
             }
             PillButton {
                 label: "Deny";
+                outline: true;
+                bg-color: transparent;
+                fg-color: Theme.text-primary;
                 clicked => { root.deny(root.data.id); }
             }
         }
-        TouchArea {
-            height: 20px;
+        always-ta := TouchArea {
+            height: 18px;
             clicked => {
                 root.approve-always(root.data.id, root.data.server, root.data.tool);
             }
             Text {
                 text: "✓ Approve always for this tool";
-                color: Theme.accent;
+                color: always-ta.has-hover ? Theme.accent-bright : Theme.accent;
                 font-size: Theme.font-body-sm;
                 horizontal-alignment: center;
             }
@@ -111,16 +93,17 @@ export component ApprovalsPopup inherits Rectangle {
     callback approve(string);
     callback deny(string);
     callback approve-always(string, string, string);
+    callback open-details(ApprovalRow);
 
     width: 360px;
     height: body.preferred-height;
     background: Theme.surface;
-    border-radius: Theme.radius-lg;
+    border-radius: Theme.radius-card;
     border-width: 1px;
     border-color: Theme.border-strong;
-    drop-shadow-blur: 24px;
-    drop-shadow-color: #00000080;
-    drop-shadow-offset-y: 8px;
+    drop-shadow-blur: 32px;
+    drop-shadow-color: #000000a6;
+    drop-shadow-offset-y: 10px;
 
     body := VerticalLayout {
         padding: Theme.gap-md;
@@ -129,7 +112,11 @@ export component ApprovalsPopup inherits Rectangle {
         HorizontalLayout {
             spacing: Theme.gap-sm;
             alignment: start;
-            StatusDot { tint: Theme.warning; }
+            Icon {
+                source: @image-url("../../../assets/icons/shield-check.svg");
+                tint: Theme.accent;
+                size: 18px;
+            }
             Text {
                 text: root.rows.length == 1
                     ? "1 pending approval"
@@ -154,6 +141,7 @@ export component ApprovalsPopup inherits Rectangle {
                     approve-always(id, server, tool) => {
                         root.approve-always(id, server, tool);
                     }
+                    open-details(r) => { root.open-details(r); }
                 }
             }
         }
