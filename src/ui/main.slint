@@ -109,6 +109,31 @@ export struct SkillRepoRow {
 
 // ----- Reusable components (defined before use) -----
 
+component IdeIcon inherits Rectangle {
+    in property <string> ide-kind;
+    width: 24px;
+    height: 24px;
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: 
+            root.ide-kind == "ClaudeCode" ? @image-url("../../assets/claude-code.svg") :
+            root.ide-kind == "Cursor" ? @image-url("../../assets/cursor.svg") :
+            root.ide-kind == "VsCodeCopilot" ? @image-url("../../assets/copilot.svg") :
+            root.ide-kind == "OpenCode" ? @image-url("../../assets/opencode.svg") :
+            root.ide-kind == "OpenClaude" ? @image-url("../../assets/openclaw.svg") :
+            root.ide-kind == "Codex" ? @image-url("../../assets/codex.svg") :
+            // In case we only have display name, approximate matching:
+            root.ide-kind == "Claude Code" ? @image-url("../../assets/claude-code.svg") :
+            root.ide-kind == "VS Code + Copilot" ? @image-url("../../assets/copilot.svg") :
+            root.ide-kind == "OpenCode IDE" ? @image-url("../../assets/opencode.svg") :
+            root.ide-kind == "OpenClaude IDE" ? @image-url("../../assets/openclaw.svg") :
+            @image-url("../../assets/antigravity.svg"); // Fallback
+        image-fit: contain;
+    }
+}
+
 component TabButton inherits Rectangle {
     in property <string> label;
     in property <bool> active;
@@ -258,10 +283,20 @@ component ApprovalsTab inherits Rectangle {
                         color: Theme.text-primary;
                         font-size: Theme.font-body;
                     }
-                    Text {
-                        text: row.ide_name + " · " + row.id;
-                        color: Theme.text-tertiary;
-                        font-size: Theme.font-body-sm;
+                    HorizontalLayout {
+                        spacing: 4px;
+                        alignment: start;
+                        IdeIcon {
+                            ide-kind: row.ide_name;
+                            width: 14px;
+                            height: 14px;
+                        }
+                        Text {
+                            text: row.ide_name + " · " + row.id;
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-body-sm;
+                            vertical-alignment: center;
+                        }
                     }
                 }
                 HorizontalLayout {
@@ -466,6 +501,7 @@ component HealthCard inherits Rectangle {
 component TargetToggle inherits Rectangle {
     in property <string> label;
     in property <bool> active;
+    in property <string> ide-kind: "";
     callback toggle();
     background: root.active ? Theme.accent : Theme.surface-3;
     border-radius: Theme.radius-sm;
@@ -473,7 +509,13 @@ component TargetToggle inherits Rectangle {
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
+        spacing: 4px;
         alignment: center;
+        if root.ide-kind != "" : IdeIcon {
+            ide-kind: root.ide-kind;
+            width: 14px;
+            height: 14px;
+        }
         Text {
             text: root.label;
             color: root.active ? Theme.bg : Theme.text-secondary;
@@ -706,8 +748,9 @@ component ServersTab inherits Rectangle {
                             for t in targets : TargetToggle {
                                 label: t.label;
                                 active: t.active;
+                                ide-kind: t.ide_kind;
                                 toggle => {
-                                    root.toggle-target(root.selected, t.ide-kind, !t.active);
+                                    root.toggle-target(root.selected, t.ide_kind, !t.active);
                                 }
                             }
                         }
@@ -1043,6 +1086,7 @@ component SkillsTab inherits Rectangle {
                             if root.target-claude-code-active : TargetToggle {
                                 label: "Claude";
                                 active: row.target_claude;
+                                ide-kind: "ClaudeCode";
                                 toggle => {
                                     root.toggle-target(row.directory, "ClaudeCode", !row.target_claude);
                                 }
@@ -1050,6 +1094,7 @@ component SkillsTab inherits Rectangle {
                             if root.target-openclaude-active : TargetToggle {
                                 label: "OpenClaude";
                                 active: row.target_openclaude;
+                                ide-kind: "OpenClaude";
                                 toggle => {
                                     root.toggle-target(row.directory, "OpenClaude", !row.target_openclaude);
                                 }
@@ -1057,6 +1102,7 @@ component SkillsTab inherits Rectangle {
                             if root.target-opencode-active : TargetToggle {
                                 label: "OpenCode";
                                 active: row.target_opencode;
+                                ide-kind: "OpenCode";
                                 toggle => {
                                     root.toggle-target(row.directory, "OpenCode", !row.target_opencode);
                                 }
@@ -1064,6 +1110,7 @@ component SkillsTab inherits Rectangle {
                             if root.target-cursor-active : TargetToggle {
                                 label: "Cursor";
                                 active: row.target_cursor;
+                                ide-kind: "Cursor";
                                 toggle => {
                                     root.toggle-target(row.directory, "Cursor", !row.target_cursor);
                                 }
@@ -1071,6 +1118,7 @@ component SkillsTab inherits Rectangle {
                             if root.target-vscode-copilot-active : TargetToggle {
                                 label: "VS Code";
                                 active: row.target_vscode_copilot;
+                                ide-kind: "VsCodeCopilot";
                                 toggle => {
                                     root.toggle-target(row.directory, "VsCodeCopilot", !row.target_vscode_copilot);
                                 }
@@ -1078,6 +1126,7 @@ component SkillsTab inherits Rectangle {
                             if root.target-codex-active : TargetToggle {
                                 label: "Codex";
                                 active: row.target_codex;
+                                ide-kind: "Codex";
                                 toggle => {
                                     root.toggle-target(row.directory, "Codex", !row.target_codex);
                                 }
@@ -1175,6 +1224,11 @@ component EditorsTab inherits Rectangle {
                     HorizontalLayout {
                         spacing: 6px;
                         alignment: start;
+                        IdeIcon {
+                            ide-kind: row.kind;
+                            width: 16px;
+                            height: 16px;
+                        }
                         Text {
                             text: row.display_name;
                             color: Theme.text-primary;
@@ -1241,11 +1295,20 @@ component EditorsTab inherits Rectangle {
                 if root.selected != "" : HorizontalLayout {
                     alignment: space-between;
                     spacing: Theme.gap-sm;
-                    Text {
-                        text: root.selected-display;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-h3;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        IdeIcon {
+                            ide-kind: root.selected;
+                            width: 24px;
+                            height: 24px;
+                        }
+                        Text {
+                            text: root.selected-display;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-h3;
+                            vertical-alignment: center;
+                        }
                     }
                     HorizontalLayout {
                         spacing: 6px;
@@ -1357,6 +1420,11 @@ component LogTab inherits Rectangle {
                         tint: row.decision == "allow" || row.decision == "ask-approved" ? Theme.success
                              : row.decision == "deny" || row.decision == "ask-denied" ? Theme.danger
                              : Theme.warning;
+                    }
+                    IdeIcon {
+                        ide-kind: row.ide_name;
+                        width: 14px;
+                        height: 14px;
                     }
                     Text {
                         text: row.ide_name + " → " + row.server + "." + row.tool;
