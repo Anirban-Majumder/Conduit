@@ -256,6 +256,8 @@ fn scan_win_paths(paths: &[&str]) -> Option<PathBuf> {
 }
 
 /// Replace `$LOCALAPPDATA`, `$APPDATA`, `$USERPROFILE` with their values.
+/// Only expands when the placeholder is a path prefix — not suitable for
+/// mid-string or general env substitution.
 #[cfg(target_os = "windows")]
 fn expand_win_env(s: &str) -> String {
     let mut out = s.to_string();

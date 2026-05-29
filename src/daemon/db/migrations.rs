@@ -56,6 +56,11 @@ pub(super) fn restrict_db_perms(path: &std::path::Path) {
         if !p.exists() {
             continue;
         }
+        // TODO: /inheritance:r strips ALL ACEs before /grant:r applies new ones.
+        // A partial failure (e.g. unresolvable account) can leave a broken DACL.
+        // Consider using the *S-1-5-... SID form for the current user (via
+        // whoami) instead of USERNAME/USERDOMAIN, and verifying success before
+        // proceeding.
         let status = std::process::Command::new("icacls")
             .arg(&p)
             .args([

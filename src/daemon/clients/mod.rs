@@ -471,6 +471,8 @@ fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
+    // These could be imported from windows_sys::Win32_Foundation, but
+    // the local defs avoid pulling in additional feature gates.
     const ERROR_ACCESS_DENIED: i32 = 5;
     const ERROR_SHARING_VIOLATION: i32 = 32;
     const REPLACEFILE_IGNORE_ACL_ERRORS: u32 = 0x0000_0004;

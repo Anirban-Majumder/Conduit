@@ -27,6 +27,11 @@ type Registry = Arc<Mutex<HashMap<String, u32>>>;
 /// always) and forwards user clicks to `action_tx`. On macOS / Windows the
 /// notification is fire-and-forget — those backends drop unregistered
 /// actions silently.
+///
+/// Windows limitation: `close_by_id` is a no-op because `WinRT` exposes no
+/// close handle. Toasts resolved in-GUI before their timeout stay on screen
+/// until self-dismiss. The timeout is also coerced — `WinRT` only supports
+/// ~7s (short) or ~25s (long); our 10s falls to short.
 pub fn spawn(
     mut rx: Receiver<Event>,
     db: Db,
@@ -172,6 +177,7 @@ fn spawn_notification(
     notif.summary(&ide_name).body(&body).appname("Conduit");
     // Windows: auto-dismiss after 10s since we can't programmatically close.
     #[cfg(target_os = "windows")]
+    // WinRT only supports short (~7s) or long (~25s); 10s coerces to short.
     notif.timeout(notify_rust::Timeout::Milliseconds(10_000));
     if let Err(e) = notif.show() {
         tracing::warn!(error = %e, "notification show failed");
