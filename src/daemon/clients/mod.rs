@@ -1,7 +1,12 @@
-// IDE config writers: Claude Code, Cursor, VS Code Copilot, OpenCode,
-// OpenClaude, Codex. Each per-IDE module supplies its OS-resolved config path
-// + per-IDE schema (top-level key + optional `type` discriminator); this
-// module owns the shared deep-merge / atomic-write / purge logic.
+//! IDE config writers and the shared merge/write/purge logic.
+//!
+//! Each per-IDE submodule supplies its OS-resolved config path and schema
+//! (top-level key plus an optional `type` discriminator); this module owns the
+//! shared deep-merge, atomic-write, and purge routines. `write`/`purge` dispatch
+//! on `JsonSchema` (five IDEs) versus the TOML path (Codex), identifying our
+//! entries by exact URL shape (`http://127.0.0.1:<port>/<key>/<server>/mcp`) so
+//! user-authored entries are always preserved. Also resolves per-IDE skills
+//! directories for the sync layer.
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,5 +1,12 @@
-// MCP request bridging: forward IDE → upstream, run policy + approval gate for
-// tools/call, audit every decision. Spec §"MCP request flow".
+//! MCP request bridging: forward IDE → upstream, run the policy + approval gate
+//! for `tools/call`, and audit every decision. Spec §"MCP request flow".
+//!
+//! `route_tool_call` resolves the per-(server,tool) policy (Allow/Deny/Ask),
+//! routes Ask through `ApprovalCenter`, forwards approved calls to the upstream
+//! manager, and writes an `AuditEntry` for each tool-call outcome. Auth-flavoured
+//! upstream errors flip the server's auth-error state (edge-triggered, emitting
+//! `AuthFailure`/`AuthCleared` once per transition). Only `tools/list` and
+//! `tools/call` are proxied; audit is scoped to `tools/call` outcomes.
 
 use std::time::Instant;
 

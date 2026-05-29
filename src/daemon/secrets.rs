@@ -1,5 +1,10 @@
-// OS keyring wrapper. Per-server env at `conduit/server/<server>/env/<uuid>`.
-// OAuth credentials at `conduit-oauth/<account>:cred` (one JSON blob).
+//! OS keyring wrapper for per-server secret env values and OAuth credentials.
+//!
+//! Env secrets live at `conduit/server/<server>/env/<uuid>`; the UUID is what gets
+//! persisted in `servers.env_json`. OAuth credentials are one JSON `StoredCredentials`
+//! blob at `conduit-oauth/<account>:cred`, written under a draft account during the
+//! wizard and promoted (store-before-delete) to the canonical server name on Save.
+//! Deletes are idempotent and also purge the pre-migration 4-entry legacy layout.
 
 use keyring_core::{Entry, Error as KeyringError};
 use rmcp::transport::auth::StoredCredentials;

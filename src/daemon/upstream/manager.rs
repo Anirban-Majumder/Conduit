@@ -1,3 +1,14 @@
+//! Upstream lifecycle coordinator: spawns, caches, and reaps MCP clients.
+//!
+//! `UpstreamManager` owns the map of live `rmcp` clients keyed by server name
+//! and forwards `tools/call` / `tools/list` to them, spawning lazily on first
+//! use (`ensure_running`). A background reaper kills entries past their idle
+//! TTL; `lifecycle_seconds` is `0` = ephemeral (killed right after the call),
+//! `-1` = persistent, `N > 0` = idle TTL seconds. `RuntimeStatus` tracks
+//! last-call health and publishes debounced `ServerHealthChanged` events.
+//! `UpstreamError` is the typed error surface; `Rmcp` variants pass through to
+//! the caller verbatim per the JSON-RPC pass-through rule.
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

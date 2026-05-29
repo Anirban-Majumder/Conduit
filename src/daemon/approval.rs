@@ -1,3 +1,13 @@
+//! Tool-call approval gate: holds an HTTP request open until the user resolves
+//! it from the GUI/tray or the timeout fires.
+//!
+//! `ApprovalCenter::request` persists a `PendingApproval`, registers an in-memory
+//! `oneshot` waiter, publishes `Event::ApprovalPending`, then `select!`s the
+//! waiter against the timeout. `resolve` (driven by GUI/IPC) flips the DB row and
+//! wakes the waiter. A background sweeper times out approvals orphaned by a daemon
+//! restart. Invariant: the DB row is the source of truth; the waiter map is a
+//! best-effort fast path and may be empty (e.g. after restart).
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

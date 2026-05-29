@@ -1,8 +1,12 @@
-// rmcp child-process transport for stdio MCP servers. Spec §"Add MCP server flow".
-//
-// TODO(v0.5): wrap the child in a process group (Unix `setsid`) / Windows Job
-// Object so Node/Python workers don't leak. `kill_on_drop(true)` only kills
-// the direct child (CLAUDE.md gotcha).
+//! rmcp child-process transport for stdio MCP servers.
+//!
+//! Per spec §"Add MCP server flow". `connect` spawns the upstream binary and
+//! hands rmcp the piped stdio; the returned client is owned by
+//! `UpstreamManager`.
+//!
+//! TODO(v0.5): wrap the child in a process group (Unix `setsid`) / Windows Job
+//! Object so Node/Python workers don't leak. `kill_on_drop(true)` only kills
+//! the direct child (CLAUDE.md gotcha).
 
 use std::process::Stdio;
 

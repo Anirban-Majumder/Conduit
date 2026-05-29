@@ -1,4 +1,9 @@
-// ~/.config/systemd/user/conduit.service. Spec §"Autostart at login".
+//! Linux autostart via a systemd user unit at
+//! `~/.config/systemd/user/conduit.service`. Spec §"Autostart at login".
+//!
+//! Writes the unit atomically (`Restart=on-failure`). Install/uninstall/
+//! `is_installed` are idempotent. We deliberately don't run `systemctl` — headless,
+//! WSL2, and non-systemd setups make invoking it from the binary unreliable.
 
 use std::fs;
 use std::path::{Path, PathBuf};

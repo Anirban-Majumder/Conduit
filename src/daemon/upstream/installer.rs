@@ -1,8 +1,11 @@
-// pnpm/npm/uv/pipx install of Node/Python MCP upstreams into <installs_dir>.
-// Spec §"Server installation".
-//
-// Never `npx -y` at runtime — the 5+ second cold-fetch tax is unacceptable on
-// the request path (spec gotcha + CLAUDE.md).
+//! pnpm/npm/uv/pipx install of Node/Python MCP upstreams.
+//!
+//! Per spec §"Server installation", installs into `<installs_dir>`.
+//! `install_node` / `install_python` install once, then callers spawn the
+//! resulting binary directly via `stdio::connect`.
+//!
+//! Never `npx -y` at runtime — the 5+ second cold-fetch tax is unacceptable on
+//! the request path (spec gotcha + CLAUDE.md).
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

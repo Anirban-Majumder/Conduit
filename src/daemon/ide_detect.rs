@@ -1,5 +1,9 @@
-// IDE auto-detect at first-run. Spec §IDE auto-detect.
-// Linux/macOS/Windows: scan $PATH + per-OS app locations for the 5 supported IDEs.
+//! First-run IDE auto-detection. Spec §IDE auto-detect.
+//!
+//! Scans `$PATH` and per-OS app locations (macOS `.app` bundles) for the
+//! supported IDEs described in `IDE_SPECS`. `detect_installed` is best-effort:
+//! it never panics or errors, returning whatever it found. `IdeKind` is the
+//! canonical identity used across the DB and IDE-config writers.
 
 use std::path::PathBuf;
 

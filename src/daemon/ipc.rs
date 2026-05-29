@@ -1,3 +1,12 @@
+//! Single-instance IPC over a per-user local socket: a second launch forwards a
+//! `show` command to the running daemon instead of starting a new one.
+//!
+//! `resolve_socket_path` picks the per-OS address; `try_bind` claims it, probing
+//! and reclaiming a stale socket. `accept_loop` serves newline-delimited JSON
+//! `Command`/`Response` frames (bounded by `MAX_LINE_BYTES`), invoking `on_show`
+//! to raise the GUI. `send_command` is the client side. Only `Show` is wired;
+//! other commands are reserved for future CLI use.
+
 use std::path::PathBuf;
 use std::time::Duration;
 

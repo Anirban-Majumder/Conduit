@@ -1,0 +1,76 @@
+// Dialog scaffolding: ModalShell (centered card + scrim + close) and
+// WizardStepIndicator (the numbered Connection/Probing/Permissions strip).
+// Used by main.slint's delete-confirm dialog and the Add Server wizard.
+
+import { Theme } from "../theme.slint";
+import { PillButton } from "../components/primitives.slint";
+
+export component ModalShell inherits Rectangle {
+    in property <string> title;
+    callback dismiss();
+    background: #000000aa;
+    TouchArea { clicked => { root.dismiss(); } }
+    Rectangle {
+        background: Theme.surface;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border;
+        clip: true;
+        width: 560px;
+        height: min(640px, parent.height - 48px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        TouchArea {}
+        VerticalLayout {
+            padding: Theme.gap-lg;
+            spacing: Theme.gap-md;
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-h3;
+                }
+                PillButton {
+                    label: "Close";
+                    clicked => { root.dismiss(); }
+                }
+            }
+            @children
+        }
+    }
+}
+
+
+export component WizardStepIndicator inherits Rectangle {
+    in property <int> step;        // current 1..3
+    HorizontalLayout {
+        spacing: Theme.gap-sm;
+        alignment: start;
+        for label[i] in ["Connection", "Probing", "Permissions"] : HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                background: root.step > i ? Theme.accent
+                           : root.step == i + 1 ? Theme.warning
+                           : Theme.surface-3;
+                border-radius: 10px;
+                width: 18px;
+                height: 18px;
+                Text {
+                    text: i + 1;
+                    color: root.step >= i + 1 ? Theme.bg : Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: label;
+                color: root.step == i + 1 ? Theme.text-primary : Theme.text-tertiary;
+                font-size: Theme.font-body-sm;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+

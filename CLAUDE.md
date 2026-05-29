@@ -154,6 +154,7 @@ Shutdown sequence: Slint `app.run()` returns → fire token → `runtime.shutdow
 - Don't add error handling for impossible conditions. Trust internal code.
 - If a fix is 5 lines, the diff is 5 lines. No surrounding cleanup unless asked.
 - Run `cargo check` after every edit. Don't end a turn with a red build.
+- **File size:** soft target <500 lines per source file; ~1000-line ceiling for cohesive files. A guideline, not CI-enforced — split by domain/concern when a file outgrows it, never mechanically mid-concern.
 
 # Comments — minimal, on purpose
 
@@ -162,6 +163,7 @@ Shutdown sequence: Slint `app.run()` returns → fire token → `runtime.shutdow
 - Never explain *what* the code does. Never write "used by X" or "added for Y flow" — those rot.
 - Doc-comments (`///`) on public APIs are fine; one-line summary, no marketing prose.
 - No multi-line comment blocks. If a comment needs a paragraph, it's a missing function/type abstraction or a missing entry in `docs/`.
+- **Module-header exception:** every source file opens with a top-of-file module header — `//!` for `.rs`, `//` for `.slint`, `--` for `.sql`. One-line summary plus 2–5 lines of orientation (purpose, collaborators, load-bearing invariant); do not enumerate functions. This is a standing exception to "default: no comments" and "no multi-line comment blocks", and applies **only** to that top-of-file block. Inline comments stay why-only.
 
 # Project-specific gotchas
 

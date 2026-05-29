@@ -1,3 +1,10 @@
+//! The single multi-thread tokio runtime, owned by a dedicated `std::thread`.
+//!
+//! Slint owns the main thread, so the runtime lives off it. `Worker::spawn`
+//! builds the runtime on its own thread and hands back a `Handle`; the thread
+//! parks on the cancel token, then runs `shutdown_timeout` itself rather than
+//! relying on `Drop` of `Runtime` (which can block the main thread forever).
+
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;

@@ -1,3 +1,10 @@
+//! In-process event bus: a cloneable `tokio::sync::broadcast` wrapper carrying
+//! `Event`s from the daemon to GUI/notification subscribers.
+//!
+//! `Bus::publish` is fire-and-forget — sending with no receivers is not an error.
+//! Subscribers (tray, window, OS notifications) call `subscribe`. Bounded at
+//! `BUS_CAPACITY`; slow consumers lag rather than block publishers.
+
 use tokio::sync::broadcast;
 
 use crate::daemon::config_toml::Settings;

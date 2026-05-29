@@ -1,3 +1,5 @@
+//! Cursor config-path and skills-dir resolution.
+
 // Repo:   N/A (closed-source; vendor: Anysphere)
 // MCP:    ~/.cursor/mcp.json — top-level `mcpServers`; remote servers use `{url}` only (no `type`). Source: https://cursor.com/docs/context/mcp
 // Skills: ~/.cursor/skills/ (auto-discovered SKILL.md folders) — distinct from `.cursor/rules`. Source: https://cursor.com/docs/context/skills

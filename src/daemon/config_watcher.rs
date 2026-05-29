@@ -1,3 +1,11 @@
+//! Filesystem watcher for `config.toml` that debounces edits and republishes
+//! settings.
+//!
+//! `spawn` installs a `notify` watcher on the config's parent directory and runs
+//! a tokio debounce loop; after `DEBOUNCE` quiet seconds it reloads and publishes
+//! `Event::ConfigReloaded` on the bus. Caller must keep the returned watcher
+//! alive — dropping it detaches all watches.
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
