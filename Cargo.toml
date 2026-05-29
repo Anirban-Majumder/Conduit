@@ -64,6 +64,10 @@ uuid = { version = "1", features = ["v4"] }
 keyring = "4"
 keyring-core = { version = "1", features = ["sample"] }
 
+# Job Object (grandchild cleanup) on Windows, UnixSessionLeader on Unix.
+# Already in tree via rmcp; direct dep for CommandWrap/JobObject in stdio.rs.
+process-wrap = { version = "9", features = ["tokio1", "job-object"] }
+
 # IDE auto-detect uses std::env / std::fs directly — no sysinfo needed in v0
 # (sysinfo's strength is process inspection, not what we want for IDE detection).
 
@@ -105,12 +109,10 @@ base64 = "0.22"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 
-# Windows Job Object for grandchild process cleanup. Only linked on Windows.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
 ] }
 
 [build-dependencies]

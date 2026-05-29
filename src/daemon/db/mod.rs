@@ -59,6 +59,8 @@ use skills::{
 
 #[cfg(all(unix, not(debug_assertions)))]
 use migrations::restrict_db_perms;
+#[cfg(all(windows, not(debug_assertions)))]
+use migrations::restrict_db_perms;
 
 const CMD_CHANNEL_DEPTH: usize = 64;
 
@@ -80,6 +82,8 @@ impl Db {
     pub fn spawn_at(path: &Path) -> Result<Self, DbError> {
         let conn = Connection::open(path)?;
         #[cfg(all(unix, not(debug_assertions)))]
+        restrict_db_perms(path);
+        #[cfg(all(windows, not(debug_assertions)))]
         restrict_db_perms(path);
         Self::spawn_with(conn)
     }

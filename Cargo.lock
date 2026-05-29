@@ -1350,6 +1350,7 @@ dependencies = [
  "notify",
  "notify-rust",
  "open",
+ "process-wrap",
  "rand 0.9.4",
  "reqwest",
  "rmcp",
@@ -1367,6 +1368,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "uuid",
+ "windows-sys 0.59.0",
  "zeroize",
 ]
 

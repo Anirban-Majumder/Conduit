@@ -126,6 +126,10 @@ pub fn install(
     clippy::too_many_lines,
     reason = "single tray loop: menu init + event poll + command dispatch in one place"
 )]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "event loop with GTK drain + menu dispatch + command dispatch; flat structure"
+)]
 fn tray_thread(
     cmd_rx: mpsc::Receiver<TrayCmd>,
     cancel: CancellationToken,

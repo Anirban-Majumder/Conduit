@@ -96,7 +96,7 @@ fn close_by_id(notif_id: u32) {
 }
 
 #[cfg(target_os = "windows")]
-fn close_by_id(_notif_id: u32) {
+const fn close_by_id(_notif_id: u32) {
     // Windows notifications via WinRT don't expose a close handle.
 }
 
@@ -168,12 +168,12 @@ fn spawn_notification(
     _registry: Registry,
 ) {
     let body = format!("{server} · {tool}");
-    if let Err(e) = notify_rust::Notification::new()
-        .summary(&ide_name)
-        .body(&body)
-        .appname("Conduit")
-        .show()
-    {
+    let mut notif = notify_rust::Notification::new();
+    notif.summary(&ide_name).body(&body).appname("Conduit");
+    // Windows: auto-dismiss after 10s since we can't programmatically close.
+    #[cfg(target_os = "windows")]
+    notif.timeout(notify_rust::Timeout::Milliseconds(10_000));
+    if let Err(e) = notif.show() {
         tracing::warn!(error = %e, "notification show failed");
     }
 }

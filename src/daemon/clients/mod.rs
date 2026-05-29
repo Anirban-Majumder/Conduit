@@ -360,13 +360,10 @@ fn atomic_write_json(path: &Path, value: &Value) -> Result<(), ClientError> {
 
     let tmp = tmp_path_for(path)?;
     fs::write(&tmp, &serialized)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ignored = fs::remove_file(&tmp);
-            Err(ClientError::Io(e))
-        }
-    }
+    atomic_rename_or_replace(&tmp, path).map_err(|e| {
+        let _ignored = fs::remove_file(&tmp);
+        ClientError::Io(e)
+    })
 }
 
 /// TOML-flavored sibling of `write_uniform_mcp_servers` for Codex
@@ -463,13 +460,60 @@ fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), ClientError
 
     let tmp = tmp_path_for(path)?;
     fs::write(&tmp, &serialized)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
+    atomic_rename_or_replace(&tmp, path).map_err(|e| {
+        let _ignored = fs::remove_file(&tmp);
+        ClientError::Io(e)
+    })
+}
+
+#[cfg(windows)]
+fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    match fs::rename(tmp, target) {
+        Ok(()) => return Ok(()),
         Err(e) => {
-            let _ignored = fs::remove_file(&tmp);
-            Err(ClientError::Io(e))
+            let raw = e.raw_os_error();
+            if raw != Some(5) && raw != Some(32) {
+                return Err(e);
+            }
         }
     }
+
+    let replaced: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replacement: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
+
+    tracing::debug!(
+        ?target,
+        "rename failed (likely IDE lock), falling back to ReplaceFileW"
+    );
+
+    #[expect(
+        unsafe_code,
+        reason = "ReplaceFileW FFI — documented Windows API for atomic file replacement"
+    )]
+    let ok = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0x0000_0004, // REPLACEFILE_IGNORE_ACL_ERRORS
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(tmp, target)
 }
 
 fn tmp_path_for(path: &Path) -> Result<PathBuf, ClientError> {
