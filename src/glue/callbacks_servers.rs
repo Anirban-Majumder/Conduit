@@ -23,7 +23,7 @@ use crate::ui::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 
 use crate::glue::refresh::{refresh_server_detail, refresh_servers, toggle_server_for_ide};
 use crate::glue::util::unix_now;
-use crate::glue::wizard::{build_draft, headers_field_from_env, picker_from_lifecycle};
+use crate::glue::wizard::{build_draft, env_field_from_server, picker_from_lifecycle};
 
 #[expect(clippy::too_many_lines, reason = "wires every server-tab callback")]
 pub(crate) fn install_server_callbacks(
@@ -149,7 +149,7 @@ pub(crate) fn install_server_callbacks(
                 server.command.as_deref().unwrap_or(""),
                 server.args.clone(),
                 server.url.as_deref().unwrap_or(""),
-                "",
+                vec![],
                 server.lifecycle_seconds,
             );
             let cancel = CancellationToken::new();
@@ -258,7 +258,7 @@ pub(crate) fn install_server_callbacks(
                 return;
             };
             let (mode, custom) = picker_from_lifecycle(server.lifecycle_seconds);
-            let headers_field = headers_field_from_env(&server.env);
+            let env_field = env_field_from_server(&server);
             let _ignored = weak.upgrade_in_event_loop(move |ui| {
                 ui.set_wizard_edit_mode(true);
                 ui.set_wizard_step(1);
@@ -273,7 +273,7 @@ pub(crate) fn install_server_callbacks(
                 ));
                 ui.set_add_server_args(SharedString::from(server.args.join(" ")));
                 ui.set_add_server_url(SharedString::from(server.url.clone().unwrap_or_default()));
-                ui.set_add_server_headers(SharedString::from(headers_field));
+                ui.invoke_populate_env_from_string(SharedString::from(env_field));
                 ui.set_add_server_paste(SharedString::default());
                 ui.set_add_server_lifecycle_mode(SharedString::from(mode));
                 if !custom.is_empty() {

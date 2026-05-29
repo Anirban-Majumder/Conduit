@@ -7,10 +7,12 @@
 //! server between steps. The `*_field` / `*_picker` helpers convert UI strings to
 //! domain types.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 use conduit::daemon::db::types::{
     Decision, DecisionSource, EnvEntry, EnvValue, Server, ToolMeta as DbToolMeta, TRANSPORT_HTTP,
@@ -20,9 +22,11 @@ use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
 use conduit::daemon::onboarding::mark_first_run_completed;
 use conduit::daemon::server_validators;
-use conduit::daemon::upstream::probe::{self, DraftServerConfig, DraftTransport, HttpAuth};
+use conduit::daemon::upstream::probe::{
+    self, DraftEnvEntry, DraftServerConfig, DraftTransport, HttpAuth,
+};
 
-use crate::ui::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
+use crate::ui::{EnvVarRow, MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 
 use crate::glue::refresh::refresh_servers;
 use crate::glue::util::unix_now;
@@ -44,14 +48,60 @@ pub(crate) fn install_wizard_callbacks(
     db: Db,
     bus: Bus,
     rt: tokio::runtime::Handle,
+    env_rows: &Rc<VecModel<EnvVarRow>>,
 ) {
     let pending: Arc<std::sync::Mutex<PendingWizard>> =
         Arc::new(std::sync::Mutex::new(PendingWizard::default()));
+
+    // Env-var/header row editing — all mutate the shared model in place.
+    let rows = env_rows.clone();
+    window.on_reset_add_server_env(move || {
+        rows.set_vec(vec![EnvVarRow::default()]);
+    });
+    let rows = env_rows.clone();
+    window.on_env_add(move || {
+        rows.push(EnvVarRow::default());
+    });
+    let rows = env_rows.clone();
+    window.on_env_remove(move |i| {
+        let i = usize::try_from(i).unwrap_or(0);
+        if i < rows.row_count() {
+            rows.remove(i);
+        }
+    });
+    let rows = env_rows.clone();
+    window.on_env_set_key(move |i, key| {
+        let i = usize::try_from(i).unwrap_or(0);
+        if let Some(mut row) = rows.row_data(i) {
+            row.key = key;
+            rows.set_row_data(i, row);
+        }
+    });
+    let rows = env_rows.clone();
+    window.on_env_set_value(move |i, value| {
+        let i = usize::try_from(i).unwrap_or(0);
+        if let Some(mut row) = rows.row_data(i) {
+            row.value = value;
+            rows.set_row_data(i, row);
+        }
+    });
+    // Populate the rows from a "k=v, k2=v2" string (used by the edit path, which
+    // runs on a worker thread and can't touch the !Send model directly).
+    let rows = env_rows.clone();
+    window.on_populate_env_from_string(move |raw| {
+        let pairs = parse_headers_field(raw.as_str());
+        if pairs.is_empty() {
+            rows.set_vec(vec![EnvVarRow::default()]);
+        } else {
+            set_env_rows(&rows, &pairs);
+        }
+    });
 
     let weak = window.as_weak();
     let db_for_probe = db.clone();
     let rt_for_probe = rt.clone();
     let pending_for_probe = pending.clone();
+    let env_for_probe = env_rows.clone();
     window.on_start_probe(move || {
         let Some(ui) = weak.upgrade() else { return };
         let name = ui.get_add_server_name().to_string();
@@ -64,7 +114,7 @@ pub(crate) fn install_wizard_callbacks(
         let command = ui.get_add_server_command().to_string();
         let args_raw = ui.get_add_server_args().to_string();
         let url = ui.get_add_server_url().to_string();
-        let headers_raw = ui.get_add_server_headers().to_string();
+        let env_pairs = env_pairs_from_model(&env_for_probe);
         let lifecycle_mode = ui.get_add_server_lifecycle_mode().to_string();
         let lifecycle_custom = ui.get_add_server_lifecycle_custom().to_string();
         let lifecycle_seconds = lifecycle_from_picker(&lifecycle_mode, &lifecycle_custom);
@@ -87,11 +137,11 @@ pub(crate) fn install_wizard_callbacks(
             &command,
             args.clone(),
             &url,
-            &headers_raw,
+            env_pairs.clone(),
             lifecycle_seconds,
         );
         let env: Vec<EnvEntry> = if transport == TRANSPORT_HTTP {
-            bearer_from_headers(&parse_headers_field(&headers_raw))
+            bearer_from_headers(&env_pairs)
                 .map(|token| {
                     vec![EnvEntry {
                         name: conduit::daemon::upstream::http::BEARER_TOKEN_ENV.to_string(),
@@ -100,7 +150,13 @@ pub(crate) fn install_wizard_callbacks(
                 })
                 .unwrap_or_default()
         } else {
-            Vec::new()
+            env_pairs
+                .iter()
+                .map(|(k, v)| EnvEntry {
+                    name: k.clone(),
+                    value: EnvValue::Plain(v.clone()),
+                })
+                .collect()
         };
         let server_row = Server {
             name: name.clone(),
@@ -375,21 +431,28 @@ pub(crate) fn build_draft(
     command: &str,
     args: Vec<String>,
     url: &str,
-    headers_raw: &str,
+    env_pairs: Vec<(String, String)>,
     lifecycle_seconds: i32,
 ) -> DraftServerConfig {
     let transport = if transport == TRANSPORT_HTTP {
-        let headers = parse_headers_field(headers_raw);
         DraftTransport::Http {
             url: url.to_string(),
             auth: HttpAuth::None,
-            headers,
+            headers: env_pairs,
         }
     } else {
+        let env = env_pairs
+            .into_iter()
+            .map(|(name, value)| DraftEnvEntry {
+                name,
+                value: Zeroizing::new(value),
+                is_secret: false,
+            })
+            .collect();
         DraftTransport::Stdio {
             command: command.to_string(),
             args,
-            env: vec![],
+            env,
         }
     };
     DraftServerConfig {
@@ -398,6 +461,28 @@ pub(crate) fn build_draft(
         lifecycle_seconds,
         draft_session: uuid::Uuid::new_v4().to_string(),
     }
+}
+
+/// Non-empty (key, value) pairs from the wizard's env-var/header row model.
+pub(crate) fn env_pairs_from_model(rows: &Rc<VecModel<EnvVarRow>>) -> Vec<(String, String)> {
+    rows.iter()
+        .filter_map(|r| {
+            let key = r.key.trim().to_string();
+            (!key.is_empty()).then(|| (key, r.value.to_string()))
+        })
+        .collect()
+}
+
+/// Replace the env-var row model contents in place (preserves model identity).
+pub(crate) fn set_env_rows(rows: &Rc<VecModel<EnvVarRow>>, pairs: &[(String, String)]) {
+    let v: Vec<EnvVarRow> = pairs
+        .iter()
+        .map(|(k, val)| EnvVarRow {
+            key: SharedString::from(k.as_str()),
+            value: SharedString::from(val.as_str()),
+        })
+        .collect();
+    rows.set_vec(v);
 }
 
 pub(crate) fn lifecycle_from_picker(mode: &str, custom: &str) -> i32 {
@@ -438,6 +523,23 @@ pub(crate) fn bearer_from_headers(headers: &[(String, String)]) -> Option<String
             None
         }
     })
+}
+
+/// Serialize a saved server's env/headers into the "k=v, k2=v2" string the
+/// wizard's env-row editor is populated from.
+pub(crate) fn env_field_from_server(server: &Server) -> String {
+    if server.transport == TRANSPORT_HTTP {
+        return headers_field_from_env(&server.env);
+    }
+    server
+        .env
+        .iter()
+        .filter_map(|e| match &e.value {
+            EnvValue::Plain(v) => Some(format!("{}={}", e.name, v)),
+            EnvValue::Secret(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(crate) fn headers_field_from_env(env: &[EnvEntry]) -> String {
