@@ -1,12 +1,10 @@
-//! rmcp child-process transport for stdio MCP servers.
+//! Stdio transport for MCP upstream servers.
 //!
-//! Per spec §"Add MCP server flow". `connect` spawns the upstream binary and
-//! hands rmcp the piped stdio; the returned client is owned by
-//! `UpstreamManager`.
-//!
-//! TODO(v0.5): wrap the child in a process group (Unix `setsid`) / Windows Job
-//! Object so Node/Python workers don't leak. `kill_on_drop(true)` only kills
-//! the direct child (CLAUDE.md gotcha).
+//! Spawns a child process and connects via stdin/stdout pipes.
+//! On Windows, `CreationFlags` + `JobObject` ensure grandchild cleanup.
+//! On Unix, `kill_on_drop` only kills the direct child — grandchild
+//! processes (Node/Python workers) may leak. TODO: use `ProcessGroup`
+//! from `process-wrap` (already a dep) to fix this.
 
 use std::process::Stdio;
 
@@ -29,6 +27,8 @@ pub async fn connect(
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        // rmcp's TokioChildProcess overrides stderr to `inherit`;
+        // this piped() is a no-op but matches the intent for symmetry.
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     for (k, v) in env {
@@ -36,14 +36,23 @@ pub async fn connect(
     }
 
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
+    let transport = {
+        use process_wrap::tokio::{CommandWrap, CreationFlags, JobObject};
+        use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-    }
-
+        let mut wrapped = CommandWrap::from(cmd);
+        // CreationFlags MUST be wrapped before JobObject — JobObject
+        // ORs its CREATE_SUSPENDED into whatever CreationFlags stored.
+        wrapped.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
+            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+        )));
+        wrapped.wrap(JobObject);
+        TokioChildProcess::new(wrapped)?
+    };
+    #[cfg(not(windows))]
     let transport = TokioChildProcess::new(cmd)?;
+
     let client = serve_client_with_ct((), transport, cancel)
         .await
         .map_err(|e| UpstreamError::InitFailed(e.to_string()))?;

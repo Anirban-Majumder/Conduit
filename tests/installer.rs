@@ -5,9 +5,8 @@
     reason = "test ergonomics"
 )]
 
-use std::path::PathBuf;
-
-fn fresh_tmp(label: &str) -> PathBuf {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn fresh_tmp(label: &str) -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)

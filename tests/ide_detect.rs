@@ -139,7 +139,7 @@ fn detect_installed_returns_vec_without_panic() {
     // May be empty on CI; just assert it doesn't panic and returns a Vec.
     for ide in &results {
         match &ide.source {
-            DetectionSource::Path(p) => assert!(p.is_file()),
+            DetectionSource::Path(p) | DetectionSource::WinApp(p) => assert!(p.is_file()),
             DetectionSource::MacApp(p) => assert!(p.is_dir()),
         }
     }

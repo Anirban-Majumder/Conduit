@@ -22,18 +22,59 @@ const IDES_SQL: &str = include_str!("migrations/0004_ides.sql");
 const OAUTH_DRAFTS_SQL: &str = include_str!("migrations/0005_oauth_drafts.sql");
 
 #[cfg(all(unix, not(debug_assertions)))]
-pub(super) fn restrict_db_perms(path: &Path) {
+pub(super) fn restrict_db_perms(path: &std::path::Path) {
     use std::ffi::OsString;
     use std::os::unix::fs::PermissionsExt;
     for suffix in ["", "-wal", "-shm"] {
         let mut name: OsString = path.as_os_str().to_os_string();
         name.push(suffix);
-        let p = PathBuf::from(name);
+        let p = std::path::PathBuf::from(name);
         if !p.exists() {
             continue;
         }
         if let Err(e) = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)) {
             tracing::warn!(path = %p.display(), error = %e, "chmod 0600 failed");
+        }
+    }
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+pub(super) fn restrict_db_perms(path: &std::path::Path) {
+    use std::ffi::OsString;
+    let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
+        (Ok(domain), Ok(name)) => format!("{domain}\\{name}"),
+        (_, Ok(name)) => name,
+        _ => {
+            tracing::warn!("could not determine current user for DB permissions");
+            return;
+        }
+    };
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name: OsString = path.as_os_str().to_os_string();
+        name.push(suffix);
+        let p = std::path::PathBuf::from(&name);
+        if !p.exists() {
+            continue;
+        }
+        // TODO: /inheritance:r strips ALL ACEs before /grant:r applies new ones.
+        // A partial failure (e.g. unresolvable account) can leave a broken DACL.
+        // Consider using the *S-1-5-... SID form for the current user (via
+        // whoami) instead of USERNAME/USERDOMAIN, and verifying success before
+        // proceeding.
+        let status = std::process::Command::new("icacls")
+            .arg(&p)
+            .args([
+                "/inheritance:r",
+                "/grant:r",
+                &format!("{user}:F"),
+                "*S-1-5-18:F",
+                "*S-1-5-32-544:F",
+            ])
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => tracing::warn!(path = %p.display(), status = %s, "icacls failed"),
+            Err(e) => tracing::warn!(path = %p.display(), error = %e, "icacls spawn failed"),
         }
     }
 }

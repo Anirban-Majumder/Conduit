@@ -287,6 +287,10 @@ pub(crate) async fn refresh_server_targets(
     });
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "enable/disable branches with write vs purge paths and DB updates"
+)]
 pub(crate) async fn toggle_server_for_ide(
     db: &Db,
     port: u16,

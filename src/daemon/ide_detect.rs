@@ -78,6 +78,8 @@ pub enum DetectionSource {
     Path(PathBuf),
     /// Found as a macOS application bundle.
     MacApp(PathBuf),
+    /// Found at a well-known Windows install path.
+    WinApp(PathBuf),
 }
 
 impl DetectionSource {
@@ -85,6 +87,7 @@ impl DetectionSource {
         match self {
             Self::Path(p) => format!("path:{}", p.display()),
             Self::MacApp(p) => format!("macapp:{}", p.display()),
+            Self::WinApp(p) => format!("winapp:{}", p.display()),
         }
     }
 }
@@ -95,6 +98,8 @@ struct IdeSpec {
     binaries: &'static [&'static str],
     #[cfg(target_os = "macos")]
     mac_app: Option<&'static str>,
+    #[cfg(target_os = "windows")]
+    win_paths: &'static [&'static str],
 }
 
 const IDE_SPECS: &[IdeSpec] = &[
@@ -104,6 +109,8 @@ const IDE_SPECS: &[IdeSpec] = &[
         binaries: &["claude"],
         #[cfg(target_os = "macos")]
         mac_app: Some("Claude.app"),
+        #[cfg(target_os = "windows")]
+        win_paths: &["$APPDATA\\npm\\claude.cmd"],
     },
     IdeSpec {
         kind: IdeKind::Cursor,
@@ -111,6 +118,8 @@ const IDE_SPECS: &[IdeSpec] = &[
         binaries: &["cursor"],
         #[cfg(target_os = "macos")]
         mac_app: Some("Cursor.app"),
+        #[cfg(target_os = "windows")]
+        win_paths: &["$LOCALAPPDATA\\Programs\\Cursor\\bin\\cursor.cmd"],
     },
     IdeSpec {
         kind: IdeKind::VsCodeCopilot,
@@ -118,6 +127,11 @@ const IDE_SPECS: &[IdeSpec] = &[
         binaries: &["code"],
         #[cfg(target_os = "macos")]
         mac_app: Some("Visual Studio Code.app"),
+        #[cfg(target_os = "windows")]
+        win_paths: &[
+            "$LOCALAPPDATA\\Programs\\Microsoft VS Code\\bin\\code.cmd",
+            "C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd",
+        ],
     },
     IdeSpec {
         kind: IdeKind::OpenCode,
@@ -125,6 +139,8 @@ const IDE_SPECS: &[IdeSpec] = &[
         binaries: &["opencode"],
         #[cfg(target_os = "macos")]
         mac_app: Some("OpenCode.app"),
+        #[cfg(target_os = "windows")]
+        win_paths: &["$LOCALAPPDATA\\Programs\\OpenCode\\bin\\opencode.cmd"],
     },
     IdeSpec {
         kind: IdeKind::OpenClaude,
@@ -132,6 +148,8 @@ const IDE_SPECS: &[IdeSpec] = &[
         binaries: &["openclaude"],
         #[cfg(target_os = "macos")]
         mac_app: None,
+        #[cfg(target_os = "windows")]
+        win_paths: &[],
     },
     IdeSpec {
         kind: IdeKind::Codex,
@@ -139,6 +157,8 @@ const IDE_SPECS: &[IdeSpec] = &[
         binaries: &["codex"],
         #[cfg(target_os = "macos")]
         mac_app: None,
+        #[cfg(target_os = "windows")]
+        win_paths: &["$APPDATA\\npm\\codex.cmd"],
     },
 ];
 
@@ -198,6 +218,17 @@ pub fn detect_installed() -> Vec<DetectedIde> {
             }
         }
 
+        // Windows: try well-known install paths, then PATH
+        #[cfg(target_os = "windows")]
+        if let Some(win_path) = scan_win_paths(spec.win_paths) {
+            results.push(DetectedIde {
+                kind: spec.kind,
+                display_name: spec.display_name,
+                source: DetectionSource::WinApp(win_path),
+            });
+            continue;
+        }
+
         if let Some(bin_path) = scan_paths(&path_dirs, spec.binaries) {
             results.push(DetectedIde {
                 kind: spec.kind,
@@ -208,4 +239,35 @@ pub fn detect_installed() -> Vec<DetectedIde> {
     }
 
     results
+}
+
+/// Expand `$LOCALAPPDATA` / `$APPDATA` / `$USERPROFILE` prefixes and check
+/// if the resulting path exists as a file.
+#[cfg(target_os = "windows")]
+fn scan_win_paths(paths: &[&str]) -> Option<PathBuf> {
+    for raw in paths {
+        let expanded = expand_win_env(raw);
+        let p = PathBuf::from(&expanded);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Replace `$LOCALAPPDATA`, `$APPDATA`, `$USERPROFILE` with their values.
+/// Only expands when the placeholder is a path prefix — not suitable for
+/// mid-string or general env substitution.
+#[cfg(target_os = "windows")]
+fn expand_win_env(s: &str) -> String {
+    let mut out = s.to_string();
+    for var in ["LOCALAPPDATA", "APPDATA", "USERPROFILE"] {
+        let placeholder = format!("${var}");
+        if out.starts_with(&placeholder) {
+            if let Ok(val) = std::env::var(var) {
+                out = out.replacen(&placeholder, &val, 1);
+            }
+        }
+    }
+    out
 }

@@ -40,6 +40,12 @@ use ides::{
     query_update_ide_managed_entries, query_upsert_detected_ide,
 };
 use migrations::{init_conn, query_list_columns, query_list_tables, query_schema_version};
+
+#[cfg(any(
+    all(unix, not(debug_assertions)),
+    all(windows, not(debug_assertions))
+))]
+use migrations::restrict_db_perms;
 use oauth_drafts::{delete_oauth_draft, insert_oauth_draft, list_oauth_drafts};
 use policy::{
     query_delete_policies_for_server, query_get_policy, query_get_policy_scoped,
@@ -56,9 +62,6 @@ use skills::{
     query_list_skills, query_set_skill_repo_enabled, query_set_skill_targets,
     query_upsert_skill_repo, query_upsert_skill_with_targets,
 };
-
-#[cfg(all(unix, not(debug_assertions)))]
-use migrations::restrict_db_perms;
 
 const CMD_CHANNEL_DEPTH: usize = 64;
 
@@ -79,21 +82,20 @@ pub struct Db {
 impl Db {
     pub fn spawn_at(path: &Path) -> Result<Self, DbError> {
         let conn = Connection::open(path)?;
-        #[cfg(all(unix, not(debug_assertions)))]
-        restrict_db_perms(path);
-        Self::spawn_with(conn)
+        let db_path = path.to_path_buf();
+        Self::spawn_with_inner(conn, Some(db_path))
     }
 
     pub fn spawn_in_memory() -> Result<Self, DbError> {
         let conn = Connection::open_in_memory()?;
-        Self::spawn_with(conn)
+        Self::spawn_with_inner(conn, None)
     }
 
-    fn spawn_with(conn: Connection) -> Result<Self, DbError> {
+    fn spawn_with_inner(conn: Connection, db_path: Option<std::path::PathBuf>) -> Result<Self, DbError> {
         let (tx, rx) = mpsc::channel::<DbCmd>(CMD_CHANNEL_DEPTH);
         thread::Builder::new()
             .name("conduit-db".into())
-            .spawn(move || actor_loop(conn, rx))?;
+            .spawn(move || actor_loop(conn, rx, db_path))?;
         Ok(Self { tx })
     }
 
@@ -107,11 +109,22 @@ impl Db {
     }
 }
 
-fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
+fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>, db_path: Option<std::path::PathBuf>) {
     if let Err(e) = init_conn(&conn) {
         tracing::error!(error = %e, "db actor init failed; refusing further commands");
         return;
     }
+    // Restrict perms AFTER init_conn — WAL mode + migrations create -wal/-shm
+    // sidecars that must also be locked down.
+    #[cfg(any(
+        all(unix, not(debug_assertions)),
+        all(windows, not(debug_assertions))
+    ))]
+    if let Some(ref path) = db_path {
+        restrict_db_perms(path);
+    }
+    // db_path is only used in release builds for restrict_db_perms above.
+    let _ = &db_path;
     while let Some(cmd) = rx.blocking_recv() {
         dispatch(&conn, cmd);
     }

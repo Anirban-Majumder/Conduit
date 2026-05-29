@@ -51,26 +51,31 @@ pub async fn dispatch_action(
             }
         }
         NotificationAction::ApproveAlways { id, server, tool } => {
-            if let Err(e) = approvals.resolve(&id, ApprovalStatus::Approved).await {
-                tracing::warn!(error = %e, id = %id, "notification approve_always resolve failed");
-                return;
-            }
-            if let Err(e) = db
-                .set_policy(
-                    &server,
-                    &tool,
-                    Decision::Allow,
-                    DecisionSource::Notification,
-                )
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    server = %server,
-                    tool = %tool,
-                    "notification approve_always policy upgrade failed",
-                );
-            }
+            approve_always(db, approvals, &id, &server, &tool).await;
         }
+    }
+}
+
+async fn approve_always(
+    db: &Db,
+    approvals: &Arc<ApprovalCenter>,
+    id: &str,
+    server: &str,
+    tool: &str,
+) {
+    if let Err(e) = approvals.resolve(id, ApprovalStatus::Approved).await {
+        tracing::warn!(error = %e, id = %id, "notification approve_always resolve failed");
+        return;
+    }
+    if let Err(e) = db
+        .set_policy(server, tool, Decision::Allow, DecisionSource::Notification)
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            server = %server,
+            tool = %tool,
+            "notification approve_always policy upgrade failed",
+        );
     }
 }

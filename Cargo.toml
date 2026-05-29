@@ -64,6 +64,10 @@ uuid = { version = "1", features = ["v4"] }
 keyring = "4"
 keyring-core = { version = "1", features = ["sample"] }
 
+# Job Object (grandchild cleanup) on Windows, UnixSessionLeader on Unix.
+# Already in tree via rmcp; direct dep for CommandWrap/JobObject in stdio.rs.
+process-wrap = { version = "9", features = ["tokio1", "job-object", "creation-flags"] }
+
 # IDE auto-detect uses std::env / std::fs directly — no sysinfo needed in v0
 # (sysinfo's strength is process inspection, not what we want for IDE detection).
 
@@ -84,14 +88,6 @@ arboard = "3"
 # so Wayland desktops (Hyprland + Caelestia, etc.) display correctly.
 tray-icon = "0.24"
 
-# tray-icon's Linux backend constructs GTK menu items; gtk::init() must be
-# called from the thread that owns the menu before any of the GTK objects
-# are constructed, or muda panics with "GTK has not been initialized".
-# Version pinned to match what tray-icon's transitive `muda` already uses
-# so we share one gtk-rs instance.
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18"
-
 # §1: single-instance IPC over Unix sockets / Windows named pipes.
 interprocess = { version = "2", features = ["tokio"] }
 
@@ -104,6 +100,22 @@ open = "5"
 # §5 OAuth PKCE math: SHA-256 of the verifier, base64url encoded.
 sha2 = "0.10"
 base64 = "0.22"
+
+# tray-icon's Linux backend constructs GTK menu items; gtk::init() must be
+# called from the thread that owns the menu before any of the GTK objects
+# are constructed, or muda panics with "GTK has not been initialized".
+# Version pinned to match what tray-icon's transitive `muda` already uses
+# so we share one gtk-rs instance.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+# PROCESS_CREATION_FLAGS for process-wrap's CreationFlags wrapper (stdio.rs).
+windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [build-dependencies]
 slint-build = "1"
