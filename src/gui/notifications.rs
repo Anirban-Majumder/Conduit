@@ -84,6 +84,7 @@ pub fn spawn(
     })
 }
 
+#[cfg(not(target_os = "windows"))]
 fn close_by_id(notif_id: u32) {
     let _result = notify_rust::Notification::new()
         .id(notif_id)
@@ -92,6 +93,11 @@ fn close_by_id(notif_id: u32) {
         .timeout(notify_rust::Timeout::Milliseconds(1))
         .show()
         .map(notify_rust::NotificationHandle::close);
+}
+
+#[cfg(target_os = "windows")]
+fn close_by_id(_notif_id: u32) {
+    // Windows notifications via WinRT don't expose a close handle.
 }
 
 #[cfg(target_os = "linux")]
