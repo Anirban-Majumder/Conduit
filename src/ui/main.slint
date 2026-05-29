@@ -270,6 +270,7 @@ export component MainWindow inherits Window {
                     add-server => { root.show-add-server(); }
                 }
                 if root.active-tab == 1 : ServersTab {
+                    vertical-stretch: 1;
                     rows: root.servers;
                     selected: root.selected-server;
                     detail: root.selected-server-detail;
