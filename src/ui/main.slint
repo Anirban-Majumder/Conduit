@@ -7,16 +7,17 @@
 import { Theme } from "theme.slint";
 import { ModalShell } from "components/modal.slint";
 import { PillButton, StatusDot, TabButton } from "components/primitives.slint";
-import { ApprovalRow, AuditRow, IdeRow, PolicyRow, ServerDetail, ServerIdeTarget, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
+import { ApprovalsPopup } from "components/approvals_popup.slint";
+import { ApprovalRow, AuditRow, DashboardStats, IdeRow, PolicyRow, ServerDetail, ServerIdeTarget, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
 import { AddServerDialog } from "tabs/add_server_dialog.slint";
-import { ApprovalsTab } from "tabs/approvals.slint";
+import { DashboardTab } from "tabs/dashboard.slint";
 import { EditorsTab } from "tabs/editors.slint";
 import { HelpTab } from "tabs/help.slint";
 import { LogTab } from "tabs/log.slint";
 import { ServersTab } from "tabs/servers.slint";
 import { SettingsTab } from "tabs/settings.slint";
 import { SkillsTab } from "tabs/skills.slint";
-export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, ServerIdeTarget, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow } from "structs.slint";
+export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, ServerIdeTarget, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
 
 export component MainWindow inherits Window {
     title: "MCP Router";
@@ -27,6 +28,8 @@ export component MainWindow inherits Window {
     background: Theme.bg;
 
     in property <[ApprovalRow]> approvals;
+    in property <DashboardStats> dashboard-stats;
+    in property <[SkillRow]> dashboard-skills;
     in property <[ServerRow]> servers;
     in property <[IdeRow]> ides;
     in property <[PolicyRow]> policies;
@@ -98,6 +101,7 @@ export component MainWindow inherits Window {
 
     callback approve-clicked(string);
     callback deny-clicked(string);
+    callback approve-always-clicked(string, string, string);
     callback remove-server-clicked(string);
     callback remove-ide-clicked(string);
     callback retrack-ide-clicked(string);
@@ -205,10 +209,9 @@ export component MainWindow inherits Window {
                 padding-right: Theme.gap-md;
                 spacing: 4px;
                 alignment: start;
-                for label[i] in ["Approvals", "Servers", "Editors", "Skills", "Log", "Settings", "Help"] : TabButton {
+                for label[i] in ["Dashboard", "Servers", "Editors", "Skills", "Log", "Settings", "Help"] : TabButton {
                     label: label;
                     active: root.active-tab == i;
-                    badge: i == 0 ? root.approvals.length : 0;
                     clicked => {
                         root.active-tab = i;
                         root.focused-approval = "";
@@ -223,11 +226,21 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 padding: Theme.gap-lg;
                 alignment: start;
-                if root.active-tab == 0 : ApprovalsTab {
-                    rows: root.approvals;
-                    focused-id: root.focused-approval;
-                    approve-clicked(id) => { root.approve-clicked(id); }
-                    deny-clicked(id) => { root.deny-clicked(id); }
+                if root.active-tab == 0 : DashboardTab {
+                    vertical-stretch: 1;
+                    stats: root.dashboard-stats;
+                    servers: root.servers;
+                    skills: root.dashboard-skills;
+                    audit: root.audit;
+                    open-tab(i) => {
+                        root.active-tab = i;
+                        root.focused-approval = "";
+                    }
+                    open-server(name) => {
+                        root.active-tab = 1;
+                        root.selected-server = name;
+                        root.select-server(name);
+                    }
                 }
                 if root.active-tab == 1 : ServersTab {
                     rows: root.servers;
@@ -391,6 +404,19 @@ export component MainWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    // Bottom-right approvals popup — only present while requests are pending.
+    if root.approvals.length > 0 : popup := ApprovalsPopup {
+        x: root.width - self.width - Theme.gap-md;
+        y: root.height - self.height - Theme.gap-md;
+        rows: root.approvals;
+        focused-id: root.focused-approval;
+        approve(id) => { root.approve-clicked(id); }
+        deny(id) => { root.deny-clicked(id); }
+        approve-always(id, server, tool) => {
+            root.approve-always-clicked(id, server, tool);
         }
     }
 }

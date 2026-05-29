@@ -1,72 +1,10 @@
-// Approvals tab: pending tool-call approvals with approve/deny buttons.
-// Also home to ToolPolicyRowItem / ToolPolicyTable — the per-tool allow/ask/deny
-// editor reused by the Servers tab and the Add Server wizard.
+// Per-tool allow/ask/deny editor: ToolPolicyRowItem + ToolPolicyTable.
+// Shared by the Servers tab and the Add Server wizard to set each tool's policy.
+// Pure markup over ToolPolicyRow; emits change-decision(tool, decision).
 
 import { Theme } from "../theme.slint";
-import { EmptyState, PillButton } from "../components/primitives.slint";
-import { ApprovalRow, ToolPolicyRow } from "../structs.slint";
-
-export component ApprovalsTab inherits Rectangle {
-    in property <[ApprovalRow]> rows;
-    in property <string> focused-id;
-    callback approve-clicked(string);
-    callback deny-clicked(string);
-
-    VerticalLayout {
-        spacing: Theme.gap-sm;
-        Text {
-            text: rows.length > 0 ? "Pending approvals (" + rows.length + ")" : "No pending approvals";
-            color: Theme.text-secondary;
-            font-size: Theme.font-eyebrow;
-        }
-        if rows.length == 0 : EmptyState {
-            text: "When an IDE calls a tool whose policy is `ask`, the request appears here.";
-            height: 200px;
-        }
-        for row in rows : Rectangle {
-            background: row.id == root.focused-id ? Theme.surface-2 : Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: row.id == root.focused-id ? 2px : 1px;
-            border-color: row.id == root.focused-id ? Theme.accent : Theme.border;
-            min-height: 56px;
-            HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: Theme.gap-md;
-                alignment: space-between;
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    Text {
-                        text: row.server + "." + row.tool;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body;
-                    }
-                    Text {
-                        text: row.ide_name + " · " + row.id;
-                        color: Theme.text-tertiary;
-                        font-size: Theme.font-body-sm;
-                    }
-                }
-                HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    alignment: center;
-                    PillButton {
-                        label: "Approve";
-                        bg-color: Theme.accent;
-                        fg-color: Theme.bg;
-                        clicked => { root.approve-clicked(row.id); }
-                    }
-                    PillButton {
-                        label: "Deny";
-                        clicked => { root.deny-clicked(row.id); }
-                    }
-                }
-            }
-        }
-    }
-}
-
+import { PillButton } from "primitives.slint";
+import { ToolPolicyRow } from "../structs.slint";
 
 export component ToolPolicyRowItem inherits Rectangle {
     in property <string> name;
@@ -187,4 +125,3 @@ export component ToolPolicyTable inherits Rectangle {
         }
     }
 }
-
