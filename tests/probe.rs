@@ -55,6 +55,19 @@ async fn already_cancelled_token_short_circuits() {
 async fn cancel_mid_probe_returns_cancelled() {
     // Use a long-running command that never speaks MCP. Probe will be blocked
     // on initialize; cancelling mid-flight must return Cancelled.
+    #[cfg(windows)]
+    let cfg = stdio_cfg(
+        "hang",
+        "cmd",
+        vec![
+            "/c".into(),
+            "ping".into(),
+            "127.0.0.1".into(),
+            "-n".into(),
+            "31".into(),
+        ],
+    );
+    #[cfg(not(windows))]
     let cfg = stdio_cfg("hang", "/bin/sh", vec!["-c".into(), "sleep 30".into()]);
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();

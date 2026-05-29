@@ -16,6 +16,14 @@ use conduit::daemon::ipc::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
+fn unique_addr(tag: &str) -> SocketAddr {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let n = N.fetch_add(1, Ordering::SeqCst);
+    SocketAddr::Namespaced(format!("conduit-test-{}-{tag}-{n}", std::process::id()))
+}
+
+#[cfg(not(windows))]
 fn unique_addr(tag: &str) -> SocketAddr {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
@@ -55,10 +63,10 @@ async fn second_bind_returns_in_use_while_first_alive() {
     addr.unlink_if_file();
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn stale_socket_path_is_rebound() {
     let addr = unique_addr("stale");
-    // Create a stale file at the socket path — nobody listening.
     if let SocketAddr::FilePath(p) = &addr {
         std::fs::write(p, b"stale").expect("create stale file");
     }

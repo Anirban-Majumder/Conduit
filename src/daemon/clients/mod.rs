@@ -471,11 +471,15 @@ fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const REPLACEFILE_IGNORE_ACL_ERRORS: u32 = 0x0000_0004;
+
     match fs::rename(tmp, target) {
         Ok(()) => return Ok(()),
         Err(e) => {
             let raw = e.raw_os_error();
-            if raw != Some(5) && raw != Some(32) {
+            if raw != Some(ERROR_ACCESS_DENIED) && raw != Some(ERROR_SHARING_VIOLATION) {
                 return Err(e);
             }
         }
@@ -498,7 +502,7 @@ fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
             replaced.as_ptr(),
             replacement.as_ptr(),
             std::ptr::null(),
-            0x0000_0004, // REPLACEFILE_IGNORE_ACL_ERRORS
+            REPLACEFILE_IGNORE_ACL_ERRORS,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
