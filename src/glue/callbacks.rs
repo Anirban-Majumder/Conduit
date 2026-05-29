@@ -6,14 +6,17 @@
 //! `upgrade_in_event_loop`. A callback declared in `.slint` but not wired here
 //! is a silent no-op.
 
+use std::rc::Rc;
 use std::sync::Arc;
+
+use slint::{ModelRc, VecModel};
 
 use conduit::daemon::approval::ApprovalCenter;
 use conduit::daemon::db::Db;
 use conduit::daemon::events::Bus;
 use conduit::daemon::skills::SkillManager;
 
-use crate::ui::MainWindow;
+use crate::ui::{EnvVarRow, MainWindow};
 
 use crate::glue::callbacks_ide::install_ide_callbacks;
 use crate::glue::callbacks_misc::install_misc_callbacks;
@@ -30,9 +33,15 @@ pub(crate) fn install_callbacks(
     rt: tokio::runtime::Handle,
     skills: Arc<SkillManager>,
 ) {
+    // Shared, Rust-owned model backing the wizard's env-var/header rows. A single
+    // VecModel identity (mutated in place) keeps TextInput focus stable while
+    // typing; the wizard/servers/misc installers all edit this same handle.
+    let env_rows: Rc<VecModel<EnvVarRow>> = Rc::new(VecModel::default());
+    window.set_add_server_env_rows(ModelRc::from(env_rows.clone()));
+
     install_skills_callbacks(window, &rt, &skills);
     install_server_callbacks(window, db, approvals, bus, port, &rt);
     install_ide_callbacks(window, db, port, &rt);
-    install_misc_callbacks(window, db, &rt);
-    install_wizard_callbacks(window, db.clone(), bus.clone(), rt);
+    install_misc_callbacks(window, db, &rt, &env_rows);
+    install_wizard_callbacks(window, db.clone(), bus.clone(), rt, &env_rows);
 }

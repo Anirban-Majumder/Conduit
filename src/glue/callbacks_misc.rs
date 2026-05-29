@@ -4,15 +4,23 @@
 //! add-server JSON paste parser. Like the other callback modules, DB work runs
 //! on the tokio worker and UI writes go through the Slint event loop.
 
-use slint::{ComponentHandle, SharedString};
+use std::rc::Rc;
+
+use slint::{ComponentHandle, SharedString, VecModel};
 
 use conduit::daemon::db::types::{Decision, DecisionSource};
 use conduit::daemon::db::Db;
 use conduit::daemon::paste_parser;
 
-use crate::ui::MainWindow;
+use crate::glue::wizard::set_env_rows;
+use crate::ui::{EnvVarRow, MainWindow};
 
-pub(crate) fn install_misc_callbacks(window: &MainWindow, db: &Db, rt: &tokio::runtime::Handle) {
+pub(crate) fn install_misc_callbacks(
+    window: &MainWindow,
+    db: &Db,
+    rt: &tokio::runtime::Handle,
+    env_rows: &Rc<VecModel<EnvVarRow>>,
+) {
     let db_for_open_toggle = db.clone();
     let rt_for_open_toggle = rt.clone();
     window.on_toggle_open_window_at_startup(move |v| {
@@ -60,19 +68,22 @@ pub(crate) fn install_misc_callbacks(window: &MainWindow, db: &Db, rt: &tokio::r
         });
     });
 
+    // The Args field doubles as a paste-to-autofill input: when it holds a full
+    // MCP JSON config (starts with '{' or '['), parse it and fill the form;
+    // otherwise it's just plain arguments and we leave it alone.
     let weak_for_paste = window.as_weak();
+    let env_for_paste = env_rows.clone();
     window.on_parse_paste(move || {
         let Some(ui) = weak_for_paste.upgrade() else {
             return;
         };
-        let raw = ui.get_add_server_paste().to_string();
-        if raw.trim().is_empty() {
-            return;
+        let raw = ui.get_add_server_args().to_string();
+        let trimmed = raw.trim_start();
+        if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+            return; // plain args, not a config paste
         }
         let Ok(parsed) = paste_parser::parse(&raw) else {
-            ui.set_add_server_status(SharedString::from("Not a valid MCP JSON paste."));
-            ui.set_add_server_status_is_error(true);
-            return;
+            return; // looks like JSON but didn't parse — wait for more input
         };
         let transport = parsed.inferred_transport();
         ui.set_add_server_transport(SharedString::from(transport));
@@ -82,22 +93,18 @@ pub(crate) fn install_misc_callbacks(window: &MainWindow, db: &Db, rt: &tokio::r
         if let Some(c) = parsed.command {
             ui.set_add_server_command(SharedString::from(c));
         }
-        if !parsed.args.is_empty() {
-            ui.set_add_server_args(SharedString::from(parsed.args.join(" ")));
-        }
+        ui.set_add_server_args(SharedString::from(parsed.args.join(" ")));
         if let Some(u) = parsed.url {
             ui.set_add_server_url(SharedString::from(u));
         }
-        if !parsed.headers.is_empty() {
-            let joined = parsed
-                .headers
-                .iter()
-                .map(|h| format!("{}={}", h.name, h.value))
-                .collect::<Vec<_>>()
-                .join(", ");
-            ui.set_add_server_headers(SharedString::from(joined));
+        let pairs: Vec<(String, String)> = parsed
+            .headers
+            .iter()
+            .map(|h| (h.name.clone(), h.value.clone()))
+            .collect();
+        if !pairs.is_empty() {
+            set_env_rows(&env_for_paste, &pairs);
         }
-        ui.set_add_server_paste(SharedString::from(""));
         if ui.get_add_server_status_is_error() {
             ui.set_add_server_status(SharedString::from(""));
             ui.set_add_server_status_is_error(false);
