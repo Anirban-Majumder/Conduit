@@ -170,7 +170,11 @@ pub async fn try_bind(addr: &SocketAddr) -> Result<Listener, BindError> {
         Ok(l) => return Ok(l),
         Err(e) => e,
     };
-    if err.kind() != std::io::ErrorKind::AddrInUse {
+    // On Windows, an in-use named pipe returns PermissionDenied (os error 5),
+    // not AddrInUse. Treat both as "something is already listening".
+    let is_addr_in_use = err.kind() == std::io::ErrorKind::AddrInUse
+        || (cfg!(windows) && err.kind() == std::io::ErrorKind::PermissionDenied);
+    if !is_addr_in_use {
         return Err(BindError::from(err));
     }
     if probe_live(addr).await {
