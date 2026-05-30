@@ -6,41 +6,30 @@ description = "MCPs and skills, synced to every IDE."
 repository = "https://github.com/ahmed/conduit"  # TODO: replace with actual repo URL on push
 license = "Apache-2.0"
 
-# Dependencies populated as phases land. See specs/conduit-v0.md §Stack.
-# Stage 1 subset: only what the foundation (runtime topology, DB actor,
-# events broadcast, errors, Slint shell) directly needs. Subsequent stages
-# add axum, rmcp, reqwest, serde, toml, keyring, dirs, notify, tray-icon,
-# notify-rust, global-hotkey, tracing-appender, clap, sysinfo, and per-OS deps.
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = "0.7"
 
 slint = { version = "1", features = ["backend-winit", "renderer-skia"] }
 
-# HTTP server (the daemon's IDE-facing surface — bound to 127.0.0.1)
 axum = "0.8"
 
-# MCP wire protocol — tilde pin: minor bumps are deliberate work, patches OK
+# tilde pin: minor bumps are deliberate work, patches OK
 rmcp = { version = "~1.7", features = [
     "client",
     "server",
     "transport-child-process",
     "transport-streamable-http-server",
     "transport-streamable-http-client-reqwest",
-    # Without `reqwest`, rmcp's transport-streamable-http-client-reqwest brings
-    # in reqwest 0.13 WITHOUT a TLS connector, so https:// upstreams fail with
-    # "scheme is not http". Enabling `reqwest` flips on `reqwest?/rustls`.
-    "reqwest",
+    "reqwest",  # without this, https:// upstreams fail ("scheme is not http") — no TLS connector
     "auth",
 ] }
 
-# rustls only — openssl is banned in deny.toml. Pinned to 0.13 to match rmcp's
-# internal reqwest, so the whole tree resolves to a single reqwest version.
+# rustls only (openssl banned in deny.toml); 0.13 matches rmcp's internal reqwest
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 
 rusqlite = { version = "0.39", features = ["bundled"] }
 
-# Settings + paths
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
@@ -51,71 +40,41 @@ notify = "8"
 thiserror = "2"
 anyhow = "1"
 
-# Implementing rmcp's `#[async_trait]` CredentialStore requires the same macro crate.
-async-trait = "0.1"
+async-trait = "0.1"  # must match rmcp's #[async_trait] CredentialStore macro crate
 
-# 8-char random alphanumeric IDE keys per spec §Add IDE flow
 rand = "0.9"
-
-# UUIDs for keyring secret references (one per env var)
 uuid = { version = "1", features = ["v4"] }
 
-# Per-OS OS keyring for secret env vars + OAuth tokens.
-# keyring v4 split the client API into keyring-core; both are required.
 keyring = "4"
-keyring-core = { version = "1", features = ["sample"] }
+keyring-core = { version = "1", features = ["sample"] }  # keyring v4 split client API out; both required
 
-# Job Object (grandchild cleanup) on Windows, UnixSessionLeader on Unix.
-# Already in tree via rmcp; direct dep for CommandWrap/JobObject in stdio.rs.
+# grandchild cleanup: Job Object (Windows) / session leader (Unix)
 process-wrap = { version = "9", features = ["tokio1", "job-object", "creation-flags"] }
-
-# IDE auto-detect uses std::env / std::fs directly — no sysinfo needed in v0
-# (sysinfo's strength is process inspection, not what we want for IDE detection).
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# Notifications + GUI focus hotkey.
 notify-rust = "4"
 global-hotkey = "0.8"
-
-# §3 health card "Copy error" button: writes the rendered error chain to the
-# system clipboard.
 arboard = "3"
 
-# §6: system tray icon with menu and badge state. muda (transitive) needs
-# libxdo at link time on Linux — install via `pacman -S xdotool` /
-# `apt install libxdo-dev`. Runtime tray uses StatusNotifierItem over DBus,
-# so Wayland desktops (Hyprland + Caelestia, etc.) display correctly.
+# needs libxdo at link time on Linux: pacman -S xdotool / apt install libxdo-dev
 tray-icon = "0.24"
 
-# §1: single-instance IPC over Unix sockets / Windows named pipes.
 interprocess = { version = "2", features = ["tokio"] }
-
-# §2: probe-time secret values stay zeroized in memory until step-3 Save.
 zeroize = { version = "1", features = ["zeroize_derive"] }
-
-# §5 OAuth: open the authorize URL in the user's default browser.
 open = "5"
-
-# §5 OAuth PKCE math: SHA-256 of the verifier, base64url encoded.
 sha2 = "0.10"
 base64 = "0.22"
 
-# tray-icon's Linux backend constructs GTK menu items; gtk::init() must be
-# called from the thread that owns the menu before any of the GTK objects
-# are constructed, or muda panics with "GTK has not been initialized".
-# Version pinned to match what tray-icon's transitive `muda` already uses
-# so we share one gtk-rs instance.
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18"
+gtk = "0.18"  # pinned to match tray-icon's transitive muda — share one gtk-rs instance
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
 ] }
-# PROCESS_CREATION_FLAGS for process-wrap's CreationFlags wrapper (stdio.rs).
 windows = { version = "0.62", features = ["Win32_System_Threading"] }
 
 [build-dependencies]
@@ -143,22 +102,14 @@ strip = "none"
 debug = "full"
 lto = "thin"
 
-# ─────────────────────────────────────────────────────────────
 # Lints — enforced via `cargo clippy -- -D warnings` in CI.
-# See CLAUDE.md for rationale on each category.
-# ─────────────────────────────────────────────────────────────
-
 [lints.rust]
-# `deny` (not `forbid`): Slint's generated code uses #[allow(unsafe_code)] for
-# FFI into its runtime; `forbid` cannot be overridden by `allow`, so it makes
-# any slint! macro use a compile error. `deny` still rejects unsafe we write.
-unsafe_code = "deny"
+unsafe_code = "deny"  # not forbid: Slint's generated code uses #[allow(unsafe_code)]
 missing_debug_implementations = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
 unused_lifetimes = "warn"
 unused_qualifications = "warn"
-# Note: clippy::let_underscore_must_use is broader; we use that instead.
 
 [lints.clippy]
 # Baseline groups (priority = -1 lets specific overrides win)
