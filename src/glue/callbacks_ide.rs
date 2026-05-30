@@ -53,11 +53,18 @@ pub(crate) fn install_ide_callbacks(
                     Some(Ok(None)) | None => String::new(),
                     Some(Err(e)) => format!("// read error: {e}"),
                 };
+                let config_name = path
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
                 let _ignored = weak.upgrade_in_event_loop(move |ui| {
                     ui.set_selected_editor(SharedString::from(kind_str));
                     ui.set_selected_editor_display(SharedString::from(display));
                     ui.set_selected_editor_status_label(SharedString::from(status));
                     ui.set_selected_editor_text(SharedString::from(text));
+                    ui.set_selected_editor_config_name(SharedString::from(config_name));
                     ui.set_selected_editor_status(SharedString::default());
                     ui.set_selected_editor_status_is_error(false);
                     ui.set_selected_editor_dirty(false);

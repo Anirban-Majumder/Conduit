@@ -21,6 +21,7 @@ export component EditorsTab inherits Rectangle {
     in property <string> selected-status;
     in property <string> selected-display;
     in property <string> selected-config-text;
+    in property <string> selected-config-name;
     in property <string> selected-config-status;
     in property <bool> selected-config-status-is-error;
     in property <bool> selected-config-dirty;
@@ -107,12 +108,13 @@ export component EditorsTab inherits Rectangle {
                                     overflow: elide;
                                 }
                                 Text {
-                                    text: row.status == "active" ? "Active Session"
+                                    text: row.status == "active" ? "Tracking UID: " + row.key
                                          : row.status == "stale" ? "Disconnected"
-                                         : row.status == "not_tracked" ? "Standby"
-                                         : row.status;
+                                         : row.status == "not_tracked" ? "Not tracked"
+                                         : "unknown";
                                     color: Theme.text-tertiary;
                                     font-size: Theme.font-body-sm;
+                                    font-family: "Space Mono";
                                 }
                             }
                             VerticalLayout {
@@ -250,7 +252,7 @@ export component EditorsTab inherits Rectangle {
                                 padding-left: Theme.gap-md;
                                 alignment: start;
                                 Text {
-                                    text: "{ } settings.json";
+                                    text: root.selected-config-name;
                                     color: Theme.text-tertiary;
                                     font-size: Theme.font-body-sm;
                                     font-family: "Space Mono";

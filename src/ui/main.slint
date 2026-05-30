@@ -99,6 +99,7 @@ export component MainWindow inherits Window {
     in-out property <string> selected-editor-display: "";
     in-out property <string> selected-editor-status-label: "active";
     in-out property <string> selected-editor-text: "";
+    in-out property <string> selected-editor-config-name: "";
     in-out property <string> selected-editor-status: "";
     in-out property <bool> selected-editor-status-is-error: false;
     in-out property <bool> selected-editor-dirty: false;
@@ -292,6 +293,7 @@ export component MainWindow inherits Window {
                     selected-display: root.selected-editor-display;
                     selected-status: root.selected-editor-status-label;
                     selected-config-text: root.selected-editor-text;
+                    selected-config-name: root.selected-editor-config-name;
                     selected-config-status: root.selected-editor-status;
                     selected-config-status-is-error: root.selected-editor-status-is-error;
                     selected-config-dirty: root.selected-editor-dirty;
