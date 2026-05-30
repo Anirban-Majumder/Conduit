@@ -142,6 +142,9 @@ export component EditorsTab inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
+            // Unbounded max-height so the column fills the viewport (v-stretch 0:
+            // no competition for space — the list Flickable keeps its size).
+            Rectangle { vertical-stretch: 0; }
         }
 
         // Right: config detail.
@@ -155,6 +158,7 @@ export component EditorsTab inherits Rectangle {
                     font-size: Theme.font-body;
                     horizontal-alignment: center;
                 }
+                Rectangle { vertical-stretch: 0; }
             }
             if root.selected != "" : VerticalLayout {
                 padding: Theme.gap-lg;
@@ -255,6 +259,7 @@ export component EditorsTab inherits Rectangle {
                             }
                         }
                         Flickable {
+                            vertical-stretch: 1;
                             viewport-height: editor.preferred-height;
                             editor := TextInput {
                                 x: Theme.gap-md;
@@ -268,6 +273,7 @@ export component EditorsTab inherits Rectangle {
                                 edited => { root.edit-text(self.text); }
                             }
                         }
+                        Rectangle { vertical-stretch: 0; }
                     }
                 }
 
@@ -313,6 +319,7 @@ export component EditorsTab inherits Rectangle {
                         clicked => { root.save(); }
                     }
                 }
+                Rectangle { vertical-stretch: 0; }
             }
         }
     }

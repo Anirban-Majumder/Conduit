@@ -232,6 +232,7 @@ export component ServersTab inherits Rectangle {
                     }
                 }
             }
+            Rectangle { vertical-stretch: 0; }
         }
 
         // Right: detail.
@@ -245,10 +246,13 @@ export component ServersTab inherits Rectangle {
                     font-size: Theme.font-body;
                     horizontal-alignment: center;
                 }
+                Rectangle { vertical-stretch: 0; }
             }
-            if root.selected != "" : Flickable {
-                viewport-height: detail-col.preferred-height;
-                detail-col := VerticalLayout {
+            if root.selected != "" : VerticalLayout {
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: detail-col.preferred-height;
+                    detail-col := VerticalLayout {
                     padding: Theme.gap-lg;
                     spacing: Theme.gap-lg;
 
@@ -410,6 +414,7 @@ export component ServersTab inherits Rectangle {
                     }
                     if tools.length > 0 : ToolPolicyTable {
                         rows: root.tools;
+                        cap-height: false;
                         change-decision(tool, decision) => {
                             root.change-tool-policy(root.selected, tool, decision);
                         }
@@ -419,7 +424,9 @@ export component ServersTab inherits Rectangle {
                         color: Theme.text-tertiary;
                         font-size: Theme.font-body-sm;
                     }
+                    }
                 }
+                Rectangle { vertical-stretch: 0; }
             }
         }
     }

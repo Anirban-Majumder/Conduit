@@ -85,6 +85,7 @@ export component ToolPolicyRowItem inherits Rectangle {
 export component ToolPolicyTable inherits Rectangle {
     in property <[ToolPolicyRow]> rows;
     in property <length> list-max-height: 360px;
+    in property <bool> cap-height: true;
     callback change-decision(string, string);
     VerticalLayout {
         spacing: 6px;
@@ -111,7 +112,9 @@ export component ToolPolicyTable inherits Rectangle {
             }
         }
         Flickable {
-            height: min(root.list-max-height, content-layout.preferred-height);
+            height: root.cap-height
+                ? min(root.list-max-height, content-layout.preferred-height)
+                : content-layout.preferred-height;
             viewport-height: content-layout.preferred-height;
             content-layout := VerticalLayout {
                 spacing: 6px;
