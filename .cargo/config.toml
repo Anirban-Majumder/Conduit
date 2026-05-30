@@ -1,0 +1,4 @@
+# Dev link speed: lld (multi-threaded) replaces the slow single-threaded bfd
+# linker — linking conduit(bin) against skia/gtk is the long pole per rebuild.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
