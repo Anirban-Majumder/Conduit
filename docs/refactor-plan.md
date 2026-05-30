@@ -1,6 +1,6 @@
 # Conduit Quality Refactor — Implementation Plan
 
-> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (branch `refactor/quality-improvements`, commit `8b8f84a`). Phases 2–4 pending.
+> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phases 3–4 pending.
 > **Scope of analysis:** all of `src/` (~13.7k Rust LOC + 3.8k Slint LOC, ~90 files).
 > **Goal stated by request:** make the codebase SOLID, DRY, extensible, and Google-level readable while preserving its architectural contracts.
 
@@ -115,14 +115,14 @@ Each public method then collapses to a single `self.send_cmd(|reply| DbCmd::GetS
 
 ---
 
-### Phase 2 — SOLID / extensibility (the structural win)
+### Phase 2 — SOLID / extensibility (the structural win) ✅ DONE
 
 > The single highest-leverage SOLID refactor in the codebase: turn "edit 7 match arms" into "add one module + one registry line." Self-contained behind stable public signatures, so callers/tests don't move.
 
 | Slice | Files | Risk | Effort | Depends on |
 |---|---|---|---|---|
-| **2.1 — `ClientSpec` trait + registry replacing 7 `match ide {}` dispatchers** **[cfg]** | `src/daemon/clients/{mod,claude_code,cursor,codex,opencode,openclaude,vscode_copilot}.rs` | medium | M | — |
-| **2.2 — Split `clients/mod.rs` by concern + serde error context** | `src/daemon/clients/mod.rs`, new `merger.rs`, new `io.rs` | low | M | 2.1 |
+| **2.1 — `ClientSpec` trait + registry replacing 7 `match ide {}` dispatchers** ✅ | `src/daemon/clients/{mod,claude_code,cursor,codex,opencode,openclaude,vscode_copilot}.rs` | medium | M | — |
+| **2.2 — Split `clients/mod.rs` by concern + serde error context** ✅ | `src/daemon/clients/mod.rs`, new `merger.rs`, new `io.rs` | low | M | 2.1 |
 
 **2.1** — `clients/mod.rs` has **7 exhaustive `match ide {}` dispatchers** (`json_schema_for`, `config_path_for`, `config_path_under`, `ide_name`, `icon_svg`, `skills_dir_for`, `skills_dir_under` at lines 36/78/92/113/124/151/167). Adding the Nth IDE forces editing all 7. Introduce:
 ```rust
