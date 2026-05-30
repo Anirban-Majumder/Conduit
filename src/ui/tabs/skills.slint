@@ -308,6 +308,7 @@ export component SkillsTab inherits Rectangle {
                             for t in row.targets : IconToggle {
                                 source: t.icon;
                                 active: t.active;
+                                label: t.ide-kind;
                                 toggle => {
                                     root.toggle-target(row.directory, t.ide-kind, !t.active);
                                 }

@@ -110,10 +110,13 @@ export component Icon inherits Rectangle {
 
 
 // Icon-based toggle button: white icon when inactive, original SVG colors when
-// active with a visible background. Used for per-IDE toggles in the Skills tab.
+// active with a visible background. `label` (the IDE name) surfaces as a
+// hover tooltip floating above the icon. Used for per-IDE toggles in the
+// Servers detail + Skills tabs.
 export component IconToggle inherits Rectangle {
     in property <image> source;
     in property <bool> active;
+    in property <string> label;
     callback toggle();
     width: 36px;
     height: 36px;
@@ -127,7 +130,28 @@ export component IconToggle inherits Rectangle {
         tint: white;
         size: 20px;
     }
-    TouchArea { clicked => { root.toggle(); } }
+    ta := TouchArea { clicked => { root.toggle(); } }
+    // Hover tooltip. Explicit x/y/size: a non-layout Rectangle would otherwise
+    // inherit the 36px parent width and clip the name. Floats above the icon,
+    // so it never overlaps the TouchArea below it.
+    if ta.has-hover && root.label != "" : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: -self.height - 6px;
+        width: tip-text.preferred-width + 16px;
+        height: tip-text.preferred-height + 8px;
+        background: Theme.surface-3;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        tip-text := Text {
+            x: 8px;
+            y: 4px;
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            font-weight: 600;
+        }
+    }
 }
 
 
