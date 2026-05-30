@@ -18,7 +18,7 @@ INSERT INTO skill_repos (owner, name, branch, enabled)
 SELECT 'anthropics',  'skills',                'main',   1
 WHERE NOT EXISTS (SELECT 1 FROM settings_kv WHERE key = 'skill_repos_seeded');
 INSERT INTO skill_repos (owner, name, branch, enabled)
-SELECT 'ComposioHQ',  'awesome-claude-skills', 'master', 1
+SELECT 'mattpocock',  'skills',                'main',   1
 WHERE NOT EXISTS (SELECT 1 FROM settings_kv WHERE key = 'skill_repos_seeded');
 INSERT OR IGNORE INTO settings_kv (key, value) VALUES ('skill_repos_seeded', '1');
 

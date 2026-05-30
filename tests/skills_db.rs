@@ -36,7 +36,7 @@ async fn skill_repos_default_two_seed_rows() {
         .any(|r| r.owner == "anthropics" && r.name == "skills"));
     assert!(repos
         .iter()
-        .any(|r| r.owner == "ComposioHQ" && r.name == "awesome-claude-skills"));
+        .any(|r| r.owner == "mattpocock" && r.name == "skills"));
 }
 
 #[tokio::test]

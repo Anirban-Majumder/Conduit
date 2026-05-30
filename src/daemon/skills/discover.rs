@@ -377,9 +377,9 @@ mod tests {
                 enabled: true,
             },
             SkillRepo {
-                owner: "ComposioHQ".into(),
-                name: "awesome-claude-skills".into(),
-                branch: "master".into(),
+                owner: "mattpocock".into(),
+                name: "skills".into(),
+                branch: "main".into(),
                 enabled: true,
             },
         ];
