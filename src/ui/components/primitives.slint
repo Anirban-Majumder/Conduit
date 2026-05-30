@@ -96,15 +96,38 @@ export component Icon inherits Rectangle {
     in property <image> source;
     in property <color> tint: Theme.text-secondary;
     in property <length> size: 18px;
+    in property <bool> no-colorize: false;
     width: root.size;
     height: root.size;
     Image {
         source: root.source;
-        colorize: root.tint;
+        colorize: root.no-colorize ? transparent : root.tint;
         width: 100%;
         height: 100%;
         image-fit: contain;
     }
+}
+
+
+// Icon-based toggle button: white icon when inactive, original SVG colors when
+// active with a visible background. Used for per-IDE toggles in the Skills tab.
+export component IconToggle inherits Rectangle {
+    in property <image> source;
+    in property <bool> active;
+    callback toggle();
+    width: 36px;
+    height: 36px;
+    border-radius: Theme.radius-md;
+    background: root.active ? Theme.surface-3 : transparent;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : transparent;
+    Icon {
+        source: root.source;
+        no-colorize: root.active;
+        tint: white;
+        size: 20px;
+    }
+    TouchArea { clicked => { root.toggle(); } }
 }
 
 
