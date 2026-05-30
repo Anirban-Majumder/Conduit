@@ -22,6 +22,41 @@ use crate::glue::util::{
     run_ide_detection,
 };
 
+/// Repaint the right-hand detail pane for `kind_str` from the DB + disk.
+/// Shared by selection, retrack, and remove so the pane never goes stale
+/// when an action mutates the selected IDE's status under it.
+async fn refresh_selected_editor(weak: &slint::Weak<MainWindow>, db: &Db, kind_str: String) {
+    let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+    let path = resolve_ide_config_path(record.as_ref());
+    let status = record
+        .as_ref()
+        .map_or_else(|| "active".to_string(), |r| r.status.as_db_str().to_string());
+    let display = record
+        .as_ref()
+        .map_or_else(|| kind_str.clone(), |r| r.display_name.clone());
+    let text = match path.as_deref().map(clients::read_raw) {
+        Some(Ok(Some(s))) => s,
+        Some(Ok(None)) | None => String::new(),
+        Some(Err(e)) => format!("// read error: {e}"),
+    };
+    let config_name = path
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_selected_editor(SharedString::from(kind_str));
+        ui.set_selected_editor_display(SharedString::from(display));
+        ui.set_selected_editor_status_label(SharedString::from(status));
+        ui.set_selected_editor_text(SharedString::from(text));
+        ui.set_selected_editor_config_name(SharedString::from(config_name));
+        ui.set_selected_editor_status(SharedString::default());
+        ui.set_selected_editor_status_is_error(false);
+        ui.set_selected_editor_dirty(false);
+    });
+}
+
 #[expect(clippy::too_many_lines, reason = "wires every editors-tab callback")]
 pub(crate) fn install_ide_callbacks(
     window: &MainWindow,
@@ -39,36 +74,7 @@ pub(crate) fn install_ide_callbacks(
             let weak = weak.clone();
             let kind_str = kind_str.to_string();
             rt.spawn(async move {
-                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
-                let path = resolve_ide_config_path(record.as_ref());
-                let status = record.as_ref().map_or_else(
-                    || "active".to_string(),
-                    |r| r.status.as_db_str().to_string(),
-                );
-                let display = record
-                    .as_ref()
-                    .map_or_else(|| kind_str.clone(), |r| r.display_name.clone());
-                let text = match path.as_deref().map(clients::read_raw) {
-                    Some(Ok(Some(s))) => s,
-                    Some(Ok(None)) | None => String::new(),
-                    Some(Err(e)) => format!("// read error: {e}"),
-                };
-                let config_name = path
-                    .as_deref()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let _ignored = weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_selected_editor(SharedString::from(kind_str));
-                    ui.set_selected_editor_display(SharedString::from(display));
-                    ui.set_selected_editor_status_label(SharedString::from(status));
-                    ui.set_selected_editor_text(SharedString::from(text));
-                    ui.set_selected_editor_config_name(SharedString::from(config_name));
-                    ui.set_selected_editor_status(SharedString::default());
-                    ui.set_selected_editor_status_is_error(false);
-                    ui.set_selected_editor_dirty(false);
-                });
+                refresh_selected_editor(&weak, &db, kind_str).await;
             });
         });
     }
@@ -195,6 +201,7 @@ pub(crate) fn install_ide_callbacks(
         rt_for_remove_ide.spawn(async move {
             remove_ide(&db, port_for_remove_ide, &kind_str).await;
             refresh_ides(&weak, &db).await;
+            refresh_selected_editor(&weak, &db, kind_str).await;
             // Repaint skills: their per-skill toggle set tracks detected IDEs.
             refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
@@ -218,6 +225,7 @@ pub(crate) fn install_ide_callbacks(
                 return;
             }
             refresh_ides(&weak, &db).await;
+            refresh_selected_editor(&weak, &db, kind_str).await;
             refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
                 refresh_server_targets(&weak, &db, &server).await;

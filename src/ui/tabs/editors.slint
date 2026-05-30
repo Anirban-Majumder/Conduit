@@ -295,9 +295,8 @@ export component EditorsTab inherits Rectangle {
                 Rectangle { background: Theme.border; height: 1px; }
                 HorizontalLayout {
                     spacing: Theme.gap-sm;
-                    alignment: end;
                     if root.selected-status != "not_tracked" : PillButton {
-                        label: "Remove";
+                        label: "Remove (untrack & purge entries)";
                         outline: true;
                         bg-color: transparent;
                         clicked => { root.remove-clicked(root.selected); }
@@ -308,6 +307,8 @@ export component EditorsTab inherits Rectangle {
                         fg-color: Theme.on-accent;
                         clicked => { root.retrack-clicked(root.selected); }
                     }
+                    // Spacer: pushes the editor actions to the far-right edge.
+                    Rectangle { horizontal-stretch: 1; }
                     if root.selected-status == "active" : PillButton {
                         label: "Reload";
                         outline: true;
