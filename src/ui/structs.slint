@@ -42,6 +42,20 @@ export struct IdeRow {
     key: string,
     status: string,
     config_path: string,
+    icon: image,
+}
+
+// Per-IDE brand icons, sourced from each client module's `ICON_SVG` and set
+// once by the Rust glue. Tabs bind these instead of hardcoding asset paths, so
+// adding an IDE touches no `.slint`. Editors-tab list rows carry their own
+// per-row `IdeRow.icon`; this global serves the fixed toggle sets (e.g. Skills).
+export global IdeIcons {
+    in property <image> claude-code;
+    in property <image> openclaude;
+    in property <image> opencode;
+    in property <image> cursor;
+    in property <image> vscode-copilot;
+    in property <image> codex;
 }
 
 export struct PolicyRow {

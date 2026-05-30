@@ -90,13 +90,7 @@ export component EditorsTab inherits Rectangle {
                                 background: Theme.surface-3;
                                 border-radius: Theme.radius-md;
                                 Icon {
-                                    source: row.kind == "ClaudeCode" ? @image-url("../../../assets/claude-code.svg")
-                                         : row.kind == "OpenClaude" ? @image-url("../../../assets/openclaw.svg")
-                                         : row.kind == "OpenCode" ? @image-url("../../../assets/opencode.svg")
-                                         : row.kind == "Cursor" ? @image-url("../../../assets/cursor.svg")
-                                         : row.kind == "VsCodeCopilot" ? @image-url("../../../assets/copilot.svg")
-                                         : row.kind == "Codex" ? @image-url("../../../assets/codex.svg")
-                                         : @image-url("../../../assets/icons/terminal.svg");
+                                    source: row.icon;
                                     tint: transparent;
                                     size: 20px;
                                 }

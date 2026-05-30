@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) const IDE_NAME: &str = "Cursor";
+pub(crate) const ICON_SVG: &[u8] = include_bytes!("../../../assets/client/cursor.svg");
 
 pub(crate) fn config_path_under(home: &Path) -> PathBuf {
     home.join(".cursor").join("mcp.json")

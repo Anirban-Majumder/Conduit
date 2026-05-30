@@ -158,6 +158,22 @@ const fn ide_name(ide: IdeKind) -> &'static str {
     }
 }
 
+/// Compile-time SVG bytes for the IDE's brand icon.
+///
+/// Each client module declares its own `ICON_SVG` (via `include_bytes!`), so
+/// adding an IDE needs no UI edit: the GUI renders this through
+/// `slint::Image::load_from_svg_data`.
+pub const fn icon_svg(ide: IdeKind) -> &'static [u8] {
+    match ide {
+        IdeKind::ClaudeCode => claude_code::ICON_SVG,
+        IdeKind::Cursor => cursor::ICON_SVG,
+        IdeKind::VsCodeCopilot => vscode_copilot::ICON_SVG,
+        IdeKind::OpenCode => opencode::ICON_SVG,
+        IdeKind::OpenClaude => openclaude::ICON_SVG,
+        IdeKind::Codex => codex::ICON_SVG,
+    }
+}
+
 /// Inject our entries into the IDE's MCP config.
 ///
 /// Returns a `ManagedIdeConfig` describing what was written. Caller persists

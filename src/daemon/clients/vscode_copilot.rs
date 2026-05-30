@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) const IDE_NAME: &str = "VsCodeCopilot";
+pub(crate) const ICON_SVG: &[u8] = include_bytes!("../../../assets/client/copilot.svg");
 
 pub(crate) fn config_path_under(home: &Path) -> PathBuf {
     // Linux-style fallback used by tests. Real per-OS resolution goes through

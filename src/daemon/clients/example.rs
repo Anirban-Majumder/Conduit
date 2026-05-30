@@ -13,7 +13,10 @@
 //!      OR add a TOML branch like Codex.
 //!   4. Map the variant in `config_path_for` / `config_path_under` /
 //!      `ide_kind_from_db_name` / `ide_name`.
-//!   5. If skills are auto-loaded, map it in `skills_dir_for` /
+//!   5. Drop a brand SVG at `assets/client/<name>.svg`, point `ICON_SVG` below
+//!      at it, and map the variant in `icon_svg`. The GUI auto-renders it via
+//!      `slint::Image::load_from_svg_data` — no `.slint` edit needed.
+//!   6. If skills are auto-loaded, map it in `skills_dir_for` /
 //!      `skills_dir_under` and add to `SKILL_TARGET_IDES`.
 //!
 //! Drive every path through `dirs::home_dir()` / `dirs::config_dir()` — never
@@ -25,6 +28,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) const IDE_NAME: &str = "ExampleClient";
+pub(crate) const ICON_SVG: &[u8] = include_bytes!("../../../assets/client/example.svg");
 
 pub(crate) fn config_path_under(home: &Path) -> PathBuf {
     home.join(".example").join("config.json")

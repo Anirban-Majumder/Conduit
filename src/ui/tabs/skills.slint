@@ -3,7 +3,7 @@
 
 import { Theme } from "../theme.slint";
 import { EmptyState, PillButton, IconToggle } from "../components/primitives.slint";
-import { SkillRepoRow, SkillRow } from "../structs.slint";
+import { IdeIcons, SkillRepoRow, SkillRow } from "../structs.slint";
 import { TargetToggle } from "../tabs/servers.slint";
 
 export component SkillsTab inherits Rectangle {
@@ -312,42 +312,42 @@ export component SkillsTab inherits Rectangle {
                             spacing: 4px;
                             alignment: end;
                             if root.target-claude-code-active : IconToggle {
-                                source: @image-url("../../../assets/claude-code.svg");
+                                source: IdeIcons.claude-code;
                                 active: row.target_claude;
                                 toggle => {
                                     root.toggle-target(row.directory, "ClaudeCode", !row.target_claude);
                                 }
                             }
                             if root.target-openclaude-active : IconToggle {
-                                source: @image-url("../../../assets/openclaw.svg");
+                                source: IdeIcons.openclaude;
                                 active: row.target_openclaude;
                                 toggle => {
                                     root.toggle-target(row.directory, "OpenClaude", !row.target_openclaude);
                                 }
                             }
                             if root.target-opencode-active : IconToggle {
-                                source: @image-url("../../../assets/opencode.svg");
+                                source: IdeIcons.opencode;
                                 active: row.target_opencode;
                                 toggle => {
                                     root.toggle-target(row.directory, "OpenCode", !row.target_opencode);
                                 }
                             }
                             if root.target-cursor-active : IconToggle {
-                                source: @image-url("../../../assets/cursor.svg");
+                                source: IdeIcons.cursor;
                                 active: row.target_cursor;
                                 toggle => {
                                     root.toggle-target(row.directory, "Cursor", !row.target_cursor);
                                 }
                             }
                             if root.target-vscode-copilot-active : IconToggle {
-                                source: @image-url("../../../assets/copilot.svg");
+                                source: IdeIcons.vscode-copilot;
                                 active: row.target_vscode_copilot;
                                 toggle => {
                                     root.toggle-target(row.directory, "VsCodeCopilot", !row.target_vscode_copilot);
                                 }
                             }
                             if root.target-codex-active : IconToggle {
-                                source: @image-url("../../../assets/codex.svg");
+                                source: IdeIcons.codex;
                                 active: row.target_codex;
                                 toggle => {
                                     root.toggle-target(row.directory, "Codex", !row.target_codex);

@@ -99,7 +99,11 @@ for free; recursive copy is the fallback when symlinks aren't allowed
 Copy [`src/daemon/clients/example.rs`](src/daemon/clients/example.rs) to
 `src/daemon/clients/<name>.rs`, fill in the 3-line citation header from
 authoritative docs/source (never invent URLs), then wire the new variant
-through `IdeKind` and the dispatchers in [`mod.rs`](src/daemon/clients/mod.rs). 
+through `IdeKind` and the dispatchers in [`mod.rs`](src/daemon/clients/mod.rs).
+
+Drop the client's brand icon at [`assets/client/<name>.svg`](assets/client/)
+and point the module's `ICON_SVG` at it. The GUI discovers it through
+`icon_svg` and renders it everywhere that IDE appears.
 
 ## 📄 License
 

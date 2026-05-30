@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) const IDE_NAME: &str = "ClaudeCode";
+pub(crate) const ICON_SVG: &[u8] = include_bytes!("../../../assets/client/claude-code.svg");
 
 pub(crate) fn config_path_under(home: &Path) -> PathBuf {
     home.join(".claude.json")

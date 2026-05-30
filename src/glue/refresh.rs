@@ -18,7 +18,7 @@ use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::SkillManager;
 
 use crate::ui::{
-    ApprovalRow, AuditRow, DashboardStats, IdeRow, MainWindow, PolicyRow, ServerDetail,
+    ApprovalRow, AuditRow, DashboardStats, IdeIcons, IdeRow, MainWindow, PolicyRow, ServerDetail,
     ServerIdeTarget, ServerRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
@@ -28,6 +28,25 @@ use crate::glue::util::{
     settings_to_row, unix_now,
 };
 
+/// Decode an IDE's embedded brand SVG into a `slint::Image`. Falls back to an
+/// empty image if the bytes fail to parse. Must run on the UI thread (`Image`
+/// is not `Send`).
+fn ide_icon(kind: IdeKind) -> slint::Image {
+    slint::Image::load_from_svg_data(clients::icon_svg(kind)).unwrap_or_default()
+}
+
+/// Populate the `IdeIcons` global once, so tabs with fixed per-IDE toggle sets
+/// (Skills) bind icons by name instead of hardcoding asset paths.
+fn set_ide_icons(window: &MainWindow) {
+    let icons = window.global::<IdeIcons<'_>>();
+    icons.set_claude_code(ide_icon(IdeKind::ClaudeCode));
+    icons.set_openclaude(ide_icon(IdeKind::OpenClaude));
+    icons.set_opencode(ide_icon(IdeKind::OpenCode));
+    icons.set_cursor(ide_icon(IdeKind::Cursor));
+    icons.set_vscode_copilot(ide_icon(IdeKind::VsCodeCopilot));
+    icons.set_codex(ide_icon(IdeKind::Codex));
+}
+
 pub(crate) fn push_initial_models(
     window: &MainWindow,
     db: &Db,
@@ -36,6 +55,7 @@ pub(crate) fn push_initial_models(
     skills: Arc<SkillManager>,
 ) {
     window.set_settings(settings_to_row(settings));
+    set_ide_icons(window);
 
     let weak = window.as_weak();
     let db_for_refresh = db.clone();
@@ -388,22 +408,30 @@ pub(crate) async fn toggle_server_for_ide(
 
 pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
     let records = db.list_ides().await.unwrap_or_default();
-    let rows: Vec<IdeRow> = records
-        .into_iter()
-        .map(|r| IdeRow {
-            kind: SharedString::from(r.ide_kind),
-            display_name: SharedString::from(r.display_name),
-            key: SharedString::from(r.ide_key),
-            status: SharedString::from(r.status.as_db_str()),
-            config_path: SharedString::from(
-                r.config_path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
-            ),
-        })
-        .collect();
+    // Build rows (and decode their SVG icons) on the UI thread: `slint::Image`
+    // is not `Send`, so it can't be constructed before `upgrade_in_event_loop`.
     weak.upgrade_in_event_loop(move |ui| {
+        let rows: Vec<IdeRow> = records
+            .into_iter()
+            .map(|r| {
+                let icon = IdeKind::from_db_kind(&r.ide_kind)
+                    .map(ide_icon)
+                    .unwrap_or_default();
+                IdeRow {
+                    icon,
+                    kind: SharedString::from(r.ide_kind),
+                    display_name: SharedString::from(r.display_name),
+                    key: SharedString::from(r.ide_key),
+                    status: SharedString::from(r.status.as_db_str()),
+                    config_path: SharedString::from(
+                        r.config_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    ),
+                }
+            })
+            .collect();
         ui.set_ides(ModelRc::new(VecModel::from(rows)));
     })
     .ok();
