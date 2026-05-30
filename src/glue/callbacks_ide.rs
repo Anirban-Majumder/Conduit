@@ -5,14 +5,18 @@
 //! work to the tokio worker and repaint via `crate::glue::refresh`; UI mutation
 //! only happens through `upgrade_in_event_loop`.
 
+use std::sync::Arc;
+
 use slint::{ComponentHandle, SharedString};
 
 use conduit::daemon::clients;
 use conduit::daemon::db::Db;
+use conduit::daemon::skills::SkillManager;
 
 use crate::ui::MainWindow;
 
-use crate::glue::refresh::{refresh_active_ide_targets, refresh_ides, refresh_server_targets};
+use crate::glue::refresh::{refresh_ides, refresh_server_targets};
+use crate::glue::skills::refresh_skills;
 use crate::glue::util::{
     current_selected_server, remove_ide, resolve_ide_config_path, reveal_in_file_manager,
     run_ide_detection,
@@ -24,6 +28,7 @@ pub(crate) fn install_ide_callbacks(
     db: &Db,
     port: u16,
     rt: &tokio::runtime::Handle,
+    skills: &Arc<SkillManager>,
 ) {
     {
         let db = db.clone();
@@ -173,15 +178,18 @@ pub(crate) fn install_ide_callbacks(
     let db_for_remove_ide = db.clone();
     let rt_for_remove_ide = rt.clone();
     let weak_for_remove_ide = window.as_weak();
+    let skills_for_remove_ide = skills.clone();
     let port_for_remove_ide = port;
     window.on_remove_ide_clicked(move |kind_str| {
         let db = db_for_remove_ide.clone();
         let weak = weak_for_remove_ide.clone();
+        let skills = skills_for_remove_ide.clone();
         let kind_str = kind_str.to_string();
         rt_for_remove_ide.spawn(async move {
             remove_ide(&db, port_for_remove_ide, &kind_str).await;
             refresh_ides(&weak, &db).await;
-            refresh_active_ide_targets(&weak, &db).await;
+            // Repaint skills: their per-skill toggle set tracks detected IDEs.
+            refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
                 refresh_server_targets(&weak, &db, &server).await;
             }
@@ -191,9 +199,11 @@ pub(crate) fn install_ide_callbacks(
     let db_for_retrack = db.clone();
     let rt_for_retrack = rt.clone();
     let weak_for_retrack = window.as_weak();
+    let skills_for_retrack = skills.clone();
     window.on_retrack_ide_clicked(move |kind_str| {
         let db = db_for_retrack.clone();
         let weak = weak_for_retrack.clone();
+        let skills = skills_for_retrack.clone();
         let kind_str = kind_str.to_string();
         rt_for_retrack.spawn(async move {
             if let Err(e) = db.retrack_ide(&kind_str).await {
@@ -201,7 +211,7 @@ pub(crate) fn install_ide_callbacks(
                 return;
             }
             refresh_ides(&weak, &db).await;
-            refresh_active_ide_targets(&weak, &db).await;
+            refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
                 refresh_server_targets(&weak, &db, &server).await;
             }
@@ -211,15 +221,17 @@ pub(crate) fn install_ide_callbacks(
     let db_for_refresh_ides = db.clone();
     let rt_for_refresh_ides = rt.clone();
     let weak_for_refresh_ides = window.as_weak();
+    let skills_for_refresh_ides = skills.clone();
     window.on_refresh_ides_clicked(move || {
         let db = db_for_refresh_ides.clone();
         let weak = weak_for_refresh_ides.clone();
+        let skills = skills_for_refresh_ides.clone();
         weak.upgrade_in_event_loop(|ui| ui.set_ides_refreshing(true))
             .ok();
         rt_for_refresh_ides.spawn(async move {
             run_ide_detection(&db).await;
             refresh_ides(&weak, &db).await;
-            refresh_active_ide_targets(&weak, &db).await;
+            refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
                 refresh_server_targets(&weak, &db, &server).await;
             }

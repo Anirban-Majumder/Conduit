@@ -14,7 +14,7 @@ import { ModalShell } from "components/modal.slint";
 import { PillButton, StatusDot, TabButton, Icon } from "components/primitives.slint";
 import { ApprovalsPopup } from "components/approvals_popup.slint";
 import { ApprovalDetailModal } from "components/approval_modal.slint";
-import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeIcons, PolicyRow, ServerDetail, ServerIdeTarget, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
+import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeTarget, PolicyRow, ServerDetail, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
 import { AddServerDialog } from "tabs/add_server_dialog.slint";
 import { DashboardTab } from "tabs/dashboard.slint";
 import { EditorsTab } from "tabs/editors.slint";
@@ -23,7 +23,7 @@ import { LogTab } from "tabs/log.slint";
 import { ServersTab } from "tabs/servers.slint";
 import { SettingsTab } from "tabs/settings.slint";
 import { SkillsTab } from "tabs/skills.slint";
-export { ApprovalRow, ServerRow, IdeRow, IdeIcons, PolicyRow, ToolPolicyRow, ServerIdeTarget, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
+export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, IdeTarget, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
 
 export component MainWindow inherits Window {
     title: "MCP Router";
@@ -69,7 +69,7 @@ export component MainWindow inherits Window {
     in-out property <string> selected-server: "";
     in property <ServerDetail> selected-server-detail;
     in property <[ToolPolicyRow]> selected-server-tools;
-    in property <[ServerIdeTarget]> selected-server-targets;
+    in property <[IdeTarget]> selected-server-targets;
 
     // Add Server wizard state — 1=connection form, 2=probing, 3=per-tool policy
     in-out property <int> wizard-step: 1;
@@ -102,13 +102,6 @@ export component MainWindow inherits Window {
     in-out property <string> selected-editor-status: "";
     in-out property <bool> selected-editor-status-is-error: false;
     in-out property <bool> selected-editor-dirty: false;
-
-    in property <bool> ide-target-claude-code-active: false;
-    in property <bool> ide-target-openclaude-active: false;
-    in property <bool> ide-target-opencode-active: false;
-    in property <bool> ide-target-cursor-active: false;
-    in property <bool> ide-target-vscode-copilot-active: false;
-    in property <bool> ide-target-codex-active: false;
 
     callback approve-clicked(string);
     callback deny-clicked(string);
@@ -177,11 +170,11 @@ export component MainWindow inherits Window {
     }
 
     VerticalLayout {
+        width: root.width;
+        height: root.height;
         padding: 0px;
         spacing: 0px;
 
-        // Floating glassmorphic nav bar — card positioned against root.width to
-        // avoid a layout binding loop, centered manually.
         Rectangle {
             height: 76px;
             Rectangle {
@@ -318,12 +311,6 @@ export component MainWindow inherits Window {
                     repos: root.skill-repos;
                     status-message: root.skills-status-message;
                     busy: root.skills-busy;
-                    target-claude-code-active: root.ide-target-claude-code-active;
-                    target-openclaude-active: root.ide-target-openclaude-active;
-                    target-opencode-active: root.ide-target-opencode-active;
-                    target-cursor-active: root.ide-target-cursor-active;
-                    target-vscode-copilot-active: root.ide-target-vscode-copilot-active;
-                    target-codex-active: root.ide-target-codex-active;
                     repo-add-owner <=> root.skills-repo-add-owner;
                     repo-add-name <=> root.skills-repo-add-name;
                     repo-add-branch <=> root.skills-repo-add-branch;

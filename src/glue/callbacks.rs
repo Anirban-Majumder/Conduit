@@ -41,7 +41,7 @@ pub(crate) fn install_callbacks(
 
     install_skills_callbacks(window, &rt, &skills);
     install_server_callbacks(window, db, approvals, bus, port, &rt);
-    install_ide_callbacks(window, db, port, &rt);
+    install_ide_callbacks(window, db, port, &rt, &skills);
     install_misc_callbacks(window, db, &rt, &env_rows);
     install_wizard_callbacks(window, db.clone(), bus.clone(), rt, &env_rows);
 }

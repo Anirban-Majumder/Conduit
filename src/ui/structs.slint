@@ -45,19 +45,6 @@ export struct IdeRow {
     icon: image,
 }
 
-// Per-IDE brand icons, sourced from each client module's `ICON_SVG` and set
-// once by the Rust glue. Tabs bind these instead of hardcoding asset paths, so
-// adding an IDE touches no `.slint`. Editors-tab list rows carry their own
-// per-row `IdeRow.icon`; this global serves the fixed toggle sets (e.g. Skills).
-export global IdeIcons {
-    in property <image> claude-code;
-    in property <image> openclaude;
-    in property <image> opencode;
-    in property <image> cursor;
-    in property <image> vscode-copilot;
-    in property <image> codex;
-}
-
 export struct PolicyRow {
     server: string,
     tool: string,
@@ -71,9 +58,15 @@ export struct ToolPolicyRow {
     decision: string,           // "allow" | "ask" | "deny"
 }
 
-export struct ServerIdeTarget {
+// One detected IDE rendered as an icon toggle, shared by the Servers tab
+// (per-server "Connected Editors") and the Skills tab (per-skill targets). The
+// Rust glue builds this list from `IdeKind`, so adding an IDE touches no
+// `.slint`. `icon` is decoded from the client module's brand SVG on the UI
+// thread (slint::Image is !Send).
+export struct IdeTarget {
     ide_kind: string,
     label: string,
+    icon: image,
     active: bool,
 }
 
@@ -123,12 +116,7 @@ export struct SkillRow {
     source_directory: string,
     readme_url: string,
     installed: bool,
-    target_claude: bool,
-    target_openclaude: bool,
-    target_opencode: bool,
-    target_cursor: bool,
-    target_vscode_copilot: bool,
-    target_codex: bool,
+    targets: [IdeTarget],
 }
 
 export struct SkillRepoRow {

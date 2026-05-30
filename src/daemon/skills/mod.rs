@@ -17,6 +17,7 @@ use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
 use crate::daemon::events::{Bus, Event};
+use crate::daemon::ide_detect::IdeKind;
 use crate::paths::Paths;
 
 const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -70,6 +71,19 @@ impl SkillManager {
 
     pub const fn paths(&self) -> &Paths {
         &self.paths
+    }
+
+    /// Detected IDEs that can receive skills (`SKILL_TARGET_IDES`), in canonical
+    /// order. Drives the Skills-tab per-skill icon toggles; IDEs without a
+    /// skills dir are excluded so we never offer a toggle whose write
+    /// `normalize_targets` would silently drop.
+    pub async fn active_ide_kinds(&self) -> Vec<IdeKind> {
+        let active = self.db.list_active_ides().await.unwrap_or_default();
+        SKILL_TARGET_IDES
+            .iter()
+            .copied()
+            .filter(|k| active.iter().any(|r| r.ide_kind == k.as_db_kind()))
+            .collect()
     }
 
     /// Return the set of available (not installed) skills, fetching from GitHub

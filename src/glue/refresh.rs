@@ -18,8 +18,8 @@ use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::SkillManager;
 
 use crate::ui::{
-    ApprovalRow, AuditRow, DashboardStats, IdeIcons, IdeRow, MainWindow, PolicyRow, ServerDetail,
-    ServerIdeTarget, ServerRow, ToolPolicyRow as ToolPolicyUiRow,
+    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, PolicyRow, ServerDetail,
+    ServerRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 use crate::glue::skills::{installed_skills_to_rows, refresh_skills};
@@ -31,20 +31,8 @@ use crate::glue::util::{
 /// Decode an IDE's embedded brand SVG into a `slint::Image`. Falls back to an
 /// empty image if the bytes fail to parse. Must run on the UI thread (`Image`
 /// is not `Send`).
-fn ide_icon(kind: IdeKind) -> slint::Image {
+pub(crate) fn ide_icon(kind: IdeKind) -> slint::Image {
     slint::Image::load_from_svg_data(clients::icon_svg(kind)).unwrap_or_default()
-}
-
-/// Populate the `IdeIcons` global once, so tabs with fixed per-IDE toggle sets
-/// (Skills) bind icons by name instead of hardcoding asset paths.
-fn set_ide_icons(window: &MainWindow) {
-    let icons = window.global::<IdeIcons<'_>>();
-    icons.set_claude_code(ide_icon(IdeKind::ClaudeCode));
-    icons.set_openclaude(ide_icon(IdeKind::OpenClaude));
-    icons.set_opencode(ide_icon(IdeKind::OpenCode));
-    icons.set_cursor(ide_icon(IdeKind::Cursor));
-    icons.set_vscode_copilot(ide_icon(IdeKind::VsCodeCopilot));
-    icons.set_codex(ide_icon(IdeKind::Codex));
 }
 
 pub(crate) fn push_initial_models(
@@ -55,7 +43,6 @@ pub(crate) fn push_initial_models(
     skills: Arc<SkillManager>,
 ) {
     window.set_settings(settings_to_row(settings));
-    set_ide_icons(window);
 
     let weak = window.as_weak();
     let db_for_refresh = db.clone();
@@ -64,7 +51,6 @@ pub(crate) fn push_initial_models(
         skills.purge_tmp().await;
         run_ide_detection(&db_for_refresh).await;
         refresh_all(&weak, &db_for_refresh).await;
-        refresh_active_ide_targets(&weak, &db_for_refresh).await;
         // Before refresh_skills — that runs slow network discovery and would
         // otherwise delay the dashboard's first paint.
         refresh_dashboard(&weak, &db_for_refresh, &skills).await;
@@ -315,18 +301,22 @@ pub(crate) async fn refresh_server_targets(
     server_name: &str,
 ) {
     let actives = db.list_active_ides().await.unwrap_or_default();
-    let rows: Vec<ServerIdeTarget> = actives
-        .into_iter()
-        .map(|r| {
-            let active = r.managed_entries.iter().any(|n| n == server_name);
-            ServerIdeTarget {
-                ide_kind: SharedString::from(r.ide_kind),
-                label: SharedString::from(r.display_name),
-                active,
-            }
-        })
-        .collect();
+    let server_name = server_name.to_string();
+    // Build `IdeTarget`s (incl. brand-icon `Image`s) on the UI thread — `Image`
+    // is !Send. Order by `IdeKind::ALL` so the toggle row is stable.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        let rows: Vec<IdeTarget> = IdeKind::ALL
+            .iter()
+            .filter_map(|&kind| {
+                let r = actives.iter().find(|r| r.ide_kind == kind.as_db_kind())?;
+                Some(IdeTarget {
+                    ide_kind: SharedString::from(kind.as_db_kind()),
+                    label: SharedString::from(r.display_name.clone()),
+                    icon: ide_icon(kind),
+                    active: r.managed_entries.iter().any(|n| n == &server_name),
+                })
+            })
+            .collect();
         ui.set_selected_server_targets(ModelRc::new(VecModel::from(rows)));
     });
 }
@@ -437,25 +427,6 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
     .ok();
 }
 
-pub(crate) async fn refresh_active_ide_targets(weak: &slint::Weak<MainWindow>, db: &Db) {
-    let actives = db.list_active_ides().await.unwrap_or_default();
-    let claude = actives.iter().any(|r| r.ide_kind == "ClaudeCode");
-    let openclaude = actives.iter().any(|r| r.ide_kind == "OpenClaude");
-    let opencode = actives.iter().any(|r| r.ide_kind == "OpenCode");
-    let cursor = actives.iter().any(|r| r.ide_kind == "Cursor");
-    let vscode_copilot = actives.iter().any(|r| r.ide_kind == "VsCodeCopilot");
-    let codex = actives.iter().any(|r| r.ide_kind == "Codex");
-    weak.upgrade_in_event_loop(move |ui| {
-        ui.set_ide_target_claude_code_active(claude);
-        ui.set_ide_target_openclaude_active(openclaude);
-        ui.set_ide_target_opencode_active(opencode);
-        ui.set_ide_target_cursor_active(cursor);
-        ui.set_ide_target_vscode_copilot_active(vscode_copilot);
-        ui.set_ide_target_codex_active(codex);
-    })
-    .ok();
-}
-
 pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
     let policies = db.list_all_policies().await.unwrap_or_default();
     let rows: Vec<PolicyRow> = policies
@@ -521,7 +492,6 @@ pub(crate) async fn refresh_dashboard(
     let editor_count = db.list_active_ides().await.unwrap_or_default().len();
     let installed_skills = skills.list_installed().await.unwrap_or_default();
     let skill_count = installed_skills.len();
-    let skill_rows = installed_skills_to_rows(&installed_skills);
 
     let since = unix_now() - 86_400;
     let recent = db
@@ -555,6 +525,8 @@ pub(crate) async fn refresh_dashboard(
     };
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_dashboard_stats(stats);
+        // Dashboard skill cards don't render IDE toggles, so no active kinds.
+        let skill_rows = installed_skills_to_rows(&installed_skills, &[]);
         ui.set_dashboard_skills(ModelRc::new(VecModel::from(skill_rows)));
     })
     .ok();

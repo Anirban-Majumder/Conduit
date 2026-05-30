@@ -3,7 +3,7 @@
 
 import { Theme } from "../theme.slint";
 import { EmptyState, PillButton, IconToggle } from "../components/primitives.slint";
-import { IdeIcons, SkillRepoRow, SkillRow } from "../structs.slint";
+import { SkillRepoRow, SkillRow } from "../structs.slint";
 import { TargetToggle } from "../tabs/servers.slint";
 
 export component SkillsTab inherits Rectangle {
@@ -11,12 +11,6 @@ export component SkillsTab inherits Rectangle {
     in property <[SkillRepoRow]> repos;
     in property <string> status-message;
     in property <bool> busy;
-    in property <bool> target-claude-code-active;
-    in property <bool> target-openclaude-active;
-    in property <bool> target-opencode-active;
-    in property <bool> target-cursor-active;
-    in property <bool> target-vscode-copilot-active;
-    in property <bool> target-codex-active;
     in-out property <string> repo-add-owner;
     in-out property <string> repo-add-name;
     in-out property <string> repo-add-branch: "main";
@@ -311,46 +305,11 @@ export component SkillsTab inherits Rectangle {
                         if row.installed : HorizontalLayout {
                             spacing: 4px;
                             alignment: end;
-                            if root.target-claude-code-active : IconToggle {
-                                source: IdeIcons.claude-code;
-                                active: row.target_claude;
+                            for t in row.targets : IconToggle {
+                                source: t.icon;
+                                active: t.active;
                                 toggle => {
-                                    root.toggle-target(row.directory, "ClaudeCode", !row.target_claude);
-                                }
-                            }
-                            if root.target-openclaude-active : IconToggle {
-                                source: IdeIcons.openclaude;
-                                active: row.target_openclaude;
-                                toggle => {
-                                    root.toggle-target(row.directory, "OpenClaude", !row.target_openclaude);
-                                }
-                            }
-                            if root.target-opencode-active : IconToggle {
-                                source: IdeIcons.opencode;
-                                active: row.target_opencode;
-                                toggle => {
-                                    root.toggle-target(row.directory, "OpenCode", !row.target_opencode);
-                                }
-                            }
-                            if root.target-cursor-active : IconToggle {
-                                source: IdeIcons.cursor;
-                                active: row.target_cursor;
-                                toggle => {
-                                    root.toggle-target(row.directory, "Cursor", !row.target_cursor);
-                                }
-                            }
-                            if root.target-vscode-copilot-active : IconToggle {
-                                source: IdeIcons.vscode-copilot;
-                                active: row.target_vscode_copilot;
-                                toggle => {
-                                    root.toggle-target(row.directory, "VsCodeCopilot", !row.target_vscode_copilot);
-                                }
-                            }
-                            if root.target-codex-active : IconToggle {
-                                source: IdeIcons.codex;
-                                active: row.target_codex;
-                                toggle => {
-                                    root.toggle-target(row.directory, "Codex", !row.target_codex);
+                                    root.toggle-target(row.directory, t.ide-kind, !t.active);
                                 }
                             }
                         }

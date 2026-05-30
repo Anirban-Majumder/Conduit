@@ -4,8 +4,8 @@
 // TargetToggle is the shared on/off chip, also reused by the Skills tab.
 
 import { Theme } from "../theme.slint";
-import { PillButton, StatusDot, Icon, Chip } from "../components/primitives.slint";
-import { ServerDetail, ServerIdeTarget, ServerRow, ToolPolicyRow } from "../structs.slint";
+import { PillButton, StatusDot, Icon, Chip, IconToggle } from "../components/primitives.slint";
+import { ServerDetail, IdeTarget, ServerRow, ToolPolicyRow } from "../structs.slint";
 import { ToolPolicyTable } from "../components/tool_policy.slint";
 
 // Shared on/off chip: mint (active) when the server/skill is enabled for that
@@ -140,7 +140,7 @@ export component ServersTab inherits Rectangle {
     in property <string> selected;
     in property <ServerDetail> detail;
     in property <[ToolPolicyRow]> tools;
-    in property <[ServerIdeTarget]> targets;
+    in property <[IdeTarget]> targets;
     callback select-server(string);
     callback delete-clicked(string);
     callback retest-clicked(string);
@@ -340,16 +340,14 @@ export component ServersTab inherits Rectangle {
                                     color: Theme.text-tertiary;
                                     font-size: Theme.font-body-sm;
                                 }
-                                Flickable {
-                                    viewport-height: ide-wrap.preferred-height;
-                                    ide-wrap := VerticalLayout {
-                                        spacing: 6px;
-                                        for t in targets : TargetToggle {
-                                            label: t.label;
-                                            active: t.active;
-                                            toggle => {
-                                                root.toggle-target(root.selected, t.ide-kind, !t.active);
-                                            }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    alignment: start;
+                                    for t in targets : IconToggle {
+                                        source: t.icon;
+                                        active: t.active;
+                                        toggle => {
+                                            root.toggle-target(root.selected, t.ide-kind, !t.active);
                                         }
                                     }
                                 }

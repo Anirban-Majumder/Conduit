@@ -11,9 +11,11 @@ use std::sync::Arc;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use conduit::daemon::db::types::SkillRepo;
+use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::{SkillCandidate, SkillManager};
 
-use crate::ui::{MainWindow, SkillRepoRow, SkillRow};
+use crate::glue::refresh::ide_icon;
+use crate::ui::{IdeTarget, MainWindow, SkillRepoRow, SkillRow};
 
 #[expect(
     clippy::too_many_lines,
@@ -241,19 +243,28 @@ pub(crate) async fn refresh_skills(weak: &slint::Weak<MainWindow>, skills: &Skil
     if let Err(e) = skills.register_local_skills().await {
         tracing::warn!(error = %e, "register_local_skills failed");
     }
-    paint_skills_from_db(weak, skills).await;
+    let active_kinds = skills.active_ide_kinds().await;
+    paint_skills_from_db(weak, skills, &active_kinds).await;
     match skills.discover(false).await {
-        Ok(candidates) => paint_skills_with_discovery(weak, skills, candidates).await,
+        Ok(candidates) => {
+            paint_skills_with_discovery(weak, skills, candidates, &active_kinds).await;
+        }
         Err(e) => tracing::warn!(error = %e, "skill discover failed during refresh"),
     }
 }
 
-pub(crate) async fn paint_skills_from_db(weak: &slint::Weak<MainWindow>, skills: &SkillManager) {
+pub(crate) async fn paint_skills_from_db(
+    weak: &slint::Weak<MainWindow>,
+    skills: &SkillManager,
+    active_kinds: &[IdeKind],
+) {
     let installed = skills.list_installed().await.unwrap_or_default();
     let repos = skills.list_repos().await.unwrap_or_default();
-    let rows = installed_skills_to_rows(&installed);
     let repo_rows = repos_to_rows(repos);
+    let active_kinds = active_kinds.to_vec();
+    // Rows carry brand-icon `Image`s (!Send), so build them on the UI thread.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        let rows = installed_skills_to_rows(&installed, &active_kinds);
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
         ui.set_skills(ModelRc::new(VecModel::from(filtered)));
         ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
@@ -280,59 +291,52 @@ pub(crate) async fn paint_skills_with_discovery(
     weak: &slint::Weak<MainWindow>,
     skills: &SkillManager,
     candidates: Vec<SkillCandidate>,
+    active_kinds: &[IdeKind],
 ) {
     let installed = skills.list_installed().await.unwrap_or_default();
     let repos = skills.list_repos().await.unwrap_or_default();
-    let mut rows = installed_skills_to_rows(&installed);
+    let repo_rows = repos_to_rows(repos);
     let installed_dirs: std::collections::HashSet<String> =
         installed.iter().map(|s| s.directory.clone()).collect();
+    let active_kinds = active_kinds.to_vec();
 
-    {
-        {
-            for candidate in candidates {
-                let install_name = candidate
-                    .directory
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&candidate.directory)
-                    .to_string();
-                if installed_dirs.contains(&install_name) {
-                    continue;
-                }
-                rows.push(SkillRow {
-                    key: SharedString::from(candidate.key.clone()),
-                    directory: SharedString::from(install_name),
-                    name: SharedString::from(candidate.name),
-                    description: SharedString::from(candidate.description),
-                    repo_label: SharedString::from(format!(
-                        "{}/{} · {}",
-                        candidate.repo_owner, candidate.repo_name, candidate.repo_branch
-                    )),
-                    repo_owner: SharedString::from(candidate.repo_owner),
-                    repo_name: SharedString::from(candidate.repo_name),
-                    repo_branch: SharedString::from(candidate.repo_branch),
-                    source_directory: SharedString::from(candidate.directory),
-                    readme_url: SharedString::from(candidate.readme_url),
-                    installed: false,
-                    target_claude: false,
-                    target_openclaude: false,
-                    target_opencode: false,
-                    target_cursor: false,
-                    target_vscode_copilot: false,
-                    target_codex: false,
-                });
-            }
-        }
-    }
-
-    rows.sort_by(|a, b| match (a.installed, b.installed) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-    let repo_rows = repos_to_rows(repos);
-
+    // Rows carry brand-icon `Image`s (!Send), so build them on the UI thread.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        let mut rows = installed_skills_to_rows(&installed, &active_kinds);
+        for candidate in candidates {
+            let install_name = candidate
+                .directory
+                .rsplit('/')
+                .next()
+                .unwrap_or(&candidate.directory)
+                .to_string();
+            if installed_dirs.contains(&install_name) {
+                continue;
+            }
+            rows.push(SkillRow {
+                key: SharedString::from(candidate.key.clone()),
+                directory: SharedString::from(install_name),
+                name: SharedString::from(candidate.name),
+                description: SharedString::from(candidate.description),
+                repo_label: SharedString::from(format!(
+                    "{}/{} · {}",
+                    candidate.repo_owner, candidate.repo_name, candidate.repo_branch
+                )),
+                repo_owner: SharedString::from(candidate.repo_owner),
+                repo_name: SharedString::from(candidate.repo_name),
+                repo_branch: SharedString::from(candidate.repo_branch),
+                source_directory: SharedString::from(candidate.directory),
+                readme_url: SharedString::from(candidate.readme_url),
+                installed: false,
+                // Not-installed rows hide their toggles, so no targets needed.
+                targets: empty_targets(),
+            });
+        }
+        rows.sort_by(|a, b| match (a.installed, b.installed) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        });
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
         ui.set_skills(ModelRc::new(VecModel::from(filtered)));
         ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
@@ -340,8 +344,29 @@ pub(crate) async fn paint_skills_with_discovery(
     });
 }
 
+/// Build the per-skill IDE toggle model: one `IdeTarget` per detected
+/// skill-capable IDE, `active` reflecting whether the skill is synced there.
+/// Must run on the UI thread — `IdeTarget.icon` is a !Send `slint::Image`.
+fn skill_targets(enabled: &[String], active_kinds: &[IdeKind]) -> ModelRc<IdeTarget> {
+    let targets: Vec<IdeTarget> = active_kinds
+        .iter()
+        .map(|&kind| IdeTarget {
+            ide_kind: SharedString::from(kind.as_db_kind()),
+            label: SharedString::from(kind.display_name()),
+            icon: ide_icon(kind),
+            active: enabled.iter().any(|t| t == kind.as_db_kind()),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(targets))
+}
+
+fn empty_targets() -> ModelRc<IdeTarget> {
+    ModelRc::new(VecModel::<IdeTarget>::default())
+}
+
 pub(crate) fn installed_skills_to_rows(
     installed: &[conduit::daemon::db::types::Skill],
+    active_kinds: &[IdeKind],
 ) -> Vec<SkillRow> {
     installed
         .iter()
@@ -363,12 +388,7 @@ pub(crate) fn installed_skills_to_rows(
             source_directory: SharedString::from(skill.source_directory.clone()),
             readme_url: SharedString::from(skill.readme_url.clone().unwrap_or_default()),
             installed: true,
-            target_claude: skill.targets.iter().any(|x| x == "ClaudeCode"),
-            target_openclaude: skill.targets.iter().any(|x| x == "OpenClaude"),
-            target_opencode: skill.targets.iter().any(|x| x == "OpenCode"),
-            target_cursor: skill.targets.iter().any(|x| x == "Cursor"),
-            target_vscode_copilot: skill.targets.iter().any(|x| x == "VsCodeCopilot"),
-            target_codex: skill.targets.iter().any(|x| x == "Codex"),
+            targets: skill_targets(&skill.targets, active_kinds),
         })
         .collect()
 }
