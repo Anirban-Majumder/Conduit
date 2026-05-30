@@ -7,9 +7,8 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::oneshot;
 
-use super::{now_unix, CascadeTrim};
+use super::{bind_in_clause, now_unix, CascadeTrim};
 use crate::daemon::db::types::{EnvEntry, Server, ToolMeta};
 use crate::daemon::errors::DbError;
 
@@ -39,30 +38,19 @@ pub(super) fn query_commit_cascade_delete(
         .execute(params![json, now, trim.ide_kind])?;
     }
 
-    let mut cancelled_ids: Vec<String> = Vec::new();
-    {
+    let cancelled_ids: Vec<String> = {
         let mut stmt = tx.prepare_cached(
             "SELECT id FROM pending_approvals WHERE server = ?1 AND status = 'pending'",
         )?;
         let rows = stmt.query_map(params![server_name], |row| row.get::<_, String>(0))?;
-        for r in rows {
-            cancelled_ids.push(r?);
-        }
-    }
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
     if !cancelled_ids.is_empty() {
-        let placeholders = cancelled_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let (placeholders, params) = bind_in_clause(&cancelled_ids);
         let sql = format!(
             "UPDATE pending_approvals SET status = 'cancelled' WHERE id IN ({placeholders})"
         );
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(cancelled_ids.len());
-        for id in &cancelled_ids {
-            params_vec.push(id);
-        }
-        tx.prepare(&sql)?.execute(&params_vec[..])?;
+        tx.prepare(&sql)?.execute(&params[..])?;
     }
 
     if delete_audit_history {
@@ -92,27 +80,20 @@ pub(super) fn query_upsert_server_with_tools(
 
     // Sync server_tools to exactly the probed set.
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    let placeholders = tool_names
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
     if tool_names.is_empty() {
         tx.prepare_cached("DELETE FROM server_tools WHERE server = ?1")?
             .execute(params![&server.name])?;
         tx.prepare_cached("DELETE FROM policies WHERE server = ?1 AND scope = 'tool'")?
             .execute(params![&server.name])?;
     } else {
+        let (placeholders, tool_params) = bind_in_clause(&tool_names);
         let del_tools_sql =
             format!("DELETE FROM server_tools WHERE server = ? AND tool NOT IN ({placeholders})");
         let del_pols_sql = format!(
             "DELETE FROM policies WHERE server = ? AND scope = 'tool' AND tool NOT IN ({placeholders})"
         );
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(tool_names.len() + 1);
-        params_vec.push(&server.name);
-        for t in &tool_names {
-            params_vec.push(t);
-        }
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&server.name];
+        params_vec.extend(tool_params);
         tx.prepare(&del_tools_sql)?.execute(&params_vec[..])?;
         tx.prepare(&del_pols_sql)?.execute(&params_vec[..])?;
     }
@@ -173,11 +154,7 @@ pub(super) fn query_list_server_tools(
             discovered_at: row.get(3)?,
         })
     })?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 fn decode_server_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Server> {
@@ -277,11 +254,7 @@ pub(super) fn query_list_servers(conn: &Connection) -> Result<Vec<Server>, DbErr
     let sql = format!("{SERVERS_SELECT} ORDER BY name");
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map([], decode_server_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_delete_server(conn: &Connection, name: &str) -> Result<(), DbError> {
@@ -330,45 +303,19 @@ pub(super) fn query_clear_server_auth_error(
 
 impl Db {
     pub async fn upsert_server(&self, server: Server) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpsertServer { server, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::UpsertServer { server, reply }).await
     }
 
     pub async fn get_server(&self, name: &str) -> Result<Option<Server>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetServer {
-                name: name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetServer { name: name.to_string(), reply }).await
     }
 
     pub async fn list_servers(&self) -> Result<Vec<Server>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListServers { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListServers { reply }).await
     }
 
     pub async fn delete_server(&self, name: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::DeleteServer {
-                name: name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::DeleteServer { name: name.to_string(), reply }).await
     }
 
     /// Returns `true` if this is a transition (prior auth-error was NULL or different).
@@ -377,29 +324,17 @@ impl Db {
         server: &str,
         message: &str,
     ) -> Result<bool, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::SetServerAuthError {
-                server: server.to_string(),
-                message: message.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::SetServerAuthError {
+            server: server.to_string(),
+            message: message.to_string(),
+            reply,
+        })
+        .await
     }
 
     /// Returns `true` if a non-null auth-error was actually cleared.
     pub async fn clear_server_auth_error(&self, server: &str) -> Result<bool, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ClearServerAuthError {
-                server: server.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ClearServerAuthError { server: server.to_string(), reply }).await
     }
 
     /// Atomic Save for the Add Server wizard: inserts the server row, per-tool
@@ -411,43 +346,17 @@ impl Db {
         server: Server,
         tools: Vec<ToolMeta>,
     ) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpsertServerWithTools {
-                server,
-                tools,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::UpsertServerWithTools { server, tools, reply }).await
     }
 
     pub async fn list_server_tools(&self, server: &str) -> Result<Vec<ToolMeta>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListServerTools {
-                server: server.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListServerTools { server: server.to_string(), reply }).await
     }
 
     /// Rename a server. Cascades through `policies` and `server_tools` via FK
     /// ON UPDATE CASCADE. Caller rewrites IDE config files.
     pub async fn rename_server(&self, old: &str, new: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::RenameServer {
-                old: old.to_string(),
-                new: new.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::RenameServer { old: old.to_string(), new: new.to_string(), reply }).await
     }
 
     pub async fn commit_cascade_delete(
@@ -456,16 +365,12 @@ impl Db {
         trimmed: Vec<CascadeTrim>,
         delete_audit_history: bool,
     ) -> Result<Vec<String>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::CommitCascadeDelete {
-                server_name: server_name.to_string(),
-                trimmed,
-                delete_audit_history,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::CommitCascadeDelete {
+            server_name: server_name.to_string(),
+            trimmed,
+            delete_audit_history,
+            reply,
+        })
+        .await
     }
 }

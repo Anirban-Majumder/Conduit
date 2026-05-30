@@ -7,7 +7,6 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::oneshot;
 
 use crate::daemon::db::types::{ApprovalStatus, PendingApproval};
 use crate::daemon::errors::DbError;
@@ -84,11 +83,7 @@ pub(super) fn query_list_pending_approvals(
          FROM pending_approvals WHERE status = 'pending' ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], decode_pending_approval_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_sweep_stale_pending_approvals(
@@ -118,24 +113,11 @@ pub(super) fn query_sweep_stale_pending_approvals(
 
 impl Db {
     pub async fn create_pending_approval(&self, approval: PendingApproval) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::CreatePendingApproval { approval, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::CreatePendingApproval { approval, reply }).await
     }
 
     pub async fn get_pending_approval(&self, id: &str) -> Result<Option<PendingApproval>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetPendingApproval {
-                id: id.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetPendingApproval { id: id.to_string(), reply }).await
     }
 
     pub async fn resolve_pending_approval(
@@ -143,25 +125,11 @@ impl Db {
         id: &str,
         new_status: ApprovalStatus,
     ) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ResolvePendingApproval {
-                id: id.to_string(),
-                new_status,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ResolvePendingApproval { id: id.to_string(), new_status, reply }).await
     }
 
     pub async fn list_pending_approvals(&self) -> Result<Vec<PendingApproval>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListPendingApprovals { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListPendingApprovals { reply }).await
     }
 
     /// Flips every `pending` row older than `older_than_ts` to `timeout`.
@@ -171,14 +139,6 @@ impl Db {
         &self,
         older_than_ts: i64,
     ) -> Result<Vec<String>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::SweepStalePendingApprovals {
-                older_than_ts,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::SweepStalePendingApprovals { older_than_ts, reply }).await
     }
 }

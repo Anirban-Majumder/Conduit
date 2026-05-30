@@ -228,8 +228,9 @@ fn main() -> Result<()> {
     // Notifications bridge: emits OS toasts AND owns the click→dispatch loop.
     {
         let _guard = worker.handle().enter();
+        // reason: bounded at 256; on full, sender uses try_send + logs+drops (back-pressure in notifications.rs)
         let (action_tx, mut action_rx) =
-            tokio::sync::mpsc::unbounded_channel::<gui_notification_router::NotificationAction>();
+            tokio::sync::mpsc::channel::<gui_notification_router::NotificationAction>(256);
         let _notif = gui_notifications::spawn(
             bus.subscribe(),
             db.clone(),

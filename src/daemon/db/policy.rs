@@ -7,7 +7,6 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::oneshot;
 
 use super::now_unix;
 use crate::daemon::db::types::{Decision, DecisionSource, Policy};
@@ -111,11 +110,7 @@ pub(super) fn query_list_policies_for_server(
          FROM policies WHERE server = ?1 ORDER BY tool",
     )?;
     let rows = stmt.query_map(params![server], decode_policy_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_list_all_policies(conn: &Connection) -> Result<Vec<Policy>, DbError> {
@@ -124,11 +119,7 @@ pub(super) fn query_list_all_policies(conn: &Connection) -> Result<Vec<Policy>, 
          FROM policies ORDER BY server, tool",
     )?;
     let rows = stmt.query_map([], decode_policy_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_delete_policies_for_server(
@@ -148,18 +139,14 @@ impl Db {
         decision: Decision,
         decision_source: DecisionSource,
     ) -> Result<i64, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::SetPolicy {
-                server: server.to_string(),
-                tool: tool.to_string(),
-                decision,
-                decision_source,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::SetPolicy {
+            server: server.to_string(),
+            tool: tool.to_string(),
+            decision,
+            decision_source,
+            reply,
+        })
+        .await
     }
 
     /// Three-tier lookup: (server, tool, 'tool') → (server, '', 'server') →
@@ -186,62 +173,35 @@ impl Db {
         tool: &str,
         scope: &str,
     ) -> Result<Option<Policy>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetPolicyScoped {
-                server: server.to_string(),
-                tool: tool.to_string(),
-                scope: scope.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetPolicyScoped {
+            server: server.to_string(),
+            tool: tool.to_string(),
+            scope: scope.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn get_policy(&self, server: &str, tool: &str) -> Result<Option<Policy>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetPolicy {
-                server: server.to_string(),
-                tool: tool.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetPolicy {
+            server: server.to_string(),
+            tool: tool.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn list_policies_for_server(&self, server: &str) -> Result<Vec<Policy>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListPoliciesForServer {
-                server: server.to_string(),
-                reply,
-            })
+        self.send_cmd(|reply| DbCmd::ListPoliciesForServer { server: server.to_string(), reply })
             .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
     pub async fn list_all_policies(&self) -> Result<Vec<Policy>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListAllPolicies { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListAllPolicies { reply }).await
     }
 
     pub async fn delete_policies_for_server(&self, server: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::DeletePoliciesForServer {
-                server: server.to_string(),
-                reply,
-            })
+        self.send_cmd(|reply| DbCmd::DeletePoliciesForServer { server: server.to_string(), reply })
             .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 }

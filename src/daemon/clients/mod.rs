@@ -10,12 +10,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde_json::{Map, Value};
 
 use crate::daemon::db::types::{IdeKey, ManagedIdeConfig};
 pub use crate::daemon::ide_detect::IdeKind;
+use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 
 /// Per-IDE schema for the JSON-flavored MCP config (5 of 6 IDEs).
 /// Codex is TOML and goes through `write_toml_mcp_servers` instead.
@@ -196,7 +195,7 @@ pub fn write(
         ide_key: ide_key.key.clone(),
         config_path: path,
         managed_entries: server_names.to_vec(),
-        written_at: now_unix(),
+        written_at: now_unix_secs(),
     })
 }
 
@@ -546,21 +545,7 @@ fn tmp_path_for(path: &Path) -> Result<PathBuf, ClientError> {
         .ok_or(ClientError::NonUtf8Path)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let pid = std::process::id();
-    let nonce = now_nanos();
+    let nonce = now_unix_nanos();
     Ok(parent.join(format!(".{file_name}.{pid}.{nonce}.tmp")))
 }
 
-fn now_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-}
-
-fn now_unix() -> i64 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
-}

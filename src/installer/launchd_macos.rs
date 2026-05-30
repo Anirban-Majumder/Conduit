@@ -35,7 +35,7 @@ pub fn install_into(dir: &Path, exe: &Path) -> Result<PathBuf, InstallError> {
     fs::create_dir_all(dir)?;
     let path = dir.join(PLIST_FILE_NAME);
     let body = render_plist(exe);
-    atomic_write(&path, body.as_bytes())?;
+    super::atomic_write(&path, PLIST_FILE_NAME, body.as_bytes())?;
     Ok(path)
 }
 
@@ -51,7 +51,7 @@ pub fn uninstall_from(dir: &Path) -> Result<(), InstallError> {
 // KeepAlive={SuccessfulExit: false} = respawn on crash (exit != 0), stay dead
 // on graceful Quit (exit 0). Tray > Quit is truly final until next login.
 pub fn render_plist(exe: &Path) -> String {
-    let exec = xml_escape(&exe.display().to_string());
+    let exec = super::xml_escape(&exe.display().to_string());
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -78,34 +78,3 @@ fn agent_dir() -> Result<PathBuf, InstallError> {
     Ok(home.join("Library").join("LaunchAgents"))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), InstallError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(PLIST_FILE_NAME);
-    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    fs::write(&tmp, bytes)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ignored = fs::remove_file(&tmp);
-            Err(InstallError::Io(e))
-        }
-    }
-}
-
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            other => out.push(other),
-        }
-    }
-    out
-}

@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::config_toml::Settings;
@@ -37,7 +38,7 @@ pub fn spawn(
     db: Db,
     settings: Arc<Settings>,
     cancel: CancellationToken,
-    action_tx: UnboundedSender<NotificationAction>,
+    action_tx: Sender<NotificationAction>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if !settings.notifications.enabled {
@@ -45,6 +46,10 @@ pub fn spawn(
             return;
         }
         let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
+        // reason: caps close threads spawned per ApprovalResolved burst; bounded loop rule
+        let close_sem = Arc::new(Semaphore::new(32));
+        // reason: caps concurrent pending notification threads (Linux); bounded loop rule
+        let notif_sem = Arc::new(Semaphore::new(64));
         loop {
             tokio::select! {
                 () = cancel.cancelled() => break,
@@ -52,7 +57,14 @@ pub fn spawn(
                     Ok(Event::ApprovalPending { id, ide_key, server, tool, .. }) => {
                         let ide_name = match db.lookup_ide_key(&ide_key).await {
                             Ok(Some(k)) => k.ide_name,
-                            Ok(None) | Err(_) => "Unknown IDE".to_string(),
+                            Ok(None) => {
+                                tracing::debug!(ide_key, "lookup_ide_key returned None; using fallback name");
+                                "Unknown IDE".to_string()
+                            }
+                            Err(e) => {
+                                tracing::warn!(ide_key, error = %e, "lookup_ide_key failed; using fallback name");
+                                "Unknown IDE".to_string()
+                            }
                         };
                         spawn_notification(
                             id,
@@ -61,6 +73,7 @@ pub fn spawn(
                             tool,
                             action_tx.clone(),
                             registry.clone(),
+                            notif_sem.clone(),
                         );
                     }
                     Ok(Event::ApprovalResolved { id, .. }) => {
@@ -72,10 +85,20 @@ pub fn spawn(
                             map.remove(&id)
                         };
                         if let Some(nid) = notif_id {
-                            std::thread::Builder::new()
-                                .name(format!("notif-close-{nid}"))
-                                .spawn(move || close_by_id(nid))
-                                .ok();
+                            match close_sem.clone().try_acquire_owned() {
+                                Ok(permit) => {
+                                    std::thread::Builder::new()
+                                        .name(format!("notif-close-{nid}"))
+                                        .spawn(move || {
+                                            close_by_id(nid);
+                                            drop(permit);
+                                        })
+                                        .ok();
+                                }
+                                Err(_) => {
+                                    tracing::warn!(notif_id = nid, "notification close semaphore full; skipping close");
+                                }
+                            }
                         }
                     }
                     Ok(_) => {}
@@ -111,12 +134,18 @@ fn spawn_notification(
     ide_name: String,
     server: String,
     tool: String,
-    action_tx: UnboundedSender<NotificationAction>,
+    action_tx: Sender<NotificationAction>,
     registry: Registry,
+    sem: Arc<Semaphore>,
 ) {
+    let Ok(permit) = sem.try_acquire_owned() else {
+        tracing::warn!(approval = %id, "notification semaphore full; dropping pending notification");
+        return;
+    };
     std::thread::Builder::new()
         .name(format!("notif-{id}"))
         .spawn(move || {
+            let _permit = permit; // released when thread exits (user responds or notification dismissed)
             let body = format!("{server} · {tool}");
             let handle = match notify_rust::Notification::new()
                 .summary(&ide_name)
@@ -150,10 +179,15 @@ fn spawn_notification(
                         server: server.clone(),
                         tool: tool.clone(),
                     }),
-                    _ => None,
+                    _ => {
+                        tracing::warn!(action_id, "unrecognised notification action; ignoring");
+                        None
+                    }
                 };
                 if let Some(m) = msg {
-                    let _ignored = send.send(m);
+                    if let Err(e) = send.try_send(m) {
+                        tracing::warn!(error = %e, "notification action channel full; action dropped");
+                    }
                 }
             });
             if let Ok(mut map) = registry.lock() {
@@ -169,8 +203,9 @@ fn spawn_notification(
     ide_name: String,
     server: String,
     tool: String,
-    _action_tx: UnboundedSender<NotificationAction>,
+    _action_tx: Sender<NotificationAction>,
     _registry: Registry,
+    _sem: Arc<Semaphore>,
 ) {
     let body = format!("{server} · {tool}");
     let mut notif = notify_rust::Notification::new();

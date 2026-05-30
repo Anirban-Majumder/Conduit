@@ -7,12 +7,13 @@ pub mod sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::daemon::clients::{self, SKILL_TARGET_IDES};
+use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
@@ -298,7 +299,7 @@ impl SkillManager {
             },
             description: metadata.description,
             readme_url: Some(candidate.readme_url),
-            installed_at: now_unix(),
+            installed_at: now_unix_secs(),
             targets: normalized_targets.clone(),
         };
         self.db.upsert_skill_with_targets(skill.clone()).await?;
@@ -388,7 +389,7 @@ impl SkillManager {
             let bytes = tokio::fs::read(&skill_md).await?;
             let meta =
                 discover::read_skill_metadata(std::str::from_utf8(&bytes).unwrap_or(""), &name);
-            let now = now_unix();
+            let now = now_unix_secs();
             let skill = Skill {
                 directory: name.clone(),
                 repo_owner: "local".to_string(),
@@ -532,20 +533,6 @@ async fn first_existing_skill_md(dir: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-fn now_unix() -> i64 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
-}
-
-fn now_unix_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {

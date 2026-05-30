@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::events::{Bus, Event};
+use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
 use crate::daemon::upstream::{http, stdio};
 use crate::paths::Paths;
@@ -149,7 +150,7 @@ impl UpstreamManager {
 
     async fn record(&self, server: &str, error: Option<String>) {
         let now = Instant::now();
-        let unix = now_unix();
+        let unix = now_unix_secs();
         let mut map = self.status.lock().await;
         let entry = map.entry(server.to_string()).or_default();
         entry.last_call_at = Some(unix);
@@ -418,12 +419,6 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
     out
 }
 
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
 
 fn is_expired(entry: &Entry, now: Instant) -> bool {
     if entry.client.is_closed() {

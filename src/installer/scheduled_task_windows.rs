@@ -64,7 +64,7 @@ pub fn install_into(dir: &Path, exe: &Path) -> Result<PathBuf, InstallError> {
 }
 
 pub fn render_task_xml(exe: &Path) -> String {
-    let exec = xml_escape(&exe.display().to_string());
+    let exec = super::xml_escape(&exe.display().to_string());
     let user = current_user_display();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -107,23 +107,9 @@ fn current_user_display() -> String {
     let username = std::env::var("USERNAME").unwrap_or_default();
     let domain = std::env::var("USERDOMAIN").unwrap_or_default();
     if domain.is_empty() {
-        xml_escape(&username)
+        super::xml_escape(&username)
     } else {
-        xml_escape(&format!("{domain}\\{username}"))
+        super::xml_escape(&format!("{domain}\\{username}"))
     }
 }
 
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            other => out.push(other),
-        }
-    }
-    out
-}

@@ -351,4 +351,49 @@ mod tests {
             assert!(seen.insert(fresh_ide_key()));
         }
     }
+
+    #[test]
+    fn decision_round_trips() {
+        use Decision::*;
+        for v in [Allow, Deny, Ask] {
+            assert_eq!(Decision::from_db_str(v.as_db_str()), Some(v), "round-trip failed for {v:?}");
+        }
+        assert_eq!(Decision::from_db_str("bogus_value_that_will_never_exist"), None);
+    }
+
+    #[test]
+    fn decision_source_round_trips() {
+        use DecisionSource::*;
+        for v in [Default, User, ToolListChanged, Probe, Notification] {
+            assert_eq!(DecisionSource::from_db_str(v.as_db_str()), Some(v), "round-trip failed for {v:?}");
+        }
+        assert_eq!(DecisionSource::from_db_str("bogus_value_that_will_never_exist"), None);
+    }
+
+    #[test]
+    fn approval_status_round_trips() {
+        use ApprovalStatus::*;
+        for v in [Pending, Approved, Denied, Timeout, Cancelled] {
+            assert_eq!(ApprovalStatus::from_db_str(v.as_db_str()), Some(v), "round-trip failed for {v:?}");
+        }
+        assert_eq!(ApprovalStatus::from_db_str("bogus_value_that_will_never_exist"), None);
+    }
+
+    #[test]
+    fn audit_decision_round_trips() {
+        use AuditDecision::*;
+        for v in [Allow, Deny, AskApproved, AskDenied, AskTimeout, Error, Cancelled] {
+            assert_eq!(AuditDecision::from_db_str(v.as_db_str()), Some(v), "round-trip failed for {v:?}");
+        }
+        assert_eq!(AuditDecision::from_db_str("bogus_value_that_will_never_exist"), None);
+    }
+
+    #[test]
+    fn ide_status_round_trips() {
+        use IdeStatus::*;
+        for v in [Active, Stale, NotTracked] {
+            assert_eq!(IdeStatus::from_db_str(v.as_db_str()), Some(v), "round-trip failed for {v:?}");
+        }
+        assert_eq!(IdeStatus::from_db_str("bogus_value_that_will_never_exist"), None);
+    }
 }

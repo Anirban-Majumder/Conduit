@@ -6,6 +6,10 @@
 //! operations are idempotent; unsupported OSes return
 //! `InstallError::UnsupportedOs`.
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::fs;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::Path;
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -97,4 +101,47 @@ pub fn is_installed() -> bool {
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub fn is_installed() -> bool {
     false
+}
+
+/// Escape XML special characters for use in plist/Task-Scheduler XML bodies.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(super) fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Write `bytes` to `path` atomically via a temp-file rename.
+///
+/// `fallback_name` is used as the temp-file stem when `path` has no
+/// filename component (practically unreachable but avoids an unwrap).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn atomic_write(
+    path: &Path,
+    fallback_name: &str,
+    bytes: &[u8],
+) -> Result<(), InstallError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(fallback_name);
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    fs::write(&tmp, bytes)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ignored = fs::remove_file(&tmp);
+            Err(InstallError::Io(e))
+        }
+    }
 }

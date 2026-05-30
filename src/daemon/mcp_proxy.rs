@@ -20,6 +20,7 @@ use crate::daemon::events::Event;
 use crate::daemon::http_server::{server_to_config, AppState};
 use crate::daemon::upstream::manager::UpstreamError;
 use crate::daemon::upstream::probe::message_looks_like_auth_failure;
+use crate::daemon::time_util::now_unix_secs;
 
 #[derive(Debug)]
 pub enum ProxyOutcome {
@@ -301,7 +302,7 @@ async fn insert_audit(
 ) {
     let entry = AuditEntry {
         id: None,
-        ts: now_unix(),
+        ts: now_unix_secs(),
         ide_key: Some(ide_key.to_string()),
         ide_name: Some(ide_name.to_string()),
         server: server.to_string(),
@@ -319,14 +320,6 @@ async fn insert_audit(
     }
 }
 
-fn now_unix() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
-}
 
 fn io_to_upstream(e: crate::daemon::http_server::ServerError) -> ProxyError {
     ProxyError::Upstream(UpstreamError::InitFailed(e.to_string()))
