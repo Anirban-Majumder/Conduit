@@ -228,16 +228,8 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
     });
 
     window.on_copy_error_clicked(move |text| {
-        if text.is_empty() {
-            return;
-        }
-        match arboard::Clipboard::new() {
-            Ok(mut cb) => {
-                if let Err(e) = cb.set_text(text.to_string()) {
-                    tracing::warn!(error = %e, "clipboard set_text failed");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "clipboard open failed"),
+        if !text.is_empty() {
+            crate::glue::util::copy_to_clipboard(&text);
         }
     });
 

@@ -56,6 +56,10 @@ export component MainWindow inherits Window {
     in-out property <string> skills-repo-add-name;
     in-out property <string> skills-repo-add-branch: "main";
 
+    // Log tab filter + search state
+    in-out property <string> audit-search-query;
+    in-out property <string> audit-decision-filter;
+
     in-out property <int> active-tab: 0;
     in-out property <string> focused-approval: "";
     in-out property <bool> show-approval-detail: false;
@@ -148,6 +152,11 @@ export component MainWindow inherits Window {
     callback skills-remove-repo(string, string);
     callback skills-toggle-repo(string, string, bool);
     callback skills-search-changed(string);
+
+    // Log tab callbacks
+    callback audit-search-changed(string);
+    callback audit-decision-filter-changed(string);
+    callback copy-audit-args(string);
 
     public function show-add-server() {
         root.show-add-server-dialog = true;
@@ -336,7 +345,13 @@ export component MainWindow inherits Window {
                     }
                 }
                 if root.active-tab == 4 : LogTab {
+                    vertical-stretch: 1;
                     rows: root.audit;
+                    search-query <=> root.audit-search-query;
+                    decision-filter <=> root.audit-decision-filter;
+                    search-changed(q) => { root.audit-search-changed(q); }
+                    decision-filter-changed(d) => { root.audit-decision-filter-changed(d); }
+                    copy-args(text) => { root.copy-audit-args(text); }
                 }
                 if root.active-tab == 5 : SettingsTab {
                     data: root.settings;

@@ -253,6 +253,20 @@ export component DecisionChip inherits Chip {
 }
 
 
+// Clickable filter chip: a `Chip` wrapped in a `TouchArea`. `selected` drives
+// a border highlight; unselected chips are dimmed to signal interactivity.
+export component FilterChip inherits Chip {
+    in property <bool> selected: false;
+    callback clicked();
+    border-width: root.selected ? 1.5px : 0px;
+    border-color: root.fg;
+    opacity: root.selected ? 1.0 : 0.55;
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+
 export component EmptyState inherits Rectangle {
     in property <string> text;
     background: transparent;

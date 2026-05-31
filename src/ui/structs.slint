@@ -92,6 +92,13 @@ export struct AuditRow {
     tool: string,
     decision: string,
     latency_label: string,
+    // Detail-pane fields (visible when row is expanded)
+    ts_full: string,
+    decision_source: string,
+    request_args: string,
+    response_status: string,
+    response_length: string,
+    error_code: string,
 }
 
 export struct SettingsRow {

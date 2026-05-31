@@ -1,56 +1,242 @@
-// Log tab: read-only list of recent audit rows (tool call, policy decision,
-// latency) with a status dot colored by decision.
-// Instantiated by main.slint when the Log tab is active.
+// Log tab: live audit log with decision filter chips, free-text search, and
+// per-row expand/collapse for full detail (args, response, decision source).
+// Callbacks bubble to MainWindow; glue wires search-changed / decision-filter-changed.
 
 import { Theme } from "../theme.slint";
-import { EmptyState, DecisionBadge } from "../components/primitives.slint";
+import { EmptyState, DecisionBadge, FilterChip, PillButton } from "../components/primitives.slint";
 import { AuditRow } from "../structs.slint";
 
 export component LogTab inherits Rectangle {
     in property <[AuditRow]> rows;
+    in-out property <string> search-query;
+    in-out property <string> decision-filter;  // empty = all
+    in-out property <int> expanded-index: -1;
+
+    callback search-changed(string);
+    callback decision-filter-changed(string);
+    callback copy-args(string);
+
     VerticalLayout {
         spacing: Theme.gap-sm;
-        Text {
-            text: rows.length > 0 ? "Recent audit (" + rows.length + ")" : "Audit log empty";
-            color: Theme.text-secondary;
-            font-size: Theme.font-eyebrow;
+
+        // ── header + search row ─────────────────────────────────────────────
+        HorizontalLayout {
+            spacing: Theme.gap-md;
+            alignment: space-between;
+            Text {
+                text: rows.length > 0 ? "Recent audit (" + rows.length + ")" : "Audit log empty";
+                color: Theme.text-secondary;
+                font-size: Theme.font-eyebrow;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                width: 200px;
+                height: 28px;
+                background: Theme.surface;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: center;
+                    search-input := TextInput {
+                        text: root.search-query;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        single-line: true;
+                        placeholder-text: "Search server or tool…";
+                        placeholder-color: Theme.text-tertiary;
+                        edited => {
+                            root.search-query = self.text;
+                            root.expanded-index = -1;
+                            root.search-changed(self.text);
+                        }
+                    }
+                }
+            }
         }
+
+        // ── decision filter chips ───────────────────────────────────────────
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            FilterChip {
+                label: "All";
+                selected: root.decision-filter == "";
+                clicked => {
+                    root.decision-filter = "";
+                    root.expanded-index = -1;
+                    root.decision-filter-changed("");
+                }
+            }
+            FilterChip {
+                label: "ALLOWED";
+                fg: Theme.accent;
+                bg: Theme.accent-tint;
+                selected: root.decision-filter == "allow";
+                clicked => {
+                    root.decision-filter = "allow";
+                    root.expanded-index = -1;
+                    root.decision-filter-changed("allow");
+                }
+            }
+            FilterChip {
+                label: "DENIED";
+                fg: Theme.danger;
+                bg: Theme.danger-tint;
+                selected: root.decision-filter == "deny";
+                clicked => {
+                    root.decision-filter = "deny";
+                    root.expanded-index = -1;
+                    root.decision-filter-changed("deny");
+                }
+            }
+            FilterChip {
+                label: "ASK-APPROVED";
+                fg: Theme.accent;
+                bg: Theme.accent-tint;
+                selected: root.decision-filter == "ask-approved";
+                clicked => {
+                    root.decision-filter = "ask-approved";
+                    root.expanded-index = -1;
+                    root.decision-filter-changed("ask-approved");
+                }
+            }
+            FilterChip {
+                label: "TIMEOUT";
+                fg: Theme.warning;
+                bg: Theme.accent-tint;
+                selected: root.decision-filter == "ask-timeout";
+                clicked => {
+                    root.decision-filter = "ask-timeout";
+                    root.expanded-index = -1;
+                    root.decision-filter-changed("ask-timeout");
+                }
+            }
+            FilterChip {
+                label: "ERROR";
+                fg: Theme.danger;
+                bg: Theme.danger-tint;
+                selected: root.decision-filter == "error";
+                clicked => {
+                    root.decision-filter = "error";
+                    root.expanded-index = -1;
+                    root.decision-filter-changed("error");
+                }
+            }
+        }
+
+        // ── empty state ─────────────────────────────────────────────────────
         if rows.length == 0 : EmptyState {
             text: "Every tool call is logged here with the policy decision + latency.";
             height: 200px;
         }
-        for row in rows : Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.border;
-            height: 48px;
-            HorizontalLayout {
-                padding-left: Theme.gap-md;
-                padding-right: Theme.gap-md;
-                spacing: Theme.gap-md;
-                alignment: space-between;
+
+        // ── rows ────────────────────────────────────────────────────────────
+        for row[idx] in rows : VerticalLayout {
+            spacing: 0px;
+            // Summary row (always visible)
+            row-rect := Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.expanded-index == idx ? Theme.border-strong : Theme.border;
+                height: 48px;
                 HorizontalLayout {
+                    padding-left: Theme.gap-md;
+                    padding-right: Theme.gap-md;
                     spacing: Theme.gap-md;
-                    alignment: center;
-                    DecisionBadge {
-                        decision: row.decision;
+                    alignment: space-between;
+                    HorizontalLayout {
+                        spacing: Theme.gap-md;
+                        alignment: center;
+                        DecisionBadge { decision: row.decision; }
+                        Text {
+                            text: row.ts-label + " · " + row.ide-name + " → " + row.server + "." + row.tool;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-sm;
+                            vertical-alignment: center;
+                        }
                     }
-                    Text {
-                        text: row.ide_name + " → " + row.server + "." + row.tool;
-                        color: Theme.text-primary;
-                        font-size: Theme.font-body-sm;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        alignment: center;
+                        Text {
+                            text: row.decision + " · " + row.latency-label;
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-body-sm;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.expanded-index == idx ? "▲" : "▼";
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-body-sm;
+                            vertical-alignment: center;
+                        }
                     }
                 }
-                Text {
-                    text: row.decision + " · " + row.latency_label;
-                    color: Theme.text-tertiary;
-                    font-size: Theme.font-body-sm;
-                    vertical-alignment: center;
+                row-ta := TouchArea {
+                    clicked => {
+                        root.expanded-index = root.expanded-index == idx ? -1 : idx;
+                    }
+                }
+            }
+            // Detail pane (visible when expanded)
+            if root.expanded-index == idx : Rectangle {
+                background: Theme.surface-2;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                clip: true;
+                VerticalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-sm;
+                    HorizontalLayout {
+                        spacing: Theme.gap-lg;
+                        Text {
+                            text: "Time: " + row.ts-full;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                        }
+                        Text {
+                            text: "Source: " + row.decision-source;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                        }
+                        Text {
+                            text: "Response: " + row.response-status;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                        }
+                        if row.response-length != "" : Text {
+                            text: "Length: " + row.response-length;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-body-sm;
+                        }
+                        if row.error-code != "" : Text {
+                            text: "Error: " + row.error-code;
+                            color: Theme.danger;
+                            font-size: Theme.font-body-sm;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        alignment: space-between;
+                        Text {
+                            text: "Args: " + (row.request-args == "" ? "—" : row.request-args);
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        if row.request-args != "" : PillButton {
+                            label: "Copy";
+                            clicked => { root.copy-args(row.request-args); }
+                        }
+                    }
                 }
             }
         }
     }
 }
-

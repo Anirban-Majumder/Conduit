@@ -462,6 +462,91 @@ async fn audit_query_filters_by_ide_and_server() {
 }
 
 #[tokio::test]
+async fn audit_filter_decision_and_text() {
+    use conduit::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
+
+    let db = Db::spawn_in_memory().expect("spawn");
+    let entries = [
+        ("github", "create_issue", AuditDecision::Allow),
+        ("github", "delete_repo", AuditDecision::Deny),
+        ("slack", "send_message", AuditDecision::Allow),
+    ];
+    for (server, tool, decision) in entries {
+        db.insert_audit_entry(AuditEntry {
+            id: None,
+            ts: 1_000,
+            ide_key: None,
+            ide_name: None,
+            server: server.to_string(),
+            tool: Some(tool.to_string()),
+            decision,
+            decision_source: None,
+            latency_ms: None,
+            request_args: None,
+            response_status: None,
+            response_length: None,
+            error_code: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    // decision filter
+    let denied = db
+        .query_audit_log(AuditFilter {
+            decision: Some(AuditDecision::Deny),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(denied.len(), 1);
+    assert_eq!(denied[0].tool.as_deref(), Some("delete_repo"));
+
+    // text filter (partial server name)
+    let slack_rows = db
+        .query_audit_log(AuditFilter {
+            text: Some("slack".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(slack_rows.len(), 1);
+    assert_eq!(slack_rows[0].server, "slack");
+
+    // text filter (partial tool name)
+    let issue_rows = db
+        .query_audit_log(AuditFilter {
+            text: Some("issue".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(issue_rows.len(), 1);
+    assert_eq!(issue_rows[0].tool.as_deref(), Some("create_issue"));
+
+    // combined decision + text — no match
+    let none_rows = db
+        .query_audit_log(AuditFilter {
+            decision: Some(AuditDecision::Deny),
+            text: Some("slack".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(none_rows.is_empty());
+
+    // LIKE metacharacter escaping: '%' in search term must not wildcard-match everything
+    let percent_rows = db
+        .query_audit_log(AuditFilter {
+            text: Some("%".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(percent_rows.is_empty(), "literal '%' should not match any server/tool name");
+}
+
+#[tokio::test]
 async fn audit_purge_old_removes_pre_cutoff() {
     use conduit::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter};
 

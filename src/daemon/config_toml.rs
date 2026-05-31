@@ -53,7 +53,7 @@ impl Default for DaemonSettings {
             port: 9876,
             approval_timeout_seconds: 300,
             default_lifecycle_seconds: 300,
-            audit_retention_days: 30,
+            audit_retention_days: 7,
             log_level: "info".to_string(),
             autostart_at_login: true,
         }

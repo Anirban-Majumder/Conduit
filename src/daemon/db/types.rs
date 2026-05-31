@@ -184,6 +184,10 @@ pub struct AuditFilter {
     pub until_ts: Option<i64>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+    /// Exact decision match; `None` = all decisions.
+    pub decision: Option<AuditDecision>,
+    /// Free-text search over server + tool (LIKE %text%); `None` = no filter.
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

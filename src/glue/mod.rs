@@ -15,6 +15,7 @@ use conduit::daemon::skills::SkillManager;
 
 pub(crate) mod callbacks;
 pub(crate) mod callbacks_ide;
+pub(crate) mod callbacks_log;
 pub(crate) mod callbacks_misc;
 pub(crate) mod callbacks_servers;
 pub(crate) mod refresh;

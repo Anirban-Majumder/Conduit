@@ -47,6 +47,8 @@ pub enum Event {
     AuthCleared {
         server: String,
     },
+    /// A `tools/call` was handled and an audit row inserted. Log tab should refresh.
+    AuditAppended,
 }
 
 #[derive(Debug, Clone)]

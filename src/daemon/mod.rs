@@ -20,6 +20,7 @@ pub mod ipc;
 pub mod mcp_proxy;
 pub mod onboarding;
 pub mod paste_parser;
+pub mod retention;
 pub mod secrets;
 pub mod server_validators;
 pub mod skills;

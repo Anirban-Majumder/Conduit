@@ -31,13 +31,13 @@ pub(crate) fn relative_time(delta_secs: i64) -> String {
     format!("{}d ago", hours / 24)
 }
 
-/// Local wall-clock `HH:MM:SS` for an epoch-seconds timestamp; empty on overflow.
-pub(crate) fn clock_hms(ts: i64) -> String {
+/// Local full timestamp `YYYY-MM-DD HH:MM:SS` for the detail pane; empty on overflow.
+pub(crate) fn clock_full(ts: i64) -> String {
     use chrono::{Local, TimeZone};
     Local
         .timestamp_opt(ts, 0)
         .single()
-        .map_or_else(String::new, |dt| dt.format("%H:%M:%S").to_string())
+        .map_or_else(String::new, |dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 pub(crate) fn unix_now() -> i64 {
@@ -105,8 +105,6 @@ where
     rx.await.ok()
 }
 
-
-
 pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> Option<String> {
     read_ui_state(weak, |ui| ui.get_selected_server().to_string())
         .await
@@ -166,6 +164,17 @@ pub(crate) fn settings_to_row(s: &Settings) -> SettingsRow {
         theme: SharedString::from(s.gui.theme.clone()),
         autostart_at_login: SharedString::from(s.daemon.autostart_at_login.to_string()),
         notifications_enabled: SharedString::from(s.notifications.enabled.to_string()),
+    }
+}
+
+pub(crate) fn copy_to_clipboard(text: &str) {
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => {
+            if let Err(e) = cb.set_text(text.to_string()) {
+                tracing::warn!(error = %e, "clipboard set_text failed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "clipboard open failed"),
     }
 }
 

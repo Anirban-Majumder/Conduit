@@ -180,6 +180,7 @@ fn main() -> Result<()> {
             Some(bus.clone()),
         ))
     };
+    let config_toml_path = paths.config_toml();
     let skill_manager = {
         let _guard = worker.handle().enter();
         Arc::new(SkillManager::new(paths, db.clone(), bus.clone()).context("build skill manager")?)
@@ -203,6 +204,11 @@ fn main() -> Result<()> {
                 tracing::error!(error = %e, "axum server exited with error");
             }
         });
+    }
+
+    {
+        let _guard = worker.handle().enter();
+        conduit::daemon::retention::spawn(db.clone(), config_toml_path, cancel.clone());
     }
 
     let window = MainWindow::new().context("build slint main window")?;
@@ -229,6 +235,7 @@ fn main() -> Result<()> {
         db.clone(),
         worker.handle().clone(),
         skill_manager,
+        cancel.clone(),
     );
 
     // Notifications bridge: emits OS toasts AND owns the click→dispatch loop.

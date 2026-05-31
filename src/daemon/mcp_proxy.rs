@@ -315,8 +315,9 @@ async fn insert_audit(
         response_length,
         error_code: None,
     };
-    if let Err(e) = state.db.insert_audit_entry(entry).await {
-        tracing::warn!(error = %e, server, tool, "audit insert failed");
+    match state.db.insert_audit_entry(entry).await {
+        Ok(_) => { state.bus.publish(Event::AuditAppended); }
+        Err(e) => tracing::warn!(error = %e, server, tool, "audit insert failed"),
     }
 }
 

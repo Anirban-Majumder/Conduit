@@ -111,6 +111,19 @@ pub(super) fn query_query_audit_log(
         sql.push_str(" AND ts < ?");
         args.push(SqlValue::Integer(ts));
     }
+    if let Some(d) = &filter.decision {
+        sql.push_str(" AND decision = ?");
+        args.push(SqlValue::Text(d.as_db_str().to_owned()));
+    }
+    if let Some(t) = &filter.text {
+        // Escape LIKE metacharacters so a literal '%' or '_' doesn't act as a
+        // wildcard. ESCAPE '\' tells SQLite our escape prefix.
+        let escaped = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        sql.push_str(" AND (server LIKE ? ESCAPE '\\' OR tool LIKE ? ESCAPE '\\')");
+        let pattern = format!("%{escaped}%");
+        args.push(SqlValue::Text(pattern.clone()));
+        args.push(SqlValue::Text(pattern));
+    }
     sql.push_str(" ORDER BY ts DESC");
     if let Some(limit) = filter.limit {
         sql.push_str(" LIMIT ?");
