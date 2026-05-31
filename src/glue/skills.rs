@@ -6,8 +6,6 @@
 //! skills with discovered candidates into the Slint models. UI writes go through
 //! `upgrade_in_event_loop`.
 
-use std::sync::Arc;
-
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use conduit::daemon::db::types::SkillRepo;
@@ -15,17 +13,17 @@ use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::{SkillCandidate, SkillManager};
 
 use crate::glue::refresh::ide_icon;
+use crate::glue::CallbackContext;
 use crate::ui::{IdeTarget, MainWindow, SkillRepoRow, SkillRow};
 
 #[expect(
     clippy::too_many_lines,
     reason = "Skills tab wires eight callbacks at once"
 )]
-pub(crate) fn install_skills_callbacks(
-    window: &MainWindow,
-    rt: &tokio::runtime::Handle,
-    skills: &Arc<SkillManager>,
-) {
+pub(crate) fn install_skills_callbacks(window: &MainWindow, ctx: &CallbackContext) {
+    let rt = &ctx.rt;
+    let skills = &ctx.skills;
+
     let weak = window.as_weak();
     let rt_for_refresh = rt.clone();
     let skills_for_refresh = skills.clone();

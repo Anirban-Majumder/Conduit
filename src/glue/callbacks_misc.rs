@@ -9,18 +9,20 @@ use std::rc::Rc;
 use slint::{ComponentHandle, SharedString, VecModel};
 
 use conduit::daemon::db::types::{Decision, DecisionSource};
-use conduit::daemon::db::Db;
 use conduit::daemon::paste_parser;
 
 use crate::glue::wizard::set_env_rows;
+use crate::glue::CallbackContext;
 use crate::ui::{EnvVarRow, MainWindow};
 
 pub(crate) fn install_misc_callbacks(
     window: &MainWindow,
-    db: &Db,
-    rt: &tokio::runtime::Handle,
+    ctx: &CallbackContext,
     env_rows: &Rc<VecModel<EnvVarRow>>,
 ) {
+    let db = &ctx.db;
+    let rt = &ctx.rt;
+
     let db_for_open_toggle = db.clone();
     let rt_for_open_toggle = rt.clone();
     window.on_toggle_open_window_at_startup(move |v| {

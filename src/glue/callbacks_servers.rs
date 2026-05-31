@@ -5,35 +5,30 @@
 //! wizard. Handlers offload to the tokio worker and repaint through
 //! `crate::glue::refresh`; UI mutation only via `upgrade_in_event_loop`.
 
-use std::sync::Arc;
-
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
-use conduit::daemon::approval::ApprovalCenter;
 use conduit::daemon::cascade;
 use conduit::daemon::db::types::{
     ApprovalStatus, Decision, DecisionSource, ToolMeta as DbToolMeta,
 };
-use conduit::daemon::db::Db;
-use conduit::daemon::events::{Bus, Event};
+use conduit::daemon::events::Event;
 use conduit::daemon::upstream::probe::{self};
-
-use crate::ui::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 
 use crate::glue::refresh::{refresh_server_detail, refresh_servers, toggle_server_for_ide};
 use crate::glue::util::unix_now;
 use crate::glue::wizard::{build_draft, env_field_from_server, picker_from_lifecycle};
+use crate::glue::CallbackContext;
+use crate::ui::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 
 #[expect(clippy::too_many_lines, reason = "wires every server-tab callback")]
-pub(crate) fn install_server_callbacks(
-    window: &MainWindow,
-    db: &Db,
-    approvals: &Arc<ApprovalCenter>,
-    bus: &Bus,
-    port: u16,
-    rt: &tokio::runtime::Handle,
-) {
+pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContext) {
+    let db = &ctx.db;
+    let approvals = &ctx.approvals;
+    let bus = &ctx.bus;
+    let port = ctx.port;
+    let rt = &ctx.rt;
+
     let approvals_for_approve = approvals.clone();
     let rt_for_approve = rt.clone();
     window.on_approve_clicked(move |id| {
@@ -233,16 +228,8 @@ pub(crate) fn install_server_callbacks(
     });
 
     window.on_copy_error_clicked(move |text| {
-        if text.is_empty() {
-            return;
-        }
-        match arboard::Clipboard::new() {
-            Ok(mut cb) => {
-                if let Err(e) = cb.set_text(text.to_string()) {
-                    tracing::warn!(error = %e, "clipboard set_text failed");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "clipboard open failed"),
+        if !text.is_empty() {
+            crate::glue::util::copy_to_clipboard(&text);
         }
     });
 

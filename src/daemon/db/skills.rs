@@ -6,7 +6,6 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::oneshot;
 
 use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::errors::DbError;
@@ -23,11 +22,7 @@ pub(super) fn query_list_skill_repos(conn: &Connection) -> Result<Vec<SkillRepo>
             enabled: row.get::<_, i64>(3)? != 0,
         })
     })?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_upsert_skill_repo(conn: &Connection, repo: &SkillRepo) -> Result<(), DbError> {
@@ -140,11 +135,7 @@ fn read_skill_targets(conn: &Connection, directory: &str) -> Result<Vec<String>,
         "SELECT ide_name FROM skill_targets WHERE directory = ?1 ORDER BY ide_name",
     )?;
     let rows = stmt.query_map(params![directory], |row| row.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 fn decode_skill_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
@@ -201,34 +192,20 @@ pub(super) fn query_list_skills(conn: &Connection) -> Result<Vec<Skill>, DbError
 
 impl Db {
     pub async fn list_skill_repos(&self) -> Result<Vec<SkillRepo>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListSkillRepos { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListSkillRepos { reply }).await
     }
 
     pub async fn upsert_skill_repo(&self, repo: SkillRepo) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpsertSkillRepo { repo, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::UpsertSkillRepo { repo, reply }).await
     }
 
     pub async fn delete_skill_repo(&self, owner: &str, name: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::DeleteSkillRepo {
-                owner: owner.to_string(),
-                name: name.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::DeleteSkillRepo {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn set_skill_repo_enabled(
@@ -237,26 +214,17 @@ impl Db {
         name: &str,
         enabled: bool,
     ) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::SetSkillRepoEnabled {
-                owner: owner.to_string(),
-                name: name.to_string(),
-                enabled,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::SetSkillRepoEnabled {
+            owner: owner.to_string(),
+            name: name.to_string(),
+            enabled,
+            reply,
+        })
+        .await
     }
 
     pub async fn upsert_skill_with_targets(&self, skill: Skill) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpsertSkillWithTargets { skill, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::UpsertSkillWithTargets { skill, reply }).await
     }
 
     pub async fn set_skill_targets(
@@ -264,48 +232,23 @@ impl Db {
         directory: &str,
         targets: Vec<String>,
     ) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::SetSkillTargets {
-                directory: directory.to_string(),
-                targets,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::SetSkillTargets {
+            directory: directory.to_string(),
+            targets,
+            reply,
+        })
+        .await
     }
 
     pub async fn delete_skill(&self, directory: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::DeleteSkill {
-                directory: directory.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::DeleteSkill { directory: directory.to_string(), reply }).await
     }
 
     pub async fn get_skill(&self, directory: &str) -> Result<Option<Skill>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetSkill {
-                directory: directory.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetSkill { directory: directory.to_string(), reply }).await
     }
 
     pub async fn list_skills(&self) -> Result<Vec<Skill>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListSkills { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListSkills { reply }).await
     }
 }

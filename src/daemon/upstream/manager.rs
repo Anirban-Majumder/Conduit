@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::events::{Bus, Event};
+use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
 use crate::daemon::upstream::{http, stdio};
 use crate::paths::Paths;
@@ -149,7 +150,7 @@ impl UpstreamManager {
 
     async fn record(&self, server: &str, error: Option<String>) {
         let now = Instant::now();
-        let unix = now_unix();
+        let unix = now_unix_secs();
         let mut map = self.status.lock().await;
         let entry = map.entry(server.to_string()).or_default();
         entry.last_call_at = Some(unix);
@@ -204,21 +205,13 @@ impl UpstreamManager {
             return Err(e);
         }
 
-        let mut state = self.state.lock().await;
-        let peer = {
-            let Some(entry) = state.get_mut(&config.name) else {
-                self.record(&config.name, Some("crashed".into())).await;
-                return Err(UpstreamError::Crashed);
-            };
-            if entry.client.is_closed() {
-                state.remove(&config.name);
-                self.record(&config.name, Some("crashed".into())).await;
-                return Err(UpstreamError::Crashed);
+        let peer = match self.get_peer_for_call(&config.name).await {
+            Ok(p) => p,
+            Err(e) => {
+                self.record(&config.name, Some(e.to_string())).await;
+                return Err(e);
             }
-            entry.last_use = Instant::now();
-            entry.client.peer().clone()
         };
-        drop(state);
 
         let response = match peer.call_tool(request).await {
             Ok(call_result) => serde_json::to_value(call_result)?,
@@ -241,19 +234,7 @@ impl UpstreamManager {
     pub async fn list_tools(&self, config: &ServerConfig) -> Result<Value, UpstreamError> {
         self.ensure_running(config).await?;
 
-        let mut state = self.state.lock().await;
-        let peer = {
-            let Some(entry) = state.get_mut(&config.name) else {
-                return Err(UpstreamError::Crashed);
-            };
-            if entry.client.is_closed() {
-                state.remove(&config.name);
-                return Err(UpstreamError::Crashed);
-            }
-            entry.last_use = Instant::now();
-            entry.client.peer().clone()
-        };
-        drop(state);
+        let peer = self.get_peer_for_call(&config.name).await?;
 
         match peer.list_tools(None).await {
             Ok(list) => Ok(serde_json::to_value(list)?),
@@ -281,6 +262,24 @@ impl UpstreamManager {
         for (name, entry) in drained {
             cancel_entry(&name, entry).await;
         }
+    }
+
+    async fn get_peer_for_call(
+        &self,
+        server_name: &str,
+    ) -> Result<rmcp::service::Peer<RoleClient>, UpstreamError> {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.get_mut(server_name) else {
+            return Err(UpstreamError::Crashed);
+        };
+        if entry.client.is_closed() {
+            state.remove(server_name);
+            return Err(UpstreamError::Crashed);
+        }
+        entry.last_use = Instant::now();
+        let peer = entry.client.peer().clone();
+        drop(state);
+        Ok(peer)
     }
 
     async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {
@@ -418,12 +417,6 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
     out
 }
 
-fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
 
 fn is_expired(entry: &Entry, now: Instant) -> bool {
     if entry.client.is_closed() {

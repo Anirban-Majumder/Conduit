@@ -5,7 +5,7 @@
 // navigation (open-tab / open-server / add-server) is delegated to main.slint.
 
 import { Theme } from "../theme.slint";
-import { StatusDot, Icon, Chip } from "../components/primitives.slint";
+import { StatusDot, Icon, Chip, DecisionChip } from "../components/primitives.slint";
 import { DashboardStats, ServerRow, SkillRow, AuditRow } from "../structs.slint";
 
 component GlassPanel inherits Rectangle {
@@ -418,20 +418,8 @@ export component DashboardTab inherits Rectangle {
                                     VerticalLayout {
                                         alignment: center;
                                         width: 92px;
-                                        Chip {
-                                            label: (a.decision == "allow" || a.decision == "ask_approved") ? "ALLOWED"
-                                                 : (a.decision == "deny" || a.decision == "ask_denied") ? "DENIED"
-                                                 : a.decision == "ask_timeout" ? "TIMEOUT"
-                                                 : a.decision == "error" ? "ERROR"
-                                                 : a.decision == "cancelled" ? "CANCELLED"
-                                                 : a.decision;
-                                            fg: (a.decision == "deny" || a.decision == "ask_denied" || a.decision == "error")
-                                                ? Theme.danger
-                                                : a.decision == "ask_timeout" ? Theme.warning
-                                                : Theme.accent;
-                                            bg: (a.decision == "deny" || a.decision == "ask_denied" || a.decision == "error")
-                                                ? Theme.danger-tint
-                                                : Theme.accent-tint;
+                                        DecisionChip {
+                                            decision: a.decision;
                                         }
                                     }
                                     Text {

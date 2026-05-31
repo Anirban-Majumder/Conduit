@@ -118,13 +118,19 @@ fn main() -> Result<()> {
             match db_purge.list_oauth_drafts().await {
                 Ok(drafts) if !drafts.is_empty() => {
                     let drafts_for_purge = drafts.clone();
-                    let purged = tokio::task::spawn_blocking(move || {
+                    let purged = match tokio::task::spawn_blocking(move || {
                         conduit::daemon::upstream::oauth::purge_draft_oauth_tokens(
                             &drafts_for_purge,
                         )
                     })
                     .await
-                    .unwrap_or(0);
+                    {
+                        Ok(n) => n,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "purge_draft_oauth_tokens task panicked");
+                            0
+                        }
+                    };
                     if purged > 0 {
                         tracing::info!(count = purged, "purged orphaned OAuth draft tokens");
                     }
@@ -174,6 +180,7 @@ fn main() -> Result<()> {
             Some(bus.clone()),
         ))
     };
+    let config_toml_path = paths.config_toml();
     let skill_manager = {
         let _guard = worker.handle().enter();
         Arc::new(SkillManager::new(paths, db.clone(), bus.clone()).context("build skill manager")?)
@@ -197,6 +204,11 @@ fn main() -> Result<()> {
                 tracing::error!(error = %e, "axum server exited with error");
             }
         });
+    }
+
+    {
+        let _guard = worker.handle().enter();
+        conduit::daemon::retention::spawn(db.clone(), config_toml_path, cancel.clone());
     }
 
     let window = MainWindow::new().context("build slint main window")?;
@@ -223,13 +235,15 @@ fn main() -> Result<()> {
         db.clone(),
         worker.handle().clone(),
         skill_manager,
+        cancel.clone(),
     );
 
     // Notifications bridge: emits OS toasts AND owns the click→dispatch loop.
     {
         let _guard = worker.handle().enter();
+        // reason: bounded at 256; on full, sender uses try_send + drop (drop-on-full, not back-pressure — see notifications.rs)
         let (action_tx, mut action_rx) =
-            tokio::sync::mpsc::unbounded_channel::<gui_notification_router::NotificationAction>();
+            tokio::sync::mpsc::channel::<gui_notification_router::NotificationAction>(256);
         let _notif = gui_notifications::spawn(
             bus.subscribe(),
             db.clone(),

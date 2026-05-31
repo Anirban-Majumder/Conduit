@@ -31,13 +31,13 @@ pub(crate) fn relative_time(delta_secs: i64) -> String {
     format!("{}d ago", hours / 24)
 }
 
-/// Local wall-clock `HH:MM:SS` for an epoch-seconds timestamp; empty on overflow.
-pub(crate) fn clock_hms(ts: i64) -> String {
+/// Local full timestamp `YYYY-MM-DD HH:MM:SS` for the detail pane; empty on overflow.
+pub(crate) fn clock_full(ts: i64) -> String {
     use chrono::{Local, TimeZone};
     Local
         .timestamp_opt(ts, 0)
         .single()
-        .map_or_else(String::new, |dt| dt.format("%H:%M:%S").to_string())
+        .map_or_else(String::new, |dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 pub(crate) fn unix_now() -> i64 {
@@ -87,13 +87,28 @@ pub(crate) fn resolve_ide_config_path(
     None
 }
 
-pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> Option<String> {
+/// Read a value from the UI thread into an async context.
+///
+/// `upgrade_in_event_loop` is fire-and-forget; this helper bridges the gap with
+/// a oneshot channel so the caller can await the value the UI thread produces.
+pub(crate) async fn read_ui_state<T>(
+    weak: &slint::Weak<MainWindow>,
+    f: impl FnOnce(MainWindow) -> T + Send + 'static,
+) -> Option<T>
+where
+    T: Send + 'static,
+{
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        let s = ui.get_selected_server().to_string();
-        tx.send(s).ok();
+        tx.send(f(ui)).ok();
     });
-    rx.await.ok().filter(|s| !s.is_empty())
+    rx.await.ok()
+}
+
+pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> Option<String> {
+    read_ui_state(weak, |ui| ui.get_selected_server().to_string())
+        .await
+        .filter(|s: &String| !s.is_empty())
 }
 
 pub(crate) async fn remove_ide(db: &Db, port: u16, ide_kind: &str) {
@@ -149,6 +164,17 @@ pub(crate) fn settings_to_row(s: &Settings) -> SettingsRow {
         theme: SharedString::from(s.gui.theme.clone()),
         autostart_at_login: SharedString::from(s.daemon.autostart_at_login.to_string()),
         notifications_enabled: SharedString::from(s.notifications.enabled.to_string()),
+    }
+}
+
+pub(crate) fn copy_to_clipboard(text: &str) {
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => {
+            if let Err(e) = cb.set_text(text.to_string()) {
+                tracing::warn!(error = %e, "clipboard set_text failed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "clipboard open failed"),
     }
 }
 

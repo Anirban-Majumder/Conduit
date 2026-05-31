@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::clients;
 use conduit::daemon::config_toml::Settings;
@@ -24,8 +25,8 @@ use crate::ui::{
 
 use crate::glue::skills::{installed_skills_to_rows, refresh_skills};
 use crate::glue::util::{
-    clock_hms, fire_auth_failure_notification, lifecycle_label, relative_time, run_ide_detection,
-    settings_to_row, unix_now,
+    clock_full, fire_auth_failure_notification, lifecycle_label, read_ui_state, relative_time,
+    run_ide_detection, settings_to_row, unix_now,
 };
 
 /// Decode an IDE's embedded brand SVG into a `slint::Image`. Falls back to an
@@ -81,58 +82,78 @@ pub(crate) fn spawn_event_bridge(
     db: Db,
     rt: tokio::runtime::Handle,
     skills: Arc<SkillManager>,
+    cancel: CancellationToken,
 ) {
     let weak = window.as_weak();
     rt.spawn(async move {
+        // Dirty flag: set when AuditAppended arrives; cleared after the coalesced
+        // refresh fires. At most one audit query + UI repaint per ~300ms burst.
+        let mut audit_dirty = false;
+        let mut coalesce = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
-            match rx.recv().await {
-                Ok(Event::ApprovalPending { .. }) => {
-                    refresh_pending(&weak, &db).await;
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                event = rx.recv() => {
+                    match event {
+                        Ok(Event::ApprovalPending { .. }) => {
+                            refresh_pending(&weak, &db).await;
+                        }
+                        Ok(Event::ApprovalResolved { .. }) => {
+                            refresh_pending(&weak, &db).await;
+                            refresh_audit(&weak, &db).await;
+                            refresh_dashboard(&weak, &db, &skills).await;
+                        }
+                        Ok(Event::AuditAppended) => {
+                            audit_dirty = true;
+                        }
+                        Ok(Event::ConfigReloaded { settings }) => {
+                            let row = settings_to_row(&settings);
+                            weak.upgrade_in_event_loop(move |ui| ui.set_settings(row))
+                                .ok();
+                        }
+                        Ok(Event::ServerHealthChanged { name }) => {
+                            tracing::debug!(server = %name, "health changed; consumer to refresh");
+                            refresh_servers(&weak, &db).await;
+                            refresh_dashboard(&weak, &db, &skills).await;
+                        }
+                        Ok(Event::FocusApproval { id }) => {
+                            let id_for_ui = id.clone();
+                            weak.upgrade_in_event_loop(move |ui| {
+                                ui.window().show().ok();
+                                ui.set_focused_approval(SharedString::from(id_for_ui));
+                            })
+                            .ok();
+                        }
+                        Ok(Event::SkillsChanged) => {
+                            refresh_skills(&weak, &skills).await;
+                            refresh_dashboard(&weak, &db, &skills).await;
+                        }
+                        Ok(Event::AuthFailure { server, message }) => {
+                            tracing::warn!(server = %server, message = %message, "auth failure");
+                            fire_auth_failure_notification(&server, &message);
+                            refresh_servers(&weak, &db).await;
+                            refresh_server_detail(&weak, &db, &server).await;
+                            refresh_dashboard(&weak, &db, &skills).await;
+                        }
+                        Ok(Event::AuthCleared { server }) => {
+                            tracing::info!(server = %server, "auth cleared");
+                            refresh_servers(&weak, &db).await;
+                            refresh_server_detail(&weak, &db, &server).await;
+                            refresh_dashboard(&weak, &db, &skills).await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(skipped = n, "event bridge lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Ok(Event::ApprovalResolved { .. }) => {
-                    refresh_pending(&weak, &db).await;
-                    refresh_audit(&weak, &db).await;
-                    refresh_dashboard(&weak, &db, &skills).await;
+                _ = coalesce.tick() => {
+                    if audit_dirty {
+                        audit_dirty = false;
+                        refresh_audit(&weak, &db).await;
+                        refresh_dashboard(&weak, &db, &skills).await;
+                    }
                 }
-                Ok(Event::ConfigReloaded { settings }) => {
-                    let row = settings_to_row(&settings);
-                    weak.upgrade_in_event_loop(move |ui| ui.set_settings(row))
-                        .ok();
-                }
-                Ok(Event::ServerHealthChanged { name }) => {
-                    tracing::debug!(server = %name, "health changed; consumer to refresh");
-                    refresh_servers(&weak, &db).await;
-                    refresh_dashboard(&weak, &db, &skills).await;
-                }
-                Ok(Event::FocusApproval { id }) => {
-                    let id_for_ui = id.clone();
-                    weak.upgrade_in_event_loop(move |ui| {
-                        ui.window().show().ok();
-                        ui.set_focused_approval(SharedString::from(id_for_ui));
-                    })
-                    .ok();
-                }
-                Ok(Event::SkillsChanged) => {
-                    refresh_skills(&weak, &skills).await;
-                    refresh_dashboard(&weak, &db, &skills).await;
-                }
-                Ok(Event::AuthFailure { server, message }) => {
-                    tracing::warn!(server = %server, message = %message, "auth failure");
-                    fire_auth_failure_notification(&server, &message);
-                    refresh_servers(&weak, &db).await;
-                    refresh_server_detail(&weak, &db, &server).await;
-                    refresh_dashboard(&weak, &db, &skills).await;
-                }
-                Ok(Event::AuthCleared { server }) => {
-                    tracing::info!(server = %server, "auth cleared");
-                    refresh_servers(&weak, &db).await;
-                    refresh_server_detail(&weak, &db, &server).await;
-                    refresh_dashboard(&weak, &db, &skills).await;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "event bridge lagged");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
@@ -445,22 +466,59 @@ pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
 }
 
 pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
+    // Read the live filter state from the UI thread before querying.
+    let (search, decision_str) = read_ui_state(weak, |ui| {
+        (
+            ui.get_audit_search_query().to_string(),
+            ui.get_audit_decision_filter().to_string(),
+        )
+    })
+    .await
+    .unwrap_or_default();
+
+    let decision = if decision_str.is_empty() {
+        None
+    } else {
+        let d = AuditDecision::from_db_str(&decision_str);
+        if d.is_none() {
+            tracing::warn!(value = %decision_str, "unknown audit decision filter; showing all");
+        }
+        d
+    };
+    let text = if search.is_empty() { None } else { Some(search) };
+
     let filter = AuditFilter {
-        limit: Some(100),
+        limit: Some(25),
+        decision,
+        text,
         ..Default::default()
     };
     let entries = db.query_audit_log(filter).await.unwrap_or_default();
+    let now = unix_now();
     let rows: Vec<AuditRow> = entries
         .into_iter()
         .map(|e| AuditRow {
-            ts_label: SharedString::from(clock_hms(e.ts)),
+            id: SharedString::from(e.id.map(|n| n.to_string()).unwrap_or_default()),
+            ts_label: SharedString::from(relative_time(now - e.ts)),
+            ts_full: SharedString::from(clock_full(e.ts)),
             ide_name: SharedString::from(e.ide_name.unwrap_or_else(|| "?".to_string())),
             server: SharedString::from(e.server),
             tool: SharedString::from(e.tool.unwrap_or_default()),
             decision: SharedString::from(e.decision.as_db_str()),
+            decision_source: SharedString::from(
+                e.decision_source
+                    .map(|s| s.as_db_str().to_string())
+                    .unwrap_or_default(),
+            ),
             latency_label: SharedString::from(
                 e.latency_ms.map(|n| format!("{n}ms")).unwrap_or_default(),
             ),
+            request_args: SharedString::from(e.request_args.unwrap_or_default()),
+            response_status: SharedString::from(e.response_status.unwrap_or_default()),
+            response_length: SharedString::from(
+                e.response_length.map(|n| n.to_string()).unwrap_or_default(),
+            ),
+            error_code: SharedString::from(e.error_code.unwrap_or_default()),
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {

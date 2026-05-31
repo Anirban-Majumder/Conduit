@@ -8,9 +8,8 @@
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
-use tokio::sync::oneshot;
 
-use super::now_unix;
+use super::{bind_in_clause, now_unix};
 use crate::daemon::db::types::{fresh_ide_key, IdeKey, IdeRecord, IdeStatus, ManagedIdeConfig};
 use crate::daemon::errors::DbError;
 
@@ -110,11 +109,7 @@ pub(super) fn query_list_ides(conn: &Connection) -> Result<Vec<IdeRecord>, DbErr
     let sql = format!("SELECT {IDE_SELECT_COLUMNS} FROM ides ORDER BY display_name");
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map([], decode_ide_record)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_list_active_ides(conn: &Connection) -> Result<Vec<IdeRecord>, DbError> {
@@ -123,11 +118,7 @@ pub(super) fn query_list_active_ides(conn: &Connection) -> Result<Vec<IdeRecord>
     );
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map([], decode_ide_record)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_get_ide_by_kind(
@@ -202,24 +193,12 @@ pub(super) fn query_mark_ides_stale(
     conn: &Connection,
     kinds_present: &[String],
 ) -> Result<(), DbError> {
-    let placeholders = if kinds_present.is_empty() {
-        "''".to_string()
-    } else {
-        kinds_present
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let (placeholders, params) = bind_in_clause(kinds_present);
     let sql = format!(
         "UPDATE ides SET status = 'stale'
          WHERE status = 'active' AND ide_kind NOT IN ({placeholders})"
     );
-    let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(kinds_present.len());
-    for kind in kinds_present {
-        params_vec.push(kind);
-    }
-    conn.prepare(&sql)?.execute(&params_vec[..])?;
+    conn.prepare(&sql)?.execute(&params[..])?;
     Ok(())
 }
 
@@ -266,15 +245,7 @@ pub(super) fn query_update_ide_managed_entries(
 
 impl Db {
     pub async fn lookup_ide_key(&self, key: &str) -> Result<Option<IdeKey>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::LookupIdeKey {
-                key: key.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::LookupIdeKey { key: key.to_string(), reply }).await
     }
 
     pub async fn upsert_detected_ide(
@@ -283,83 +254,38 @@ impl Db {
         display_name: &str,
         detection_source: Option<String>,
     ) -> Result<IdeRecord, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpsertDetectedIde {
-                ide_kind: ide_kind.to_string(),
-                display_name: display_name.to_string(),
-                detection_source,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::UpsertDetectedIde {
+            ide_kind: ide_kind.to_string(),
+            display_name: display_name.to_string(),
+            detection_source,
+            reply,
+        })
+        .await
     }
 
     pub async fn list_ides(&self) -> Result<Vec<IdeRecord>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListIdes { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListIdes { reply }).await
     }
 
     pub async fn list_active_ides(&self) -> Result<Vec<IdeRecord>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListActiveIdes { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListActiveIdes { reply }).await
     }
 
     pub async fn get_ide_by_kind(&self, ide_kind: &str) -> Result<Option<IdeRecord>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetIdeByKind {
-                ide_kind: ide_kind.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetIdeByKind { ide_kind: ide_kind.to_string(), reply }).await
     }
 
     pub async fn mark_ides_stale(&self, kinds_present: Vec<String>) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::MarkIdesStale {
-                kinds_present,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::MarkIdesStale { kinds_present, reply }).await
     }
 
     pub async fn mark_ide_not_tracked(&self, ide_kind: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::MarkIdeNotTracked {
-                ide_kind: ide_kind.to_string(),
-                reply,
-            })
+        self.send_cmd(|reply| DbCmd::MarkIdeNotTracked { ide_kind: ide_kind.to_string(), reply })
             .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 
     pub async fn retrack_ide(&self, ide_kind: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::RetrackIde {
-                ide_kind: ide_kind.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::RetrackIde { ide_kind: ide_kind.to_string(), reply }).await
     }
 
     pub async fn update_ide_managed_entries(
@@ -368,25 +294,16 @@ impl Db {
         config_path: PathBuf,
         managed_entries: Vec<String>,
     ) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::UpdateIdeManagedEntries {
-                ide_kind: ide_kind.to_string(),
-                config_path,
-                managed_entries,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::UpdateIdeManagedEntries {
+            ide_kind: ide_kind.to_string(),
+            config_path,
+            managed_entries,
+            reply,
+        })
+        .await
     }
 
     pub async fn list_all_ide_configs(&self) -> Result<Vec<ManagedIdeConfig>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListAllIdeConfigs { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListAllIdeConfigs { reply }).await
     }
 }

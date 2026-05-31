@@ -271,10 +271,7 @@ fn spawn_badge_updater(
     cmd_tx: mpsc::Sender<TrayCmd>,
 ) {
     rt.spawn(async move {
-        if let Ok(pending) = db.list_pending_approvals().await {
-            let n = i64::try_from(pending.len()).unwrap_or(i64::MAX);
-            let _ignored = cmd_tx.send(TrayCmd::SetPendingCount(n));
-        }
+        let _ignored = cmd_tx.send(TrayCmd::SetPendingCount(get_pending_count(&db).await));
         let _ignored = cmd_tx.send(TrayCmd::SetAuthFailureCount(count_auth_failures(&db).await));
         if let Ok(Some(v)) = db.get_settings_kv("routing_paused").await {
             let _ignored = cmd_tx.send(TrayCmd::SetPaused(v == "true"));
@@ -285,11 +282,9 @@ fn spawn_badge_updater(
                 () = cancel.cancelled() => break,
                 evt = bus_rx.recv() => match evt {
                     Ok(Event::ApprovalPending { .. } | Event::ApprovalResolved { .. }) => {
-                        if let Ok(pending) = db.list_pending_approvals().await {
-                            let n = i64::try_from(pending.len()).unwrap_or(i64::MAX);
-                            if cmd_tx.send(TrayCmd::SetPendingCount(n)).is_err() {
-                                break;
-                            }
+                        let n = get_pending_count(&db).await;
+                        if cmd_tx.send(TrayCmd::SetPendingCount(n)).is_err() {
+                            break;
                         }
                     }
                     Ok(Event::AuthFailure { .. } | Event::AuthCleared { .. }) => {
@@ -306,8 +301,15 @@ fn spawn_badge_updater(
     });
 }
 
+async fn get_pending_count(db: &Db) -> i64 {
+    let pending = db.list_pending_approvals().await.unwrap_or_default();
+    // reason: len() fits in i64 on any real pending queue; MAX is an unreachable overflow fallback
+    i64::try_from(pending.len()).unwrap_or(i64::MAX)
+}
+
 async fn count_auth_failures(db: &Db) -> i64 {
     let servers = db.list_servers().await.unwrap_or_default();
+    // reason: len() fits in i64 on any real server list; MAX is an unreachable overflow fallback
     i64::try_from(
         servers
             .into_iter()

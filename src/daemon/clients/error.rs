@@ -25,4 +25,18 @@ pub enum ClientError {
 
     #[error("config path is not valid UTF-8")]
     NonUtf8Path,
+
+    /// JSON parse failure with the file path attached for log context.
+    #[error("parsing IDE config at {path}: {source}")]
+    ParseJson {
+        path: std::path::PathBuf,
+        source: serde_json::Error,
+    },
+
+    /// TOML parse failure with the file path attached for log context.
+    #[error("parsing IDE config TOML at {path}: {source}")]
+    ParseToml {
+        path: std::path::PathBuf,
+        source: toml::de::Error,
+    },
 }

@@ -36,7 +36,7 @@ pub fn install_into(dir: &Path, exe: &Path) -> Result<PathBuf, InstallError> {
     fs::create_dir_all(dir)?;
     let path = dir.join(SERVICE_FILE_NAME);
     let body = render_service_unit(exe);
-    atomic_write(&path, body.as_bytes())?;
+    super::atomic_write(&path, SERVICE_FILE_NAME, body.as_bytes())?;
     Ok(path)
 }
 
@@ -72,19 +72,3 @@ fn service_dir() -> Result<PathBuf, InstallError> {
     Ok(home.join(".config").join("systemd").join("user"))
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), InstallError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(SERVICE_FILE_NAME);
-    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    fs::write(&tmp, bytes)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ignored = fs::remove_file(&tmp);
-            Err(InstallError::Io(e))
-        }
-    }
-}

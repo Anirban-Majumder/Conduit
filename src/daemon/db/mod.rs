@@ -65,13 +65,21 @@ use skills::{
 
 const CMD_CHANNEL_DEPTH: usize = 64;
 
-pub(super) fn now_unix() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
+pub(super) use crate::daemon::time_util::now_unix_secs as now_unix;
+
+/// Build the `?, ?…` placeholder string and matching param refs for an IN/NOT-IN clause.
+///
+/// Returns `("''", vec![])` when `items` is empty so the generated SQL stays
+/// well-formed without an empty `IN ()` (which `SQLite` rejects).
+pub(super) fn bind_in_clause<'a, T: rusqlite::ToSql + 'a>(
+    items: &'a [T],
+) -> (String, Vec<&'a dyn rusqlite::ToSql>) {
+    if items.is_empty() {
+        return ("''".to_string(), vec![]);
+    }
+    let placeholders = items.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let params = items.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+    (placeholders, params)
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +114,23 @@ impl Db {
             .await
             .map_err(|_closed| DbError::ActorGone)?;
         rx.await.map_err(|_closed| DbError::ActorGone)
+    }
+
+    /// Send a command to the DB actor and await its `Result<T, DbError>` reply.
+    ///
+    /// `make` receives the reply sender and wraps it into the concrete `DbCmd`
+    /// variant. All public async methods on `Db` collapse to a single call to
+    /// this helper, eliminating the repeated oneshot ceremony.
+    pub(super) async fn send_cmd<T: Send + 'static>(
+        &self,
+        make: impl FnOnce(oneshot::Sender<Result<T, DbError>>) -> DbCmd,
+    ) -> Result<T, DbError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(make(reply))
+            .await
+            .map_err(|_closed| DbError::ActorGone)?;
+        rx.await.map_err(|_closed| DbError::ActorGone)?
     }
 }
 

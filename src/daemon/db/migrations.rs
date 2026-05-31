@@ -7,7 +7,6 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::oneshot;
 
 use crate::daemon::errors::DbError;
 
@@ -258,11 +257,7 @@ pub(super) fn query_list_columns(conn: &Connection, table: &str) -> Result<Vec<S
     let sql = format!("PRAGMA table_info({table})");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<(), DbError> {
@@ -291,41 +286,19 @@ pub(super) fn query_list_tables(conn: &Connection) -> Result<Vec<String>, DbErro
     let mut stmt =
         conn.prepare_cached("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 impl Db {
     pub async fn schema_version(&self) -> Result<i64, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetSchemaVersion { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetSchemaVersion { reply }).await
     }
 
     pub async fn list_tables(&self) -> Result<Vec<String>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListTables { reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListTables { reply }).await
     }
 
     pub async fn table_columns(&self, table: &str) -> Result<Vec<String>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::ListColumns {
-                table: table.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::ListColumns { table: table.to_string(), reply }).await
     }
 }

@@ -1,5 +1,6 @@
 // Reusable leaf widgets used across the tabs: TabButton, StatusDot,
-// PillButton, EmptyState, SettingLine, LabeledInput, LabeledTextArea.
+// DecisionBadge, PillButton, PolicySelector, Icon, IconToggle, Chip,
+// DecisionChip, EmptyState, SettingLine, LabeledInput, LabeledTextArea.
 // Pure markup, no data structs. Imported by main.slint and most tabs/.
 
 import { Theme } from "../theme.slint";
@@ -60,6 +61,19 @@ export component StatusDot inherits Rectangle {
 }
 
 
+// Single source of truth for decision → semantic color (dot form).
+// "allow"/"ask_approved" → success, "deny"/"ask_denied"/"error" → danger, else → warning.
+export component DecisionBadge inherits StatusDot {
+    in property <string> decision;
+    tint: (root.decision == "allow" || root.decision == "ask_approved" || root.decision == "ask-approved")
+        ? Theme.success
+        : (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied"
+           || root.decision == "error")
+        ? Theme.danger
+        : Theme.warning;
+}
+
+
 // Pill-shaped action button. Defaults to a secondary (outlined) look; callers
 // pass bg-color/fg-color for primary (mint) or destructive variants.
 export component PillButton inherits Rectangle {
@@ -87,6 +101,35 @@ export component PillButton inherits Rectangle {
         }
     }
     ta := TouchArea {}
+}
+
+
+// Allow/Ask/Deny toggle group: highlights the active choice with semantic color.
+// Used wherever a policy decision can be changed interactively.
+export component PolicySelector inherits HorizontalLayout {
+    in property <string> decision;
+    callback change-decision(string);
+    spacing: 4px;
+    alignment: center;
+    PillButton {
+        label: "Allow";
+        bg-color: root.decision == "allow" ? Theme.accent : Theme.surface-3;
+        fg-color: root.decision == "allow" ? Theme.bg : Theme.text-secondary;
+        clicked => { root.change-decision("allow"); }
+    }
+    PillButton {
+        label: "Ask";
+        bg-color: root.decision == "ask" ? Theme.warning : Theme.surface-3;
+        fg-color: root.decision == "ask" ? Theme.bg : Theme.text-secondary;
+        clicked => { root.change-decision("ask"); }
+    }
+    PillButton {
+        label: "Deny";
+        bg-color: root.decision == "deny" ? Theme.danger : Theme.surface-3;
+        // deny active uses text-primary (not bg) — red bg needs dark text for contrast
+        fg-color: root.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
+        clicked => { root.change-decision("deny"); }
+    }
 }
 
 
@@ -189,6 +232,41 @@ export component Chip inherits Rectangle {
 }
 
 
+// Single source of truth for decision → label + semantic color (pill/chip form).
+// Inherits Chip; callers only need to set `decision`.
+// Accepts both hyphenated DB values ("ask-approved") and underscore variants.
+export component DecisionChip inherits Chip {
+    in property <string> decision;
+    label: (root.decision == "allow" || root.decision == "ask_approved" || root.decision == "ask-approved") ? "ALLOWED"
+         : (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied") ? "DENIED"
+         : (root.decision == "ask_timeout" || root.decision == "ask-timeout") ? "TIMEOUT"
+         : root.decision == "error" ? "ERROR"
+         : root.decision == "cancelled" ? "CANCELLED"
+         : root.decision;
+    fg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied" || root.decision == "error")
+        ? Theme.danger
+        : (root.decision == "ask_timeout" || root.decision == "ask-timeout") ? Theme.warning
+        : Theme.accent;
+    bg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied" || root.decision == "error")
+        ? Theme.danger-tint
+        : Theme.accent-tint;
+}
+
+
+// Clickable filter chip: a `Chip` wrapped in a `TouchArea`. `selected` drives
+// a border highlight; unselected chips are dimmed to signal interactivity.
+export component FilterChip inherits Chip {
+    in property <bool> selected: false;
+    callback clicked();
+    border-width: root.selected ? 1.5px : 0px;
+    border-color: root.fg;
+    opacity: root.selected ? 1.0 : 0.55;
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+
 export component EmptyState inherits Rectangle {
     in property <string> text;
     background: transparent;
@@ -278,4 +356,3 @@ export component LabeledTextArea inherits VerticalLayout {
         }
     }
 }
-

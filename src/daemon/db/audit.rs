@@ -6,7 +6,6 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
-use tokio::sync::oneshot;
 
 use crate::daemon::db::types::{AuditDecision, AuditEntry, AuditFilter, DecisionSource};
 use crate::daemon::errors::DbError;
@@ -112,6 +111,19 @@ pub(super) fn query_query_audit_log(
         sql.push_str(" AND ts < ?");
         args.push(SqlValue::Integer(ts));
     }
+    if let Some(d) = &filter.decision {
+        sql.push_str(" AND decision = ?");
+        args.push(SqlValue::Text(d.as_db_str().to_owned()));
+    }
+    if let Some(t) = &filter.text {
+        // Escape LIKE metacharacters so a literal '%' or '_' doesn't act as a
+        // wildcard. ESCAPE '\' tells SQLite our escape prefix.
+        let escaped = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        sql.push_str(" AND (server LIKE ? ESCAPE '\\' OR tool LIKE ? ESCAPE '\\')");
+        let pattern = format!("%{escaped}%");
+        args.push(SqlValue::Text(pattern.clone()));
+        args.push(SqlValue::Text(pattern));
+    }
     sql.push_str(" ORDER BY ts DESC");
     if let Some(limit) = filter.limit {
         sql.push_str(" LIMIT ?");
@@ -124,11 +136,7 @@ pub(super) fn query_query_audit_log(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args.iter()), decode_audit_entry_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_purge_old_audit_entries(
@@ -143,32 +151,14 @@ pub(super) fn query_purge_old_audit_entries(
 
 impl Db {
     pub async fn insert_audit_entry(&self, entry: AuditEntry) -> Result<i64, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::InsertAuditEntry { entry, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::InsertAuditEntry { entry, reply }).await
     }
 
     pub async fn query_audit_log(&self, filter: AuditFilter) -> Result<Vec<AuditEntry>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::QueryAuditLog { filter, reply })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::QueryAuditLog { filter, reply }).await
     }
 
     pub async fn purge_old_audit_entries(&self, older_than_ts: i64) -> Result<u64, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::PurgeOldAuditEntries {
-                older_than_ts,
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::PurgeOldAuditEntries { older_than_ts, reply }).await
     }
 }

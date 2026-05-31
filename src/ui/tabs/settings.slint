@@ -4,7 +4,7 @@
 // Instantiated by main.slint when the Settings tab is active.
 
 import { Theme } from "../theme.slint";
-import { PillButton, SettingLine } from "../components/primitives.slint";
+import { PolicySelector, SettingLine } from "../components/primitives.slint";
 import { SettingsRow } from "../structs.slint";
 
 export component SettingsTab inherits Rectangle {
@@ -78,26 +78,9 @@ export component SettingsTab inherits Rectangle {
                     color: Theme.text-secondary;
                     font-size: Theme.font-eyebrow;
                 }
-                HorizontalLayout {
-                    spacing: Theme.gap-sm;
-                    PillButton {
-                        label: "Allow";
-                        bg-color: root.default-unknown-tool-policy == "allow" ? Theme.accent : Theme.surface-3;
-                        fg-color: root.default-unknown-tool-policy == "allow" ? Theme.bg : Theme.text-secondary;
-                        clicked => { root.set-default-policy("allow"); }
-                    }
-                    PillButton {
-                        label: "Ask";
-                        bg-color: root.default-unknown-tool-policy == "ask" ? Theme.warning : Theme.surface-3;
-                        fg-color: root.default-unknown-tool-policy == "ask" ? Theme.bg : Theme.text-secondary;
-                        clicked => { root.set-default-policy("ask"); }
-                    }
-                    PillButton {
-                        label: "Deny";
-                        bg-color: root.default-unknown-tool-policy == "deny" ? Theme.danger : Theme.surface-3;
-                        fg-color: root.default-unknown-tool-policy == "deny" ? Theme.text-primary : Theme.text-secondary;
-                        clicked => { root.set-default-policy("deny"); }
-                    }
+                PolicySelector {
+                    decision: root.default-unknown-tool-policy;
+                    change-decision(d) => { root.set-default-policy(d); }
                 }
             }
         }

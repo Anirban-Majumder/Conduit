@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use thiserror::Error;
 use tokio::sync::oneshot;
@@ -22,6 +22,7 @@ use crate::daemon::db::types::{ApprovalStatus, PendingApproval};
 use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
+use crate::daemon::time_util::now_unix_secs;
 
 const SWEEPER_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -59,13 +60,6 @@ pub struct ApprovalCenter {
     waiters: WaiterMap,
 }
 
-fn now_unix() -> i64 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
-}
 
 impl ApprovalCenter {
     pub fn new(db: Db, bus: Bus, timeout: Duration) -> Self {
@@ -93,7 +87,7 @@ impl ApprovalCenter {
             tool: req.tool.clone(),
             args_json: req.args_json,
             ide_key: req.ide_key.clone(),
-            created_at: now_unix(),
+            created_at: now_unix_secs(),
             status: ApprovalStatus::Pending,
         };
 
@@ -241,7 +235,7 @@ pub fn spawn_timeout_sweeper(
             tokio::select! {
                 () = cancel.cancelled() => break,
                 _ = ticker.tick() => {
-                    let cutoff = now_unix().saturating_sub(
+                    let cutoff = now_unix_secs().saturating_sub(
                         i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
                     );
                     match sweep_and_publish_timeouts(&db, &bus, cutoff).await {

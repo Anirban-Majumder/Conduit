@@ -7,12 +7,13 @@ pub mod sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::daemon::clients::{self, SKILL_TARGET_IDES};
+use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
@@ -201,10 +202,8 @@ impl SkillManager {
             .collect::<Vec<_>>();
 
         if !files.iter().any(|e| {
-            let p = e.path.as_str();
-            p.eq_ignore_ascii_case(&format!("{source_dir}/SKILL.md"))
-                || p.eq_ignore_ascii_case(&format!("{source_dir}/Skill.md"))
-                || p.eq_ignore_ascii_case(&format!("{source_dir}/skill.md"))
+            let rel = relative_to_source(&e.path, &source_dir);
+            !rel.contains('/') && discover::is_skill_md_path(&rel)
         }) {
             return Err(SkillError::MissingSkillFile {
                 repo: format!("{}/{}", candidate.repo_owner, candidate.repo_name),
@@ -279,10 +278,7 @@ impl SkillManager {
         }
         tokio::fs::rename(&tmp, &dest).await?;
 
-        let skill_md = locate_skill_md(&dest).await?;
-        let bytes = tokio::fs::read(&skill_md).await?;
-        let metadata =
-            discover::read_skill_metadata(std::str::from_utf8(&bytes).unwrap_or(""), &install_name);
+        let metadata = load_skill_metadata_from_dir(&dest, &install_name).await?;
 
         let normalized_targets = normalize_targets(targets);
         let skill = Skill {
@@ -298,7 +294,7 @@ impl SkillManager {
             },
             description: metadata.description,
             readme_url: Some(candidate.readme_url),
-            installed_at: now_unix(),
+            installed_at: now_unix_secs(),
             targets: normalized_targets.clone(),
         };
         self.db.upsert_skill_with_targets(skill.clone()).await?;
@@ -382,13 +378,10 @@ impl SkillManager {
             if name.starts_with('.') || known.contains(&name) {
                 continue;
             }
-            let Some(skill_md) = first_existing_skill_md(&entry.path()).await else {
+            let Ok(meta) = load_skill_metadata_from_dir(&entry.path(), &name).await else {
                 continue;
             };
-            let bytes = tokio::fs::read(&skill_md).await?;
-            let meta =
-                discover::read_skill_metadata(std::str::from_utf8(&bytes).unwrap_or(""), &name);
-            let now = now_unix();
+            let now = now_unix_secs();
             let skill = Skill {
                 directory: name.clone(),
                 repo_owner: "local".to_string(),
@@ -512,6 +505,18 @@ fn relative_to_source(path: &str, source_dir: &str) -> String {
     }
 }
 
+async fn load_skill_metadata_from_dir(
+    dir: &std::path::Path,
+    fallback: &str,
+) -> Result<discover::SkillMetadata, SkillError> {
+    let skill_md = locate_skill_md(dir).await?;
+    let bytes = tokio::fs::read(&skill_md).await?;
+    Ok(discover::read_skill_metadata(
+        std::str::from_utf8(&bytes).unwrap_or(""),
+        fallback,
+    ))
+}
+
 async fn locate_skill_md(dir: &std::path::Path) -> Result<PathBuf, SkillError> {
     if let Some(p) = first_existing_skill_md(dir).await {
         return Ok(p);
@@ -532,20 +537,6 @@ async fn first_existing_skill_md(dir: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-fn now_unix() -> i64 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    i64::try_from(secs).unwrap_or(i64::MAX)
-}
-
-fn now_unix_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {

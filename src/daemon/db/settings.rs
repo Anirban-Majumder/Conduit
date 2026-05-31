@@ -6,7 +6,6 @@
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::oneshot;
 
 use crate::daemon::errors::DbError;
 
@@ -36,27 +35,10 @@ pub(super) fn query_get_settings_kv(
 
 impl Db {
     pub async fn get_settings_kv(&self, key: &str) -> Result<Option<String>, DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::GetSettingsKv {
-                key: key.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::GetSettingsKv { key: key.to_string(), reply }).await
     }
 
     pub async fn set_settings_kv(&self, key: &str, value: &str) -> Result<(), DbError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbCmd::SetSettingsKv {
-                key: key.to_string(),
-                value: value.to_string(),
-                reply,
-            })
-            .await
-            .map_err(|_closed| DbError::ActorGone)?;
-        rx.await.map_err(|_closed| DbError::ActorGone)?
+        self.send_cmd(|reply| DbCmd::SetSettingsKv { key: key.to_string(), value: value.to_string(), reply }).await
     }
 }
