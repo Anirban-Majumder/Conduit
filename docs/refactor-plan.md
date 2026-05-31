@@ -1,6 +1,6 @@
 # Conduit Quality Refactor — Implementation Plan
 
-> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phases 3–4 pending.
+> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phase 3 ✅ committed on 2026-05-31 (commit `51678ca`). Phase 4 pending.
 > **Scope of analysis:** all of `src/` (~13.7k Rust LOC + 3.8k Slint LOC, ~90 files).
 > **Goal stated by request:** make the codebase SOLID, DRY, extensible, and Google-level readable while preserving its architectural contracts.
 
@@ -142,14 +142,14 @@ plus a const registry `&[(IdeKind, &dyn ClientSpec)]` in `mod.rs`. Public functi
 
 ---
 
-### Phase 3 — Glue & UI ergonomics
+### Phase 3 — Glue & UI ergonomics ✅ DONE
 
 > No behavior change, but every future callback and every color-semantics change gets cheaper. Done after structural daemon work so it can adopt any new shared helpers. Phase 3 slices touch rendered output / shared signatures → review carefully.
 
 | Slice | Files | Risk | Effort |
 |---|---|---|---|
-| **3.1 — `CallbackContext` struct + UI-state envelope helpers + `read_ui_state`** | `src/glue/{callbacks,callbacks_servers,callbacks_ide,callbacks_misc,skills,wizard,util}.rs` | medium | M |
-| **3.2 — Slint `DecisionBadge` + `StatusDot` reusable components** | new `src/ui/components/{decision_badge,status_dot}.slint` + `tool_policy/dashboard/log/settings/servers/editors` tabs | medium | M |
+| **3.1 — `CallbackContext` struct + UI-state envelope helpers + `read_ui_state`** ✅ | `src/glue/{callbacks,callbacks_servers,callbacks_ide,callbacks_misc,skills,wizard,util}.rs` | medium | M |
+| **3.2 — Slint `DecisionBadge` + `DecisionChip` + `PolicySelector` reusable components** ✅ | `src/ui/components/primitives.slint` + `tool_policy/dashboard/log/settings` tabs | medium | M |
 
 **3.1** — Two low-risk moves:
 - **(a)** Bundle shared deps into `CallbackContext { window, db, rt, skills, approvals, bus, port }`; change every `install_*_callbacks` to take `&CallbackContext`. Kills the divergent signatures (`callbacks.rs:27`, `callbacks_ide.rs:26`, `callbacks_servers.rs:29`, `skills.rs:24`) and makes adding a dependency a one-line change.
