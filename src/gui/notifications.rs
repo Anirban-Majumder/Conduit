@@ -64,9 +64,9 @@ pub fn spawn(
             return;
         }
         let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
-        // reason: caps close threads spawned per ApprovalResolved burst; bounded loop rule
+        // reason: caps std::thread spawns for close_by_id per ApprovalResolved burst (32 max)
         let close_sem = Arc::new(Semaphore::new(32));
-        // reason: caps concurrent pending notification threads (Linux); bounded loop rule
+        // reason: caps concurrent pending-approval notification threads on Linux (64 max)
         let notif_sem = Arc::new(Semaphore::new(64));
         loop {
             tokio::select! {

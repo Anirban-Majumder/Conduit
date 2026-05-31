@@ -234,19 +234,20 @@ export component Chip inherits Rectangle {
 
 // Single source of truth for decision → label + semantic color (pill/chip form).
 // Inherits Chip; callers only need to set `decision`.
+// Accepts both hyphenated DB values ("ask-approved") and underscore variants.
 export component DecisionChip inherits Chip {
     in property <string> decision;
-    label: (root.decision == "allow" || root.decision == "ask_approved") ? "ALLOWED"
-         : (root.decision == "deny" || root.decision == "ask_denied") ? "DENIED"
-         : root.decision == "ask_timeout" ? "TIMEOUT"
+    label: (root.decision == "allow" || root.decision == "ask_approved" || root.decision == "ask-approved") ? "ALLOWED"
+         : (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied") ? "DENIED"
+         : (root.decision == "ask_timeout" || root.decision == "ask-timeout") ? "TIMEOUT"
          : root.decision == "error" ? "ERROR"
          : root.decision == "cancelled" ? "CANCELLED"
          : root.decision;
-    fg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "error")
+    fg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied" || root.decision == "error")
         ? Theme.danger
-        : root.decision == "ask_timeout" ? Theme.warning
+        : (root.decision == "ask_timeout" || root.decision == "ask-timeout") ? Theme.warning
         : Theme.accent;
-    bg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "error")
+    bg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied" || root.decision == "error")
         ? Theme.danger-tint
         : Theme.accent-tint;
 }
