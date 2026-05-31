@@ -6,9 +6,9 @@
 //! operations are idempotent; unsupported OSes return
 //! `InstallError::UnsupportedOs`.
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::fs;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -123,8 +123,11 @@ pub(super) fn xml_escape(s: &str) -> String {
 /// Write `bytes` to `path` atomically via a temp-file rename.
 ///
 /// `fallback_name` is used as the temp-file stem when `path` has no
-/// filename component (practically unreachable but avoids an unwrap).
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// filename component (practically unreachable but avoids an unwrap). The
+/// rename uses the shared cross-platform primitive (`ReplaceFileW` on Windows
+/// when the destination is locked), so all three service backends write
+/// atomically.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) fn atomic_write(
     path: &Path,
     fallback_name: &str,
@@ -137,7 +140,7 @@ pub(super) fn atomic_write(
         .unwrap_or(fallback_name);
     let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
     fs::write(&tmp, bytes)?;
-    match fs::rename(&tmp, path) {
+    match crate::atomic_io::atomic_rename_or_replace(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ignored = fs::remove_file(&tmp);

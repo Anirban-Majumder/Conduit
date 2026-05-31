@@ -10,6 +10,7 @@
     allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")
 )]
 
+pub mod atomic_io;
 pub mod daemon;
 pub mod gui;
 pub mod installer;

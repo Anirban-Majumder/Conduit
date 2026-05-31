@@ -21,7 +21,7 @@ pub fn spawn(db: Db, config_path: PathBuf, cancel: CancellationToken) -> JoinHan
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 _ = interval.tick() => {
                     let days = Settings::load_or_default(&config_path).daemon.audit_retention_days;
                     if days == 0 {

@@ -48,7 +48,7 @@ pub fn install_into(dir: &Path, exe: &Path) -> Result<PathBuf, InstallError> {
     std::fs::create_dir_all(dir)?;
     let xml_path = dir.join(XML_FILE_NAME);
     let body = render_task_xml(exe);
-    std::fs::write(&xml_path, body)?;
+    super::atomic_write(&xml_path, XML_FILE_NAME, body.as_bytes())?;
 
     let output = Command::new("schtasks")
         .args(["/Create", "/TN", TASK_NAME, "/XML"])
@@ -112,4 +112,3 @@ fn current_user_display() -> String {
         super::xml_escape(&format!("{domain}\\{username}"))
     }
 }
-

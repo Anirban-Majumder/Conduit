@@ -3,6 +3,8 @@
 //! Each callback sets the corresponding UI property and triggers a filter-aware
 //! `refresh_audit` so the displayed rows always match the live filter state.
 
+use slint::ComponentHandle;
+
 use crate::glue::refresh::refresh_audit;
 use crate::glue::util::copy_to_clipboard;
 use crate::glue::CallbackContext;
@@ -26,17 +28,12 @@ pub(crate) fn install_log_callbacks(window: &MainWindow, ctx: &CallbackContext) 
         }
     });
 
-    window.on_audit_decision_filter_changed({
+    window.on_audit_decision_filter_changed(move |_decision| {
         let weak = weak.clone();
         let db = db.clone();
-        let rt = rt.clone();
-        move |_decision| {
-            let weak = weak.clone();
-            let db = db.clone();
-            rt.spawn(async move {
-                refresh_audit(&weak, &db).await;
-            });
-        }
+        rt.spawn(async move {
+            refresh_audit(&weak, &db).await;
+        });
     });
 
     window.on_copy_audit_args(move |text| {

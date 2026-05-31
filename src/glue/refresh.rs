@@ -92,7 +92,7 @@ pub(crate) fn spawn_event_bridge(
         let mut coalesce = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 event = rx.recv() => {
                     match event {
                         Ok(Event::ApprovalPending { .. }) => {
@@ -498,6 +498,7 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
     let rows: Vec<AuditRow> = entries
         .into_iter()
         .map(|e| AuditRow {
+            id: SharedString::from(e.id.map(|n| n.to_string()).unwrap_or_default()),
             ts_label: SharedString::from(relative_time(now - e.ts)),
             ts_full: SharedString::from(clock_full(e.ts)),
             ide_name: SharedString::from(e.ide_name.unwrap_or_else(|| "?".to_string())),
