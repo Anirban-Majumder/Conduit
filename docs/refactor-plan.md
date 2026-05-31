@@ -1,6 +1,6 @@
 # Conduit Quality Refactor — Implementation Plan
 
-> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phase 3 ✅ committed on 2026-05-31 (commit `51678ca`). Phase 4 pending.
+> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phase 3 ✅ committed on 2026-05-31 (commit `51678ca`). Phase 4 ✅ committed on 2026-05-31 (commit `4db048b`).
 > **Scope of analysis:** all of `src/` (~13.7k Rust LOC + 3.8k Slint LOC, ~90 files).
 > **Goal stated by request:** make the codebase SOLID, DRY, extensible, and Google-level readable while preserving its architectural contracts.
 
@@ -161,7 +161,7 @@ plus a const registry `&[(IdeKind, &dyn ClientSpec)]` in `mod.rs`. Public functi
 
 ---
 
-### Phase 4 — Upstream error ergonomics (most concurrency-sensitive, do last)
+### Phase 4 — Upstream error ergonomics (most concurrency-sensitive, do last) ✅ DONE
 
 | Slice | Files | Risk | Effort |
 |---|---|---|---|
