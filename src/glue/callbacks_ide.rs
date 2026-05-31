@@ -5,15 +5,9 @@
 //! work to the tokio worker and repaint via `crate::glue::refresh`; UI mutation
 //! only happens through `upgrade_in_event_loop`.
 
-use std::sync::Arc;
-
 use slint::{ComponentHandle, SharedString};
 
 use conduit::daemon::clients;
-use conduit::daemon::db::Db;
-use conduit::daemon::skills::SkillManager;
-
-use crate::ui::MainWindow;
 
 use crate::glue::refresh::{refresh_ides, refresh_server_targets};
 use crate::glue::skills::refresh_skills;
@@ -21,15 +15,16 @@ use crate::glue::util::{
     current_selected_server, remove_ide, resolve_ide_config_path, reveal_in_file_manager,
     run_ide_detection,
 };
+use crate::glue::CallbackContext;
+use crate::ui::MainWindow;
 
 #[expect(clippy::too_many_lines, reason = "wires every editors-tab callback")]
-pub(crate) fn install_ide_callbacks(
-    window: &MainWindow,
-    db: &Db,
-    port: u16,
-    rt: &tokio::runtime::Handle,
-    skills: &Arc<SkillManager>,
-) {
+pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) {
+    let db = &ctx.db;
+    let port = ctx.port;
+    let rt = &ctx.rt;
+    let skills = &ctx.skills;
+
     {
         let db = db.clone();
         let rt = rt.clone();

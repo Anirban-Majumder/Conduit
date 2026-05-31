@@ -23,6 +23,7 @@ use crate::glue::callbacks_misc::install_misc_callbacks;
 use crate::glue::callbacks_servers::install_server_callbacks;
 use crate::glue::skills::install_skills_callbacks;
 use crate::glue::wizard::install_wizard_callbacks;
+use crate::glue::CallbackContext;
 
 pub(crate) fn install_callbacks(
     window: &MainWindow,
@@ -39,9 +40,18 @@ pub(crate) fn install_callbacks(
     let env_rows: Rc<VecModel<EnvVarRow>> = Rc::new(VecModel::default());
     window.set_add_server_env_rows(ModelRc::from(env_rows.clone()));
 
-    install_skills_callbacks(window, &rt, &skills);
-    install_server_callbacks(window, db, approvals, bus, port, &rt);
-    install_ide_callbacks(window, db, port, &rt, &skills);
-    install_misc_callbacks(window, db, &rt, &env_rows);
-    install_wizard_callbacks(window, db.clone(), bus.clone(), rt, &env_rows);
+    let ctx = CallbackContext {
+        db: db.clone(),
+        rt,
+        skills,
+        approvals: approvals.clone(),
+        bus: bus.clone(),
+        port,
+    };
+
+    install_skills_callbacks(window, &ctx);
+    install_server_callbacks(window, &ctx);
+    install_ide_callbacks(window, &ctx);
+    install_misc_callbacks(window, &ctx, &env_rows);
+    install_wizard_callbacks(window, &ctx, &env_rows);
 }

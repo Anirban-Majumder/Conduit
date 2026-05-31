@@ -3,7 +3,7 @@
 // Instantiated by main.slint when the Log tab is active.
 
 import { Theme } from "../theme.slint";
-import { EmptyState, StatusDot } from "../components/primitives.slint";
+import { EmptyState, DecisionBadge } from "../components/primitives.slint";
 import { AuditRow } from "../structs.slint";
 
 export component LogTab inherits Rectangle {
@@ -33,10 +33,8 @@ export component LogTab inherits Rectangle {
                 HorizontalLayout {
                     spacing: Theme.gap-md;
                     alignment: center;
-                    StatusDot {
-                        tint: row.decision == "allow" || row.decision == "ask-approved" ? Theme.success
-                             : row.decision == "deny" || row.decision == "ask-denied" ? Theme.danger
-                             : Theme.warning;
+                    DecisionBadge {
+                        decision: row.decision;
                     }
                     Text {
                         text: row.ide_name + " → " + row.server + "." + row.tool;

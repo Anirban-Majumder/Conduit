@@ -18,18 +18,17 @@ use conduit::daemon::db::types::{
     Decision, DecisionSource, EnvEntry, EnvValue, Server, ToolMeta as DbToolMeta, TRANSPORT_HTTP,
     TRANSPORT_STDIO,
 };
-use conduit::daemon::db::Db;
-use conduit::daemon::events::{Bus, Event};
+use conduit::daemon::events::Event;
 use conduit::daemon::onboarding::mark_first_run_completed;
 use conduit::daemon::server_validators;
 use conduit::daemon::upstream::probe::{
     self, DraftEnvEntry, DraftServerConfig, DraftTransport, HttpAuth,
 };
 
-use crate::ui::{EnvVarRow, MainWindow, ToolPolicyRow as ToolPolicyUiRow};
-
 use crate::glue::refresh::refresh_servers;
 use crate::glue::util::unix_now;
+use crate::glue::CallbackContext;
+use crate::ui::{EnvVarRow, MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 
 #[derive(Default, Clone)]
 struct PendingWizard {
@@ -45,11 +44,13 @@ struct PendingWizard {
 )]
 pub(crate) fn install_wizard_callbacks(
     window: &MainWindow,
-    db: Db,
-    bus: Bus,
-    rt: tokio::runtime::Handle,
+    ctx: &CallbackContext,
     env_rows: &Rc<VecModel<EnvVarRow>>,
 ) {
+    let db = ctx.db.clone();
+    let bus = ctx.bus.clone();
+    let rt = ctx.rt.clone();
+
     let pending: Arc<std::sync::Mutex<PendingWizard>> =
         Arc::new(std::sync::Mutex::new(PendingWizard::default()));
 

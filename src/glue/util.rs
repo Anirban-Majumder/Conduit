@@ -87,13 +87,30 @@ pub(crate) fn resolve_ide_config_path(
     None
 }
 
-pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> Option<String> {
+/// Read a value from the UI thread into an async context.
+///
+/// `upgrade_in_event_loop` is fire-and-forget; this helper bridges the gap with
+/// a oneshot channel so the caller can await the value the UI thread produces.
+pub(crate) async fn read_ui_state<T>(
+    weak: &slint::Weak<MainWindow>,
+    f: impl FnOnce(MainWindow) -> T + Send + 'static,
+) -> Option<T>
+where
+    T: Send + 'static,
+{
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        let s = ui.get_selected_server().to_string();
-        tx.send(s).ok();
+        tx.send(f(ui)).ok();
     });
-    rx.await.ok().filter(|s| !s.is_empty())
+    rx.await.ok()
+}
+
+
+
+pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> Option<String> {
+    read_ui_state(weak, |ui| ui.get_selected_server().to_string())
+        .await
+        .filter(|s: &String| !s.is_empty())
 }
 
 pub(crate) async fn remove_ide(db: &Db, port: u16, ide_kind: &str) {

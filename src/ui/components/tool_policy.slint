@@ -3,7 +3,7 @@
 // Pure markup over ToolPolicyRow; emits change-decision(tool, decision).
 
 import { Theme } from "../theme.slint";
-import { PillButton } from "primitives.slint";
+import { PolicySelector, PillButton } from "primitives.slint";
 import { ToolPolicyRow } from "../structs.slint";
 
 export component ToolPolicyRowItem inherits Rectangle {
@@ -35,27 +35,9 @@ export component ToolPolicyRowItem inherits Rectangle {
                     }
                 }
             }
-            HorizontalLayout {
-                spacing: 4px;
-                alignment: center;
-                PillButton {
-                    label: "Allow";
-                    bg-color: root.decision == "allow" ? Theme.accent : Theme.surface-3;
-                    fg-color: root.decision == "allow" ? Theme.bg : Theme.text-secondary;
-                    clicked => { root.change-decision("allow"); }
-                }
-                PillButton {
-                    label: "Ask";
-                    bg-color: root.decision == "ask" ? Theme.warning : Theme.surface-3;
-                    fg-color: root.decision == "ask" ? Theme.bg : Theme.text-secondary;
-                    clicked => { root.change-decision("ask"); }
-                }
-                PillButton {
-                    label: "Deny";
-                    bg-color: root.decision == "deny" ? Theme.danger : Theme.surface-3;
-                    fg-color: root.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
-                    clicked => { root.change-decision("deny"); }
-                }
+            PolicySelector {
+                decision: root.decision;
+                change-decision(d) => { root.change-decision(d); }
             }
         }
         if root.description != "" : Text {
