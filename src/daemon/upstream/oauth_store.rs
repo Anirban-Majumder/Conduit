@@ -32,9 +32,14 @@ impl KeyringCredentialStore {
 impl CredentialStore for KeyringCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
         // A poisoned cache lock degrades to a keyring read, never a panic.
-        if let Ok(guard) = self.cache.read() {
-            if let Some(cred) = guard.as_ref() {
-                return Ok(Some(cred.clone()));
+        match self.cache.read() {
+            Ok(guard) => {
+                if let Some(cred) = guard.as_ref() {
+                    return Ok(Some(cred.clone()));
+                }
+            }
+            Err(_poison) => {
+                tracing::warn!(account = %self.account, "OAuth cache RwLock poisoned; bypassing cache for load");
             }
         }
         let account = self.account.clone();
@@ -67,8 +72,11 @@ impl CredentialStore for KeyringCredentialStore {
     }
 
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
-        if let Ok(mut guard) = self.cache.write() {
-            *guard = Some(credentials.clone());
+        match self.cache.write() {
+            Ok(mut guard) => *guard = Some(credentials.clone()),
+            Err(_poison) => {
+                tracing::warn!(account = %self.account, "OAuth cache RwLock poisoned; cache not updated on save");
+            }
         }
         let account = self.account.clone();
         tokio::task::spawn_blocking(move || secrets::store_oauth_cred(&account, &credentials))
@@ -78,8 +86,11 @@ impl CredentialStore for KeyringCredentialStore {
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        if let Ok(mut guard) = self.cache.write() {
-            *guard = None;
+        match self.cache.write() {
+            Ok(mut guard) => *guard = None,
+            Err(_poison) => {
+                tracing::warn!(account = %self.account, "OAuth cache RwLock poisoned; cache not cleared");
+            }
         }
         let account = self.account.clone();
         tokio::task::spawn_blocking(move || secrets::delete_oauth_cred(&account))

@@ -22,6 +22,24 @@ use crate::gui::notification_router::NotificationAction;
 
 type Registry = Arc<Mutex<HashMap<String, u32>>>;
 
+// Notification action IDs and their display labels — shared between the
+// notify_rust registration loop and the dispatch match so the two can't drift.
+#[cfg(target_os = "linux")]
+const ACTION_DEFAULT: &str = "default";
+#[cfg(target_os = "linux")]
+const ACTION_APPROVE: &str = "approve";
+#[cfg(target_os = "linux")]
+const ACTION_DENY: &str = "deny";
+#[cfg(target_os = "linux")]
+const ACTION_APPROVE_ALWAYS: &str = "approve_always";
+#[cfg(target_os = "linux")]
+const NOTIFICATION_ACTIONS: &[(&str, &str)] = &[
+    (ACTION_DEFAULT, ""),
+    (ACTION_APPROVE, "Approve"),
+    (ACTION_DENY, "Deny"),
+    (ACTION_APPROVE_ALWAYS, "Approve always"),
+];
+
 /// Listen to the bus and fire an OS notification for every `ApprovalPending`.
 ///
 /// On Linux registers four actions (body click + Approve / Deny / Approve
@@ -147,17 +165,16 @@ fn spawn_notification(
         .spawn(move || {
             let _permit = permit; // released when thread exits (user responds or notification dismissed)
             let body = format!("{server} · {tool}");
-            let handle = match notify_rust::Notification::new()
+            let mut notif = notify_rust::Notification::new();
+            notif
                 .summary(&ide_name)
                 .body(&body)
                 .appname("Conduit")
-                .icon("dialog-information")
-                .action("default", "")
-                .action("approve", "Approve")
-                .action("deny", "Deny")
-                .action("approve_always", "Approve always")
-                .show()
-            {
+                .icon("dialog-information");
+            for &(id_str, label) in NOTIFICATION_ACTIONS {
+                notif.action(id_str, label);
+            }
+            let handle = match notif.show() {
                 Ok(h) => h,
                 Err(e) => {
                     tracing::warn!(error = %e, "notification show failed");
@@ -171,10 +188,10 @@ fn spawn_notification(
             let approval_id = id.clone();
             handle.wait_for_action(|action_id| {
                 let msg = match action_id {
-                    "default" => Some(NotificationAction::Focus(approval_id.clone())),
-                    "approve" => Some(NotificationAction::Approve(approval_id.clone())),
-                    "deny" => Some(NotificationAction::Deny(approval_id.clone())),
-                    "approve_always" => Some(NotificationAction::ApproveAlways {
+                    ACTION_DEFAULT => Some(NotificationAction::Focus(approval_id.clone())),
+                    ACTION_APPROVE => Some(NotificationAction::Approve(approval_id.clone())),
+                    ACTION_DENY => Some(NotificationAction::Deny(approval_id.clone())),
+                    ACTION_APPROVE_ALWAYS => Some(NotificationAction::ApproveAlways {
                         id: approval_id.clone(),
                         server: server.clone(),
                         tool: tool.clone(),

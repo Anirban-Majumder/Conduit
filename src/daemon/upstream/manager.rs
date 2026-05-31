@@ -267,7 +267,7 @@ impl UpstreamManager {
     async fn get_peer_for_call(
         &self,
         server_name: &str,
-    ) -> Result<rmcp::service::Peer<rmcp::service::RoleClient>, UpstreamError> {
+    ) -> Result<rmcp::service::Peer<RoleClient>, UpstreamError> {
         let mut state = self.state.lock().await;
         let Some(entry) = state.get_mut(server_name) else {
             return Err(UpstreamError::Crashed);
@@ -277,7 +277,9 @@ impl UpstreamManager {
             return Err(UpstreamError::Crashed);
         }
         entry.last_use = Instant::now();
-        Ok(entry.client.peer().clone())
+        let peer = entry.client.peer().clone();
+        drop(state);
+        Ok(peer)
     }
 
     async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {

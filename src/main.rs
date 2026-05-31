@@ -118,13 +118,19 @@ fn main() -> Result<()> {
             match db_purge.list_oauth_drafts().await {
                 Ok(drafts) if !drafts.is_empty() => {
                     let drafts_for_purge = drafts.clone();
-                    let purged = tokio::task::spawn_blocking(move || {
+                    let purged = match tokio::task::spawn_blocking(move || {
                         conduit::daemon::upstream::oauth::purge_draft_oauth_tokens(
                             &drafts_for_purge,
                         )
                     })
                     .await
-                    .unwrap_or(0);
+                    {
+                        Ok(n) => n,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "purge_draft_oauth_tokens task panicked");
+                            0
+                        }
+                    };
                     if purged > 0 {
                         tracing::info!(count = purged, "purged orphaned OAuth draft tokens");
                     }

@@ -349,12 +349,12 @@ impl From<rmcp::transport::auth::AuthError> for ProbeError {
     fn from(e: rmcp::transport::auth::AuthError) -> Self {
         use rmcp::transport::auth::AuthError;
         match e {
-            AuthError::NoAuthorizationSupport => ProbeError::OauthRequired,
-            AuthError::RegistrationFailed(msg) => ProbeError::OauthFlow(format!(
+            AuthError::NoAuthorizationSupport => Self::OauthRequired,
+            AuthError::RegistrationFailed(msg) => Self::OauthFlow(format!(
                 "server does not support Dynamic Client Registration ({msg}); a \
                  pre-registered client_id is not yet supported"
             )),
-            other => ProbeError::OauthFlow(other.to_string()),
+            other => Self::OauthFlow(other.to_string()),
         }
     }
 }
@@ -392,17 +392,17 @@ impl From<crate::daemon::upstream::manager::UpstreamError> for ProbeError {
     fn from(e: crate::daemon::upstream::manager::UpstreamError) -> Self {
         use crate::daemon::upstream::manager::UpstreamError;
         match e {
-            UpstreamError::Io(io) => ProbeError::Connect(io.to_string()),
-            UpstreamError::InitFailed(msg) => ProbeError::InitRejected(msg),
-            UpstreamError::Rmcp(rmcp) => ProbeError::InitRejected(rmcp.to_string()),
-            other => ProbeError::Connect(other.to_string()),
+            UpstreamError::Io(io) => Self::Connect(io.to_string()),
+            UpstreamError::InitFailed(msg) => Self::InitRejected(msg),
+            UpstreamError::Rmcp(rmcp) => Self::InitRejected(rmcp.to_string()),
+            other => Self::Connect(other.to_string()),
         }
     }
 }
 
 impl From<rmcp::ServiceError> for ProbeError {
     fn from(e: rmcp::ServiceError) -> Self {
-        ProbeError::ToolsListFailed(e.to_string())
+        Self::ToolsListFailed(e.to_string())
     }
 }
 

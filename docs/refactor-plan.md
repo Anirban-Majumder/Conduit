@@ -1,6 +1,6 @@
 # Conduit Quality Refactor — Implementation Plan
 
-> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phase 3 ✅ committed on 2026-05-31 (commit `51678ca`). Phase 4 ✅ committed on 2026-05-31 (commit `4db048b`).
+> **Status:** Phase 0 ✅ + Phase 1 ✅ committed on 2026-05-30 (commit `8b8f84a`). Phase 2 ✅ committed on 2026-05-30. Phase 3 ✅ committed on 2026-05-31 (commit `51678ca`). Phase 4 ✅ committed on 2026-05-31 (commit `4db048b`). Phase 5.1 ✅ committed on 2026-05-31.
 > **Scope of analysis:** all of `src/` (~13.7k Rust LOC + 3.8k Slint LOC, ~90 files).
 > **Goal stated by request:** make the codebase SOLID, DRY, extensible, and Google-level readable while preserving its architectural contracts.
 
@@ -168,6 +168,29 @@ plus a const registry `&[(IdeKind, &dyn ClientSpec)]` in `mod.rs`. Public functi
 | **4.1 — `From<UpstreamError>` impls replacing single-use `map_*` fns; tighten `call_tool`/`list_tools` lock scope** | `src/daemon/upstream/{probe,manager}.rs` | high | M |
 
 Delete `map_oauth_err` / `map_connect_error` / `map_tools_error` (`probe.rs:352/393/403`) in favor of `From<…>` + `?`. **Keep the four typed error enums** — do **not** merge them into one stringly `InitFailed(String)` (CLAUDE.md forbids erasing typed errors). Separately, extract a `get_peer_for_call()` helper that checks-and-gets within **one** lock scope to narrow the crash-detection window in `call_tool`/`list_tools` (`manager.rs:207`/`244`). Last because it's the lowest-duplication payoff in the most sensitive area.
+
+---
+
+### Phase 5 — Observability, remaining quick-wins, residual DRY
+
+> Everything Phases 0–4 left behind: quick-win observability notes, two DRY
+> sites that touch unrelated subsystems, and a JoinError that was silently
+> swallowed. Zero behavior change; all compiler-verified on the host target.
+
+| Slice | Files | Risk | Effort |
+|---|---|---|---|
+| **5.1 — Tray DRY + oauth_store warn! + notification const table + main.rs JoinError** ✅ | `src/gui/tray.rs`, `src/daemon/upstream/oauth_store.rs`, `src/gui/notifications.rs`, `src/main.rs` | low | S |
+| **5.2 — Skills subsystem DRY: `is_skill_md_path` + `load_skill_metadata_from_dir`** | `src/daemon/skills/{discover,mod}.rs` | low | S |
+
+**5.1** — Four items from the "Quick wins" list that survived Phases 1–4:
+- **`get_pending_count` helper** (`tray.rs`): The `list_pending_approvals + i64::try_from + unwrap_or(i64::MAX)` block is duplicated at init and in the event loop. Extract into `async fn get_pending_count(db: &Db) -> i64` (mirrors the existing `count_auth_failures` helper). Add a `// reason:` on the `i64::MAX` fallback explaining the overflow is unreachable.
+- **`oauth_store` lock-poison warn!** (`oauth_store.rs`): `load`, `save`, and `clear` silently skip cache ops when the `RwLock` is poisoned. Add `tracing::warn!` on each `Err(poison)` arm so the degrade is observable. Semantics unchanged — poisoning still degrades gracefully, never panics.
+- **`NOTIFICATION_ACTIONS` const table** (`notifications.rs`): The Linux action IDs ("default", "approve", "deny", "approve_always") appear in both the `notify_rust` `.action()` registration and the `wait_for_action` match; they can silently drift. Define `const NOTIFICATION_ACTIONS: &[(&str, &str)]` and named per-action constants (`ACTION_DEFAULT`, etc.) — build the registration loop from the table, use the named consts in the match arms.
+- **`JoinError` in `main.rs`** (`main.rs:126-127`): `tokio::task::spawn_blocking(...).await.unwrap_or(0)` silently swallows a task panic. Replace with `match ... { Ok(n) => n, Err(e) => { tracing::warn!(...); 0 } }`.
+
+**5.2** — From the daemon/skills appendix findings:
+- `is_skill_md_path` appears at three sites (`mod.rs:203-207`, `discover.rs:228-232`, `discover.rs:277-280`). Extract one `pub fn is_skill_md_path(path: &str) -> bool` in `discover.rs`; the case-insensitive list becomes a single source of truth (preserve case-insensitive behavior — see CP-6).
+- `load_skill_metadata_from_dir` pattern duplicated in `install()` and `register_local_skills()` (`mod.rs:282-285`, `mod.rs:388-390`). Extract `async fn load_skill_metadata_from_dir(dir: &Path, fallback: &str) -> Result<SkillMetadata, SkillError>`.
 
 ---
 
