@@ -135,11 +135,7 @@ pub(super) fn write_toml_mcp_servers(
 }
 
 /// TOML-flavored sibling of `purge_uniform_mcp_servers`.
-pub(super) fn purge_toml_mcp_servers(
-    path: &Path,
-    key: &str,
-    port: u16,
-) -> Result<(), ClientError> {
+pub(super) fn purge_toml_mcp_servers(path: &Path, key: &str, port: u16) -> Result<(), ClientError> {
     let Some(mut root) = read_existing_toml_table(path)? else {
         return Ok(());
     };

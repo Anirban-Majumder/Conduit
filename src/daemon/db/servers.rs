@@ -303,11 +303,16 @@ pub(super) fn query_clear_server_auth_error(
 
 impl Db {
     pub async fn upsert_server(&self, server: Server) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertServer { server, reply }).await
+        self.send_cmd(|reply| DbCmd::UpsertServer { server, reply })
+            .await
     }
 
     pub async fn get_server(&self, name: &str) -> Result<Option<Server>, DbError> {
-        self.send_cmd(|reply| DbCmd::GetServer { name: name.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::GetServer {
+            name: name.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn list_servers(&self) -> Result<Vec<Server>, DbError> {
@@ -315,7 +320,11 @@ impl Db {
     }
 
     pub async fn delete_server(&self, name: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::DeleteServer { name: name.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::DeleteServer {
+            name: name.to_string(),
+            reply,
+        })
+        .await
     }
 
     /// Returns `true` if this is a transition (prior auth-error was NULL or different).
@@ -334,7 +343,11 @@ impl Db {
 
     /// Returns `true` if a non-null auth-error was actually cleared.
     pub async fn clear_server_auth_error(&self, server: &str) -> Result<bool, DbError> {
-        self.send_cmd(|reply| DbCmd::ClearServerAuthError { server: server.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::ClearServerAuthError {
+            server: server.to_string(),
+            reply,
+        })
+        .await
     }
 
     /// Atomic Save for the Add Server wizard: inserts the server row, per-tool
@@ -346,17 +359,31 @@ impl Db {
         server: Server,
         tools: Vec<ToolMeta>,
     ) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertServerWithTools { server, tools, reply }).await
+        self.send_cmd(|reply| DbCmd::UpsertServerWithTools {
+            server,
+            tools,
+            reply,
+        })
+        .await
     }
 
     pub async fn list_server_tools(&self, server: &str) -> Result<Vec<ToolMeta>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListServerTools { server: server.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::ListServerTools {
+            server: server.to_string(),
+            reply,
+        })
+        .await
     }
 
     /// Rename a server. Cascades through `policies` and `server_tools` via FK
     /// ON UPDATE CASCADE. Caller rewrites IDE config files.
     pub async fn rename_server(&self, old: &str, new: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::RenameServer { old: old.to_string(), new: new.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::RenameServer {
+            old: old.to_string(),
+            new: new.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn commit_cascade_delete(

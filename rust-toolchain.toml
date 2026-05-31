@@ -1,7 +1,11 @@
 [toolchain]
 # Pinned to a specific stable to prevent clippy drift breaking CI on Tuesday morning.
 # Bump deliberately — never track floating "stable".
-channel = "1.90.0"
+#
+# Explicit -msvc triple: bare "1.90.0" resolves to the -gnu toolchain when
+# MinGW is installed, and MinGW's dlltool is incompatible with MSVC import
+# libraries (getrandom crate fails with "Invalid bfd target").
+channel = "1.90.0-x86_64-pc-windows-msvc"
 components = ["rustfmt", "clippy", "rust-src"]
 profile = "minimal"
 targets = []

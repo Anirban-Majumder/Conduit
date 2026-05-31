@@ -417,7 +417,6 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
     out
 }
 
-
 fn is_expired(entry: &Entry, now: Instant) -> bool {
     if entry.client.is_closed() {
         return true;

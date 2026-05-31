@@ -60,7 +60,6 @@ pub struct ApprovalCenter {
     waiters: WaiterMap,
 }
 
-
 impl ApprovalCenter {
     pub fn new(db: Db, bus: Bus, timeout: Duration) -> Self {
         Self {

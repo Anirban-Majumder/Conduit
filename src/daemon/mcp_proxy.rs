@@ -18,9 +18,9 @@ use crate::daemon::db::types::{AuditDecision, AuditEntry, Decision, DecisionSour
 use crate::daemon::errors::DbError;
 use crate::daemon::events::Event;
 use crate::daemon::http_server::{server_to_config, AppState};
+use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::manager::UpstreamError;
 use crate::daemon::upstream::probe::message_looks_like_auth_failure;
-use crate::daemon::time_util::now_unix_secs;
 
 #[derive(Debug)]
 pub enum ProxyOutcome {
@@ -316,11 +316,12 @@ async fn insert_audit(
         error_code: None,
     };
     match state.db.insert_audit_entry(entry).await {
-        Ok(_) => { state.bus.publish(Event::AuditAppended); }
+        Ok(_) => {
+            state.bus.publish(Event::AuditAppended);
+        }
         Err(e) => tracing::warn!(error = %e, server, tool, "audit insert failed"),
     }
 }
-
 
 fn io_to_upstream(e: crate::daemon::http_server::ServerError) -> ProxyError {
     ProxyError::Upstream(UpstreamError::InitFailed(e.to_string()))

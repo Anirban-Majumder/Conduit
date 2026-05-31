@@ -9,7 +9,7 @@ fn empty_toml_parses_to_spec_defaults() {
     assert_eq!(s.daemon.port, 9876);
     assert_eq!(s.daemon.approval_timeout_seconds, 300);
     assert_eq!(s.daemon.default_lifecycle_seconds, 300);
-    assert_eq!(s.daemon.audit_retention_days, 30);
+    assert_eq!(s.daemon.audit_retention_days, 7);
     assert_eq!(s.daemon.log_level, "info");
     assert!(s.daemon.autostart_at_login);
 

@@ -112,4 +112,3 @@ fn current_user_display() -> String {
         super::xml_escape(&format!("{domain}\\{username}"))
     }
 }
-

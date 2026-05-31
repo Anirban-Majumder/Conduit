@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::daemon::clients::{self, SKILL_TARGET_IDES};
-use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
 use crate::daemon::events::{Bus, Event};
 use crate::daemon::ide_detect::IdeKind;
+use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 use crate::paths::Paths;
 
 const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -536,7 +536,6 @@ async fn first_existing_skill_md(dir: &std::path::Path) -> Option<PathBuf> {
     }
     None
 }
-
 
 #[cfg(test)]
 mod tests {

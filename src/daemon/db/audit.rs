@@ -112,13 +112,19 @@ pub(super) fn query_query_audit_log(
         args.push(SqlValue::Integer(ts));
     }
     if let Some(d) = &filter.decision {
+        // reason: exact-match — "ALLOWED" (allow) excludes ask-approved rows,
+        // "DENIED" (deny) excludes ask-denied. Intentional UX: the filter chips
+        // map 1:1 to DB decision values, not semantic categories.
         sql.push_str(" AND decision = ?");
         args.push(SqlValue::Text(d.as_db_str().to_owned()));
     }
     if let Some(t) = &filter.text {
         // Escape LIKE metacharacters so a literal '%' or '_' doesn't act as a
         // wildcard. ESCAPE '\' tells SQLite our escape prefix.
-        let escaped = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let escaped = t
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         sql.push_str(" AND (server LIKE ? ESCAPE '\\' OR tool LIKE ? ESCAPE '\\')");
         let pattern = format!("%{escaped}%");
         args.push(SqlValue::Text(pattern.clone()));
@@ -151,14 +157,20 @@ pub(super) fn query_purge_old_audit_entries(
 
 impl Db {
     pub async fn insert_audit_entry(&self, entry: AuditEntry) -> Result<i64, DbError> {
-        self.send_cmd(|reply| DbCmd::InsertAuditEntry { entry, reply }).await
+        self.send_cmd(|reply| DbCmd::InsertAuditEntry { entry, reply })
+            .await
     }
 
     pub async fn query_audit_log(&self, filter: AuditFilter) -> Result<Vec<AuditEntry>, DbError> {
-        self.send_cmd(|reply| DbCmd::QueryAuditLog { filter, reply }).await
+        self.send_cmd(|reply| DbCmd::QueryAuditLog { filter, reply })
+            .await
     }
 
     pub async fn purge_old_audit_entries(&self, older_than_ts: i64) -> Result<u64, DbError> {
-        self.send_cmd(|reply| DbCmd::PurgeOldAuditEntries { older_than_ts, reply }).await
+        self.send_cmd(|reply| DbCmd::PurgeOldAuditEntries {
+            older_than_ts,
+            reply,
+        })
+        .await
     }
 }

@@ -92,7 +92,7 @@ pub(crate) fn spawn_event_bridge(
         let mut coalesce = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 event = rx.recv() => {
                     match event {
                         Ok(Event::ApprovalPending { .. }) => {
@@ -485,7 +485,11 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         }
         d
     };
-    let text = if search.is_empty() { None } else { Some(search) };
+    let text = if search.is_empty() {
+        None
+    } else {
+        Some(search)
+    };
 
     let filter = AuditFilter {
         limit: Some(25),
@@ -521,6 +525,10 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
+        // Reset accordion: rows are ordered ts DESC, so a new audit row
+        // prepends at index 0 and shifts every existing row down by one.
+        // Without this, the expanded detail pane would show the wrong row.
+        ui.set_audit_expanded_index(-1);
         ui.set_audit(ModelRc::new(VecModel::from(rows)));
     })
     .ok();

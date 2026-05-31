@@ -40,13 +40,19 @@ export component LogTab inherits Rectangle {
                     padding-left: 10px;
                     padding-right: 10px;
                     alignment: center;
+                    // TextInput has no placeholder-text property in Slint 1.16;
+                    // overlay a conditional Text element instead.
+                    if root.search-query == "" : Text {
+                        text: "Search server or tool…";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
                     search-input := TextInput {
                         text: root.search-query;
                         color: Theme.text-primary;
                         font-size: Theme.font-body-sm;
                         single-line: true;
-                        placeholder-text: "Search server or tool…";
-                        placeholder-color: Theme.text-tertiary;
                         edited => {
                             root.search-query = self.text;
                             root.expanded-index = -1;

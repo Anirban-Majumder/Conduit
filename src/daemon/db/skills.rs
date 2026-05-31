@@ -196,7 +196,8 @@ impl Db {
     }
 
     pub async fn upsert_skill_repo(&self, repo: SkillRepo) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertSkillRepo { repo, reply }).await
+        self.send_cmd(|reply| DbCmd::UpsertSkillRepo { repo, reply })
+            .await
     }
 
     pub async fn delete_skill_repo(&self, owner: &str, name: &str) -> Result<(), DbError> {
@@ -224,7 +225,8 @@ impl Db {
     }
 
     pub async fn upsert_skill_with_targets(&self, skill: Skill) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertSkillWithTargets { skill, reply }).await
+        self.send_cmd(|reply| DbCmd::UpsertSkillWithTargets { skill, reply })
+            .await
     }
 
     pub async fn set_skill_targets(
@@ -241,11 +243,19 @@ impl Db {
     }
 
     pub async fn delete_skill(&self, directory: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::DeleteSkill { directory: directory.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::DeleteSkill {
+            directory: directory.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn get_skill(&self, directory: &str) -> Result<Option<Skill>, DbError> {
-        self.send_cmd(|reply| DbCmd::GetSkill { directory: directory.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::GetSkill {
+            directory: directory.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn list_skills(&self) -> Result<Vec<Skill>, DbError> {

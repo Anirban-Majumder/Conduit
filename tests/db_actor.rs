@@ -543,7 +543,10 @@ async fn audit_filter_decision_and_text() {
         })
         .await
         .unwrap();
-    assert!(percent_rows.is_empty(), "literal '%' should not match any server/tool name");
+    assert!(
+        percent_rows.is_empty(),
+        "literal '%' should not match any server/tool name"
+    );
 }
 
 #[tokio::test]

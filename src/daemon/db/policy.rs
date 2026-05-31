@@ -192,16 +192,23 @@ impl Db {
     }
 
     pub async fn list_policies_for_server(&self, server: &str) -> Result<Vec<Policy>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListPoliciesForServer { server: server.to_string(), reply })
-            .await
+        self.send_cmd(|reply| DbCmd::ListPoliciesForServer {
+            server: server.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn list_all_policies(&self) -> Result<Vec<Policy>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListAllPolicies { reply }).await
+        self.send_cmd(|reply| DbCmd::ListAllPolicies { reply })
+            .await
     }
 
     pub async fn delete_policies_for_server(&self, server: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::DeletePoliciesForServer { server: server.to_string(), reply })
-            .await
+        self.send_cmd(|reply| DbCmd::DeletePoliciesForServer {
+            server: server.to_string(),
+            reply,
+        })
+        .await
     }
 }

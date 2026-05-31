@@ -124,6 +124,10 @@ pub(super) fn xml_escape(s: &str) -> String {
 ///
 /// `fallback_name` is used as the temp-file stem when `path` has no
 /// filename component (practically unreachable but avoids an unwrap).
+// reason: Windows installer (scheduled_task_windows.rs) writes a one-shot
+// autostart.xml that schtasks reads immediately — a partial write just fails
+// the install() call, not ongoing runtime. Not worth the ReplaceFileW wiring;
+// see daemon/clients/io.rs for the runtime-critical Windows atomic write.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn atomic_write(
     path: &Path,

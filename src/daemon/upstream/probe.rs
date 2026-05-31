@@ -160,9 +160,7 @@ pub async fn probe_with_progress(
                     emit(ProbeEvent::Phase(
                         "Re-initializing with OAuth token...".into(),
                     ));
-                    match http::connect_oauth(url, &draft, cancel.clone())
-                        .await?
-                    {
+                    match http::connect_oauth(url, &draft, cancel.clone()).await? {
                         Some(c) => spawn_done(c, cancel.clone()).await?,
                         None => {
                             return Err(ProbeError::OauthFlow(
@@ -318,9 +316,7 @@ async fn run_oauth_login(
         .await
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
     emit(ProbeEvent::Phase("Exchanging code for tokens...".into()));
-    state
-        .handle_callback(&code, &csrf)
-        .await?;
+    state.handle_callback(&code, &csrf).await?;
 
     let (client_id, token_response) = state.get_credentials().await?;
     if token_response.is_none() {

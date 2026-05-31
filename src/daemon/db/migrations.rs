@@ -291,7 +291,8 @@ pub(super) fn query_list_tables(conn: &Connection) -> Result<Vec<String>, DbErro
 
 impl Db {
     pub async fn schema_version(&self) -> Result<i64, DbError> {
-        self.send_cmd(|reply| DbCmd::GetSchemaVersion { reply }).await
+        self.send_cmd(|reply| DbCmd::GetSchemaVersion { reply })
+            .await
     }
 
     pub async fn list_tables(&self) -> Result<Vec<String>, DbError> {
@@ -299,6 +300,10 @@ impl Db {
     }
 
     pub async fn table_columns(&self, table: &str) -> Result<Vec<String>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListColumns { table: table.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::ListColumns {
+            table: table.to_string(),
+            reply,
+        })
+        .await
     }
 }

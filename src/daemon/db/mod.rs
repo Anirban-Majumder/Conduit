@@ -41,10 +41,7 @@ use ides::{
 };
 use migrations::{init_conn, query_list_columns, query_list_tables, query_schema_version};
 
-#[cfg(any(
-    all(unix, not(debug_assertions)),
-    all(windows, not(debug_assertions))
-))]
+#[cfg(any(all(unix, not(debug_assertions)), all(windows, not(debug_assertions))))]
 use migrations::restrict_db_perms;
 use oauth_drafts::{delete_oauth_draft, insert_oauth_draft, list_oauth_drafts};
 use policy::{
@@ -99,7 +96,10 @@ impl Db {
         Self::spawn_with_inner(conn, None)
     }
 
-    fn spawn_with_inner(conn: Connection, db_path: Option<std::path::PathBuf>) -> Result<Self, DbError> {
+    fn spawn_with_inner(
+        conn: Connection,
+        db_path: Option<std::path::PathBuf>,
+    ) -> Result<Self, DbError> {
         let (tx, rx) = mpsc::channel::<DbCmd>(CMD_CHANNEL_DEPTH);
         thread::Builder::new()
             .name("conduit-db".into())
@@ -134,17 +134,18 @@ impl Db {
     }
 }
 
-fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>, db_path: Option<std::path::PathBuf>) {
+fn actor_loop(
+    conn: Connection,
+    mut rx: mpsc::Receiver<DbCmd>,
+    db_path: Option<std::path::PathBuf>,
+) {
     if let Err(e) = init_conn(&conn) {
         tracing::error!(error = %e, "db actor init failed; refusing further commands");
         return;
     }
     // Restrict perms AFTER init_conn — WAL mode + migrations create -wal/-shm
     // sidecars that must also be locked down.
-    #[cfg(any(
-        all(unix, not(debug_assertions)),
-        all(windows, not(debug_assertions))
-    ))]
+    #[cfg(any(all(unix, not(debug_assertions)), all(windows, not(debug_assertions))))]
     if let Some(ref path) = db_path {
         restrict_db_perms(path);
     }

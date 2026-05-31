@@ -245,7 +245,11 @@ pub(super) fn query_update_ide_managed_entries(
 
 impl Db {
     pub async fn lookup_ide_key(&self, key: &str) -> Result<Option<IdeKey>, DbError> {
-        self.send_cmd(|reply| DbCmd::LookupIdeKey { key: key.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::LookupIdeKey {
+            key: key.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn upsert_detected_ide(
@@ -272,20 +276,35 @@ impl Db {
     }
 
     pub async fn get_ide_by_kind(&self, ide_kind: &str) -> Result<Option<IdeRecord>, DbError> {
-        self.send_cmd(|reply| DbCmd::GetIdeByKind { ide_kind: ide_kind.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::GetIdeByKind {
+            ide_kind: ide_kind.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn mark_ides_stale(&self, kinds_present: Vec<String>) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::MarkIdesStale { kinds_present, reply }).await
+        self.send_cmd(|reply| DbCmd::MarkIdesStale {
+            kinds_present,
+            reply,
+        })
+        .await
     }
 
     pub async fn mark_ide_not_tracked(&self, ide_kind: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::MarkIdeNotTracked { ide_kind: ide_kind.to_string(), reply })
-            .await
+        self.send_cmd(|reply| DbCmd::MarkIdeNotTracked {
+            ide_kind: ide_kind.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn retrack_ide(&self, ide_kind: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::RetrackIde { ide_kind: ide_kind.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::RetrackIde {
+            ide_kind: ide_kind.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn update_ide_managed_entries(
@@ -304,6 +323,7 @@ impl Db {
     }
 
     pub async fn list_all_ide_configs(&self) -> Result<Vec<ManagedIdeConfig>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListAllIdeConfigs { reply }).await
+        self.send_cmd(|reply| DbCmd::ListAllIdeConfigs { reply })
+            .await
     }
 }

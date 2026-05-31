@@ -7,6 +7,7 @@ use crate::glue::refresh::refresh_audit;
 use crate::glue::util::copy_to_clipboard;
 use crate::glue::CallbackContext;
 use crate::ui::MainWindow;
+use slint::ComponentHandle;
 
 pub(crate) fn install_log_callbacks(window: &MainWindow, ctx: &CallbackContext) {
     let weak = window.as_weak();
@@ -27,9 +28,6 @@ pub(crate) fn install_log_callbacks(window: &MainWindow, ctx: &CallbackContext) 
     });
 
     window.on_audit_decision_filter_changed({
-        let weak = weak.clone();
-        let db = db.clone();
-        let rt = rt.clone();
         move |_decision| {
             let weak = weak.clone();
             let db = db.clone();

@@ -13,6 +13,12 @@ perf.data*
 *.dSYM/
 *.pdb
 
+# Local-only agent skills (conduit-design lives on each dev's machine, not in the repo)
+.agents/skills/conduit-design/
+.claude/skills/conduit-design/
+.cursor/skills/conduit-design/
+.kiro/skills/conduit-design/
+
 # Editor / OS noise
 .DS_Store
 *.swp

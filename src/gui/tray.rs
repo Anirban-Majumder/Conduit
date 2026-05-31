@@ -301,6 +301,9 @@ fn spawn_badge_updater(
     });
 }
 
+// reason: unwrap_or_default returns 0 on DB error (ActorGone at shutdown).
+// Zero is a safe default for a tray badge — it clears the indicator rather
+// than showing a stale count. Matches count_auth_failures convention.
 async fn get_pending_count(db: &Db) -> i64 {
     let pending = db.list_pending_approvals().await.unwrap_or_default();
     // reason: len() fits in i64 on any real pending queue; MAX is an unreachable overflow fallback

@@ -59,6 +59,7 @@ export component MainWindow inherits Window {
     // Log tab filter + search state
     in-out property <string> audit-search-query;
     in-out property <string> audit-decision-filter;
+    in-out property <int> audit-expanded-index: -1;
 
     in-out property <int> active-tab: 0;
     in-out property <string> focused-approval: "";
@@ -347,6 +348,7 @@ export component MainWindow inherits Window {
                 if root.active-tab == 4 : LogTab {
                     vertical-stretch: 1;
                     rows: root.audit;
+                    expanded-index <=> root.audit-expanded-index;
                     search-query <=> root.audit-search-query;
                     decision-filter <=> root.audit-decision-filter;
                     search-changed(q) => { root.audit-search-changed(q); }

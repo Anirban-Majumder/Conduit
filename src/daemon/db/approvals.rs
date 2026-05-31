@@ -113,11 +113,16 @@ pub(super) fn query_sweep_stale_pending_approvals(
 
 impl Db {
     pub async fn create_pending_approval(&self, approval: PendingApproval) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::CreatePendingApproval { approval, reply }).await
+        self.send_cmd(|reply| DbCmd::CreatePendingApproval { approval, reply })
+            .await
     }
 
     pub async fn get_pending_approval(&self, id: &str) -> Result<Option<PendingApproval>, DbError> {
-        self.send_cmd(|reply| DbCmd::GetPendingApproval { id: id.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::GetPendingApproval {
+            id: id.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn resolve_pending_approval(
@@ -125,11 +130,17 @@ impl Db {
         id: &str,
         new_status: ApprovalStatus,
     ) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::ResolvePendingApproval { id: id.to_string(), new_status, reply }).await
+        self.send_cmd(|reply| DbCmd::ResolvePendingApproval {
+            id: id.to_string(),
+            new_status,
+            reply,
+        })
+        .await
     }
 
     pub async fn list_pending_approvals(&self) -> Result<Vec<PendingApproval>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListPendingApprovals { reply }).await
+        self.send_cmd(|reply| DbCmd::ListPendingApprovals { reply })
+            .await
     }
 
     /// Flips every `pending` row older than `older_than_ts` to `timeout`.
@@ -139,6 +150,10 @@ impl Db {
         &self,
         older_than_ts: i64,
     ) -> Result<Vec<String>, DbError> {
-        self.send_cmd(|reply| DbCmd::SweepStalePendingApprovals { older_than_ts, reply }).await
+        self.send_cmd(|reply| DbCmd::SweepStalePendingApprovals {
+            older_than_ts,
+            reply,
+        })
+        .await
     }
 }

@@ -220,7 +220,8 @@ async fn approval_resolved_event_fires_on_resolve() {
                     resolved_seen = true;
                     break;
                 }
-                Event::ConfigReloaded { .. }
+                Event::AuditAppended
+                | Event::ConfigReloaded { .. }
                 | Event::ServerHealthChanged { .. }
                 | Event::FocusApproval { .. }
                 | Event::SkillsChanged
