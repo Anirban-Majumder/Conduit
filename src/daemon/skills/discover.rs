@@ -208,7 +208,7 @@ async fn discover_one(
     let skill_files: Vec<TreeEntry> = tree
         .entries
         .into_iter()
-        .filter(|e| e.kind == EntryKind::Blob && path_is_skill_md(&e.path))
+        .filter(|e| e.kind == EntryKind::Blob && is_skill_md_path(&e.path))
         .take(MAX_SKILLS_PER_REPO)
         .collect();
 
@@ -224,11 +224,10 @@ async fn discover_one(
         let sem = sem.clone();
         joinset.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
-            let directory = entry
-                .path
-                .strip_suffix("/SKILL.md")
-                .or_else(|| entry.path.strip_suffix("/Skill.md"))
-                .or_else(|| entry.path.strip_suffix("/skill.md"))
+            let path_lower = entry.path.to_ascii_lowercase();
+            let directory = path_lower
+                .strip_suffix("/skill.md")
+                .and_then(|s| entry.path.get(..s.len()))
                 .map_or_else(|| name.clone(), ToString::to_string);
 
             let body = fetch_raw(&http, &owner, &name, &branch, &entry.path)
@@ -274,7 +273,7 @@ async fn discover_one(
 
 const SKILL_MD_FETCH_CONCURRENCY: usize = 8;
 
-fn path_is_skill_md(path: &str) -> bool {
+pub fn is_skill_md_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower == "skill.md" || lower.ends_with("/skill.md")
 }
@@ -390,10 +389,10 @@ mod tests {
 
     #[test]
     fn detects_skill_md_anywhere() {
-        assert!(path_is_skill_md("SKILL.md"));
-        assert!(path_is_skill_md("foo/SKILL.md"));
-        assert!(path_is_skill_md("foo/bar/Skill.md"));
-        assert!(!path_is_skill_md("foo/SKILL.markdown"));
-        assert!(!path_is_skill_md("readme.md"));
+        assert!(is_skill_md_path("SKILL.md"));
+        assert!(is_skill_md_path("foo/SKILL.md"));
+        assert!(is_skill_md_path("foo/bar/Skill.md"));
+        assert!(!is_skill_md_path("foo/SKILL.markdown"));
+        assert!(!is_skill_md_path("readme.md"));
     }
 }
