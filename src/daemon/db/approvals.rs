@@ -22,10 +22,10 @@ fn decode_pending_approval_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pend
     })?;
     Ok(PendingApproval {
         id: row.get(0)?,
-        server: row.get(1)?,
+        mcp_server: row.get(1)?,
         tool: row.get(2)?,
         args_json: row.get(3)?,
-        ide_key: row.get(4)?,
+        client_key: row.get(4)?,
         created_at: row.get(5)?,
         status,
     })
@@ -36,15 +36,15 @@ pub(super) fn query_create_pending_approval(
     approval: &PendingApproval,
 ) -> Result<(), DbError> {
     conn.prepare_cached(
-        "INSERT INTO pending_approvals (id, server, tool, args_json, ide_key, created_at, status)
+        "INSERT INTO pending_approvals (id, mcp_server, tool, args_json, client_key, created_at, status)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?
     .execute(params![
         &approval.id,
-        &approval.server,
+        &approval.mcp_server,
         &approval.tool,
         &approval.args_json,
-        &approval.ide_key,
+        &approval.client_key,
         approval.created_at,
         approval.status.as_db_str(),
     ])?;
@@ -57,7 +57,7 @@ pub(super) fn query_get_pending_approval(
 ) -> Result<Option<PendingApproval>, DbError> {
     let row = conn
         .prepare_cached(
-            "SELECT id, server, tool, args_json, ide_key, created_at, status
+            "SELECT id, mcp_server, tool, args_json, client_key, created_at, status
              FROM pending_approvals WHERE id = ?1",
         )?
         .query_row(params![id], decode_pending_approval_row)
@@ -79,7 +79,7 @@ pub(super) fn query_list_pending_approvals(
     conn: &Connection,
 ) -> Result<Vec<PendingApproval>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, server, tool, args_json, ide_key, created_at, status
+        "SELECT id, mcp_server, tool, args_json, client_key, created_at, status
          FROM pending_approvals WHERE status = 'pending' ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], decode_pending_approval_row)?;
@@ -101,8 +101,6 @@ pub(super) fn query_sweep_stale_pending_approvals(
     if ids.is_empty() {
         return Ok(ids);
     }
-    // SQLite caps `?N` parameters at 999; pending-approval volume is well under
-    // that bound, but loop one-id-at-a-time to keep the cached prepare reusable.
     let mut update =
         conn.prepare_cached("UPDATE pending_approvals SET status = 'timeout' WHERE id = ?1")?;
     for id in &ids {
@@ -113,11 +111,16 @@ pub(super) fn query_sweep_stale_pending_approvals(
 
 impl Db {
     pub async fn create_pending_approval(&self, approval: PendingApproval) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::CreatePendingApproval { approval, reply }).await
+        self.send_cmd(|reply| DbCmd::CreatePendingApproval { approval, reply })
+            .await
     }
 
     pub async fn get_pending_approval(&self, id: &str) -> Result<Option<PendingApproval>, DbError> {
-        self.send_cmd(|reply| DbCmd::GetPendingApproval { id: id.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::GetPendingApproval {
+            id: id.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn resolve_pending_approval(
@@ -125,11 +128,17 @@ impl Db {
         id: &str,
         new_status: ApprovalStatus,
     ) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::ResolvePendingApproval { id: id.to_string(), new_status, reply }).await
+        self.send_cmd(|reply| DbCmd::ResolvePendingApproval {
+            id: id.to_string(),
+            new_status,
+            reply,
+        })
+        .await
     }
 
     pub async fn list_pending_approvals(&self) -> Result<Vec<PendingApproval>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListPendingApprovals { reply }).await
+        self.send_cmd(|reply| DbCmd::ListPendingApprovals { reply })
+            .await
     }
 
     /// Flips every `pending` row older than `older_than_ts` to `timeout`.
@@ -139,6 +148,10 @@ impl Db {
         &self,
         older_than_ts: i64,
     ) -> Result<Vec<String>, DbError> {
-        self.send_cmd(|reply| DbCmd::SweepStalePendingApprovals { older_than_ts, reply }).await
+        self.send_cmd(|reply| DbCmd::SweepStalePendingApprovals {
+            older_than_ts,
+            reply,
+        })
+        .await
     }
 }

@@ -8,8 +8,8 @@
 
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
+use conduit::daemon::clients;
 use conduit::daemon::db::types::SkillRepo;
-use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::{SkillCandidate, SkillManager};
 
 use crate::glue::refresh::ide_icon;
@@ -241,11 +241,11 @@ pub(crate) async fn refresh_skills(weak: &slint::Weak<MainWindow>, skills: &Skil
     if let Err(e) = skills.register_local_skills().await {
         tracing::warn!(error = %e, "register_local_skills failed");
     }
-    let active_kinds = skills.active_ide_kinds().await;
-    paint_skills_from_db(weak, skills, &active_kinds).await;
+    let active_client_ids = skills.active_skill_client_ids().await;
+    paint_skills_from_db(weak, skills, &active_client_ids).await;
     match skills.discover(false).await {
         Ok(candidates) => {
-            paint_skills_with_discovery(weak, skills, candidates, &active_kinds).await;
+            paint_skills_with_discovery(weak, skills, candidates, &active_client_ids).await;
         }
         Err(e) => tracing::warn!(error = %e, "skill discover failed during refresh"),
     }
@@ -254,15 +254,15 @@ pub(crate) async fn refresh_skills(weak: &slint::Weak<MainWindow>, skills: &Skil
 pub(crate) async fn paint_skills_from_db(
     weak: &slint::Weak<MainWindow>,
     skills: &SkillManager,
-    active_kinds: &[IdeKind],
+    active_client_ids: &[String],
 ) {
     let installed = skills.list_installed().await.unwrap_or_default();
     let repos = skills.list_repos().await.unwrap_or_default();
     let repo_rows = repos_to_rows(repos);
-    let active_kinds = active_kinds.to_vec();
+    let active_client_ids = active_client_ids.to_vec();
     // Rows carry brand-icon `Image`s (!Send), so build them on the UI thread.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        let rows = installed_skills_to_rows(&installed, &active_kinds);
+        let rows = installed_skills_to_rows(&installed, &active_client_ids);
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
         ui.set_skills(ModelRc::new(VecModel::from(filtered)));
         ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
@@ -289,18 +289,18 @@ pub(crate) async fn paint_skills_with_discovery(
     weak: &slint::Weak<MainWindow>,
     skills: &SkillManager,
     candidates: Vec<SkillCandidate>,
-    active_kinds: &[IdeKind],
+    active_client_ids: &[String],
 ) {
     let installed = skills.list_installed().await.unwrap_or_default();
     let repos = skills.list_repos().await.unwrap_or_default();
     let repo_rows = repos_to_rows(repos);
     let installed_dirs: std::collections::HashSet<String> =
         installed.iter().map(|s| s.directory.clone()).collect();
-    let active_kinds = active_kinds.to_vec();
+    let active_client_ids = active_client_ids.to_vec();
 
     // Rows carry brand-icon `Image`s (!Send), so build them on the UI thread.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        let mut rows = installed_skills_to_rows(&installed, &active_kinds);
+        let mut rows = installed_skills_to_rows(&installed, &active_client_ids);
         for candidate in candidates {
             let install_name = candidate
                 .directory
@@ -345,14 +345,17 @@ pub(crate) async fn paint_skills_with_discovery(
 /// Build the per-skill IDE toggle model: one `IdeTarget` per detected
 /// skill-capable IDE, `active` reflecting whether the skill is synced there.
 /// Must run on the UI thread — `IdeTarget.icon` is a !Send `slint::Image`.
-fn skill_targets(enabled: &[String], active_kinds: &[IdeKind]) -> ModelRc<IdeTarget> {
-    let targets: Vec<IdeTarget> = active_kinds
+fn skill_targets(enabled: &[String], active_client_ids: &[String]) -> ModelRc<IdeTarget> {
+    let targets: Vec<IdeTarget> = active_client_ids
         .iter()
-        .map(|&kind| IdeTarget {
-            ide_kind: SharedString::from(kind.as_db_kind()),
-            label: SharedString::from(kind.display_name()),
-            icon: ide_icon(kind),
-            active: enabled.iter().any(|t| t == kind.as_db_kind()),
+        .filter_map(|client_id| {
+            let def = clients::builtin_by_id(client_id)?;
+            Some(IdeTarget {
+                ide_kind: SharedString::from(def.id),
+                label: SharedString::from(def.display_name),
+                icon: ide_icon(def.id),
+                active: enabled.iter().any(|t| t == def.id),
+            })
         })
         .collect();
     ModelRc::new(VecModel::from(targets))
@@ -364,7 +367,7 @@ fn empty_targets() -> ModelRc<IdeTarget> {
 
 pub(crate) fn installed_skills_to_rows(
     installed: &[conduit::daemon::db::types::Skill],
-    active_kinds: &[IdeKind],
+    active_client_ids: &[String],
 ) -> Vec<SkillRow> {
     installed
         .iter()
@@ -386,7 +389,7 @@ pub(crate) fn installed_skills_to_rows(
             source_directory: SharedString::from(skill.source_directory.clone()),
             readme_url: SharedString::from(skill.readme_url.clone().unwrap_or_default()),
             installed: true,
-            targets: skill_targets(&skill.targets, active_kinds),
+            targets: skill_targets(&skill.targets, active_client_ids),
         })
         .collect()
 }

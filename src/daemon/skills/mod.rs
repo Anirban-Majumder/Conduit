@@ -12,13 +12,12 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::daemon::clients::{self, SKILL_TARGET_IDES};
-use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
+use crate::daemon::clients::{self, ClientDef, BUILTINS};
 use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
 use crate::daemon::events::{Bus, Event};
-use crate::daemon::ide_detect::IdeKind;
+use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 use crate::paths::Paths;
 
 const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -26,6 +25,11 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_AGENT: &str = "conduit-skills";
 const DOWNLOAD_FILES_PER_SKILL_LIMIT: usize = 200;
 const FILE_FETCH_CONCURRENCY: usize = 6;
+
+/// Returns the subset of BUILTINS that support skills.
+fn skill_capable_builtins() -> impl Iterator<Item = &'static ClientDef> {
+    BUILTINS.iter().copied().filter(|b| b.skills.is_some())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillCandidate {
@@ -74,16 +78,15 @@ impl SkillManager {
         &self.paths
     }
 
-    /// Detected IDEs that can receive skills (`SKILL_TARGET_IDES`), in canonical
-    /// order. Drives the Skills-tab per-skill icon toggles; IDEs without a
-    /// skills dir are excluded so we never offer a toggle whose write
-    /// `normalize_targets` would silently drop.
-    pub async fn active_ide_kinds(&self) -> Vec<IdeKind> {
-        let active = self.db.list_active_ides().await.unwrap_or_default();
-        SKILL_TARGET_IDES
-            .iter()
-            .copied()
-            .filter(|k| active.iter().any(|r| r.ide_kind == k.as_db_kind()))
+    /// IDs of tracked clients that can receive skills. Drives the Skills-tab
+    /// per-skill icon toggles; clients without a skills dir are excluded so
+    /// we never offer a toggle whose write would silently drop.
+    pub async fn active_skill_client_ids(&self) -> Vec<String> {
+        let tracked = self.db.list_tracked_clients().await.unwrap_or_default();
+        tracked
+            .into_iter()
+            .filter(|c| clients::builtin_by_id(&c.id).is_some_and(|def| def.skills.is_some()))
+            .map(|c| c.id)
             .collect()
     }
 
@@ -328,8 +331,8 @@ impl SkillManager {
     pub async fn uninstall(&self, directory: &str) -> Result<(), SkillError> {
         let directory_owned = directory.to_string();
         tokio::task::spawn_blocking(move || {
-            for ide in SKILL_TARGET_IDES {
-                sync::remove_from_target(&directory_owned, clients::ide_db_name(*ide));
+            for def in skill_capable_builtins() {
+                sync::remove_from_target(&directory_owned, def.id);
             }
         })
         .await
@@ -440,12 +443,11 @@ async fn apply_targets_blocking(
     let install_name = install_name.to_string();
     let targets: Vec<String> = targets.to_vec();
     tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
-        for ide in SKILL_TARGET_IDES {
-            let key = clients::ide_db_name(*ide);
-            if targets.iter().any(|t| t == key) {
-                sync::sync_to_target(&dest, key)?;
+        for def in skill_capable_builtins() {
+            if targets.iter().any(|t| t == def.id) {
+                sync::sync_to_target(&dest, def.id)?;
             } else {
-                sync::remove_from_target(&install_name, key);
+                sync::remove_from_target(&install_name, def.id);
             }
         }
         Ok(())
@@ -457,11 +459,7 @@ async fn apply_targets_blocking(
 fn normalize_targets(targets: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = targets
         .into_iter()
-        .filter(|t| {
-            SKILL_TARGET_IDES
-                .iter()
-                .any(|ide| clients::ide_db_name(*ide) == t)
-        })
+        .filter(|t| skill_capable_builtins().any(|def| def.id == t))
         .collect();
     out.sort();
     out.dedup();
@@ -537,7 +535,6 @@ async fn first_existing_skill_md(dir: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test ergonomics")]
@@ -568,12 +565,12 @@ mod tests {
     }
 
     #[test]
-    fn normalize_targets_keeps_known_ides_only() {
+    fn normalize_targets_keeps_known_clients_only() {
         let out = normalize_targets(vec![
             "ClaudeCode".into(),
             "Cursor".into(),
             "OpenCode".into(),
-            "VsCodeCopilot".into(), // no global skills dir — filtered out
+            "VsCodeCopilot".into(), // no skills dir — filtered out
             "Bogus".into(),
             "ClaudeCode".into(),
         ]);

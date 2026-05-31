@@ -12,10 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::clients;
 use conduit::daemon::config_toml::Settings;
-use conduit::daemon::db::types::{AuditDecision, AuditFilter, IdeKey, TRANSPORT_STDIO};
+use conduit::daemon::db::types::{AuditDecision, AuditFilter, ClientRow, TRANSPORT_STDIO};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::Event;
-use conduit::daemon::ide_detect::IdeKind;
 use conduit::daemon::skills::SkillManager;
 
 use crate::ui::{
@@ -32,8 +31,10 @@ use crate::glue::util::{
 /// Decode an IDE's embedded brand SVG into a `slint::Image`. Falls back to an
 /// empty image if the bytes fail to parse. Must run on the UI thread (`Image`
 /// is not `Send`).
-pub(crate) fn ide_icon(kind: IdeKind) -> slint::Image {
-    slint::Image::load_from_svg_data(clients::icon_svg(kind)).unwrap_or_default()
+pub(crate) fn ide_icon(client_id: &str) -> slint::Image {
+    clients::builtin_by_id(client_id)
+        .map(|d| slint::Image::load_from_svg_data(d.icon_svg).unwrap_or_default())
+        .unwrap_or_default()
 }
 
 pub(crate) fn push_initial_models(
@@ -169,7 +170,8 @@ pub(crate) async fn refresh_all(weak: &slint::Weak<MainWindow>, db: &Db) {
 
 pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
     let pending = db.list_pending_approvals().await.unwrap_or_default();
-    let ide_names = lookup_ide_names_for_keys(db, pending.iter().map(|p| p.ide_key.as_str())).await;
+    let ide_names =
+        lookup_ide_names_for_keys(db, pending.iter().map(|p| p.client_key.as_str())).await;
     let now = unix_now();
     let rows: Vec<ApprovalRow> = pending
         .into_iter()
@@ -177,11 +179,11 @@ pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
             id: SharedString::from(p.id),
             ide_name: SharedString::from(
                 ide_names
-                    .get(&p.ide_key)
+                    .get(&p.client_key)
                     .cloned()
                     .unwrap_or_else(|| "?".to_string()),
             ),
-            server: SharedString::from(p.server),
+            server: SharedString::from(p.mcp_server),
             tool: SharedString::from(p.tool),
             created_at: SharedString::from(relative_time(now - p.created_at)),
             args_json: SharedString::from(p.args_json),
@@ -245,12 +247,9 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
     let tools = db.list_server_tools(name).await.unwrap_or_default();
     let mut tool_rows: Vec<ToolPolicyUiRow> = Vec::with_capacity(tools.len());
     for t in &tools {
-        let decision = db
-            .get_policy(name, &t.name)
-            .await
-            .ok()
-            .flatten()
-            .map_or_else(|| "ask".to_string(), |p| p.decision.as_db_str().to_string());
+        let decision = t
+            .decision
+            .map_or_else(|| "ask".to_string(), |d| d.as_db_str().to_string());
         tool_rows.push(ToolPolicyUiRow {
             name: SharedString::from(t.name.clone()),
             description: SharedString::from(t.description.clone().unwrap_or_default()),
@@ -271,11 +270,7 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         "idle"
     };
     let last_probe_label = probed_ts.map_or_else(|| "—".to_string(), |ts| relative_time(now - ts));
-    let version_label = server
-        .server_version
-        .clone()
-        .or_else(|| server.package_version.clone())
-        .unwrap_or_default();
+    let version_label = server.reported_version.clone().unwrap_or_default();
     let detail = ServerDetail {
         name: SharedString::from(server.name.clone()),
         version: SharedString::from(version_label),
@@ -298,12 +293,7 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         auth_failure_msg: SharedString::from(
             server.last_auth_error_msg.clone().unwrap_or_default(),
         ),
-        latency_label: SharedString::from(
-            server
-                .last_init_duration_ms
-                .map(|ms| format!("{ms}ms"))
-                .unwrap_or_default(),
-        ),
+        latency_label: SharedString::from(String::new()),
     };
 
     let name_owned = name.to_string();
@@ -321,21 +311,29 @@ pub(crate) async fn refresh_server_targets(
     db: &Db,
     server_name: &str,
 ) {
-    let actives = db.list_active_ides().await.unwrap_or_default();
+    let actives = db.list_tracked_clients().await.unwrap_or_default();
     let server_name = server_name.to_string();
+
+    // For each tracked client, look up its managed servers to decide the toggle state.
+    let mut client_managed: Vec<(ClientRow, Vec<String>)> = Vec::new();
+    for client in actives {
+        let managed = db
+            .list_managed_servers(&client.id)
+            .await
+            .unwrap_or_default();
+        client_managed.push((client, managed));
+    }
+
     // Build `IdeTarget`s (incl. brand-icon `Image`s) on the UI thread — `Image`
-    // is !Send. Order by `IdeKind::ALL` so the toggle row is stable.
+    // is !Send.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        let rows: Vec<IdeTarget> = IdeKind::ALL
+        let rows: Vec<IdeTarget> = client_managed
             .iter()
-            .filter_map(|&kind| {
-                let r = actives.iter().find(|r| r.ide_kind == kind.as_db_kind())?;
-                Some(IdeTarget {
-                    ide_kind: SharedString::from(kind.as_db_kind()),
-                    label: SharedString::from(r.display_name.clone()),
-                    icon: ide_icon(kind),
-                    active: r.managed_entries.iter().any(|n| n == &server_name),
-                })
+            .map(|(client, managed)| IdeTarget {
+                ide_kind: SharedString::from(client.id.clone()),
+                label: SharedString::from(client.name.clone()),
+                icon: ide_icon(&client.id),
+                active: managed.iter().any(|n| n == &server_name),
             })
             .collect();
         ui.set_selected_server_targets(ModelRc::new(VecModel::from(rows)));
@@ -348,98 +346,61 @@ pub(crate) async fn refresh_server_targets(
 )]
 pub(crate) async fn toggle_server_for_ide(
     db: &Db,
-    port: u16,
+    _port: u16,
     server_name: &str,
-    ide_kind_str: &str,
+    client_id: &str,
     enable: bool,
 ) {
-    let Some(record) = db.get_ide_by_kind(ide_kind_str).await.ok().flatten() else {
-        tracing::warn!(kind = %ide_kind_str, "no ide row for kind");
+    let Some(client) = db.get_client(client_id).await.ok().flatten() else {
+        tracing::warn!(client_id = %client_id, "no client row for id");
         return;
     };
-    if !matches!(record.status, conduit::daemon::db::types::IdeStatus::Active) {
-        tracing::warn!(kind = %ide_kind_str, "ide is not active; ignoring toggle");
+    if !client.tracked {
+        tracing::warn!(client_id = %client_id, "client is not tracked; ignoring toggle");
         return;
     }
-    let Some(kind) = IdeKind::from_db_kind(&record.ide_kind) else {
-        tracing::warn!(kind = %record.ide_kind, "unknown ide kind");
-        return;
-    };
 
-    let mut entries = record.managed_entries.clone();
+    let mut entries = db
+        .list_managed_servers(&client.id)
+        .await
+        .unwrap_or_default();
     let already_present = entries.iter().any(|n| n == server_name);
-    let config_path = if enable {
+    if enable {
         if !already_present {
             entries.push(server_name.to_string());
         }
-        let key_handle = IdeKey {
-            key: record.ide_key.clone(),
-            ide_name: record.display_name.clone(),
-            created_at: record.first_seen_at,
-        };
-        match clients::write(kind, &key_handle, &entries, port) {
-            Ok(managed) => managed.config_path,
-            Err(e) => {
-                tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "clients::write failed");
-                return;
-            }
-        }
+        // TODO: new render logic needed (clients::write replacement)
+        tracing::debug!(client_id = %client_id, server = %server_name, "TODO: clients::write stub");
     } else {
         if already_present {
             entries.retain(|n| n != server_name);
         }
-        let Some(existing_path) = record
-            .config_path
-            .clone()
-            .or_else(|| clients::config_path_for(kind))
-        else {
-            tracing::warn!(kind = %record.ide_kind, "no config path for ide; skipping purge");
-            return;
-        };
-        if let Err(e) = clients::purge_one_server_for_ide(
-            kind,
-            &existing_path,
-            port,
-            &record.ide_key,
-            server_name,
-        ) {
-            tracing::warn!(error = %e, kind = %record.ide_kind, server = %server_name, "purge_one_server_for_ide failed");
-            return;
-        }
-        existing_path
-    };
+        // TODO: new render logic needed (clients::purge_one_server_for_ide replacement)
+        tracing::debug!(client_id = %client_id, server = %server_name, "TODO: clients::purge_one_server_for_ide stub");
+    }
 
-    if let Err(e) = db
-        .update_ide_managed_entries(&record.ide_kind, config_path, entries)
-        .await
-    {
-        tracing::warn!(error = %e, "update_ide_managed_entries failed");
+    if let Err(e) = db.set_managed_servers(&client.id, entries).await {
+        tracing::warn!(error = %e, "set_managed_servers failed");
     }
 }
 
 pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
-    let records = db.list_ides().await.unwrap_or_default();
+    let records = db.list_clients().await.unwrap_or_default();
     // Build rows (and decode their SVG icons) on the UI thread: `slint::Image`
     // is not `Send`, so it can't be constructed before `upgrade_in_event_loop`.
     weak.upgrade_in_event_loop(move |ui| {
         let rows: Vec<IdeRow> = records
             .into_iter()
             .map(|r| {
-                let icon = IdeKind::from_db_kind(&r.ide_kind)
-                    .map(ide_icon)
-                    .unwrap_or_default();
+                let icon = ide_icon(&r.id);
+                let status_label = if r.tracked { "active" } else { "not_tracked" };
                 IdeRow {
                     icon,
-                    kind: SharedString::from(r.ide_kind),
-                    display_name: SharedString::from(r.display_name),
-                    key: SharedString::from(r.ide_key),
-                    status: SharedString::from(r.status.as_db_str()),
-                    config_path: SharedString::from(
-                        r.config_path
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default(),
-                    ),
+                    kind: SharedString::from(r.id),
+                    display_name: SharedString::from(r.name),
+                    key: SharedString::from(r.mcp_key),
+                    status: SharedString::from(status_label),
+                    config_path: SharedString::from(r.mcp_config_path),
                 }
             })
             .collect();
@@ -449,16 +410,22 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
 }
 
 pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
-    let policies = db.list_all_policies().await.unwrap_or_default();
-    let rows: Vec<PolicyRow> = policies
-        .into_iter()
-        .map(|p| PolicyRow {
-            server: SharedString::from(p.server),
-            tool: SharedString::from(p.tool),
-            decision: SharedString::from(p.decision.as_db_str()),
-            source: SharedString::from(p.decision_source.as_db_str()),
-        })
-        .collect();
+    // list_all_policies is removed; collect per-server tools with their decisions.
+    let servers = db.list_servers().await.unwrap_or_default();
+    let mut rows: Vec<PolicyRow> = Vec::new();
+    for s in servers {
+        let tools = db.list_server_tools(&s.name).await.unwrap_or_default();
+        for t in tools {
+            if let Some(decision) = t.decision {
+                rows.push(PolicyRow {
+                    server: SharedString::from(t.server.clone()),
+                    tool: SharedString::from(t.name),
+                    decision: SharedString::from(decision.as_db_str()),
+                    source: SharedString::from(""), // decision source not tracked per-tool anymore
+                });
+            }
+        }
+    }
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_policies(ModelRc::new(VecModel::from(rows)));
     })
@@ -485,7 +452,11 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         }
         d
     };
-    let text = if search.is_empty() { None } else { Some(search) };
+    let text = if search.is_empty() {
+        None
+    } else {
+        Some(search)
+    };
 
     let filter = AuditFilter {
         limit: Some(25),
@@ -501,8 +472,8 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
             id: SharedString::from(e.id.map(|n| n.to_string()).unwrap_or_default()),
             ts_label: SharedString::from(relative_time(now - e.ts)),
             ts_full: SharedString::from(clock_full(e.ts)),
-            ide_name: SharedString::from(e.ide_name.unwrap_or_else(|| "?".to_string())),
-            server: SharedString::from(e.server),
+            ide_name: SharedString::from(e.client_name.unwrap_or_else(|| "?".to_string())),
+            server: SharedString::from(e.mcp_server),
             tool: SharedString::from(e.tool.unwrap_or_default()),
             decision: SharedString::from(e.decision.as_db_str()),
             decision_source: SharedString::from(
@@ -547,7 +518,7 @@ pub(crate) async fn refresh_dashboard(
         })
         .count();
 
-    let editor_count = db.list_active_ides().await.unwrap_or_default().len();
+    let editor_count = db.list_tracked_clients().await.unwrap_or_default().len();
     let installed_skills = skills.list_installed().await.unwrap_or_default();
     let skill_count = installed_skills.len();
 
@@ -597,8 +568,8 @@ pub(crate) async fn lookup_ide_names_for_keys<'a>(
     let mut out = std::collections::HashMap::new();
     for key in keys {
         if !out.contains_key(key) {
-            if let Ok(Some(ik)) = db.lookup_ide_key(key).await {
-                out.insert(ik.key, ik.ide_name);
+            if let Ok(Some(client)) = db.lookup_client_key(key).await {
+                out.insert(client.mcp_key, client.name);
             }
         }
     }

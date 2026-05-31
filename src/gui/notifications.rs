@@ -73,8 +73,8 @@ pub fn spawn(
                 () = cancel.cancelled() => break,
                 ev = rx.recv() => match ev {
                     Ok(Event::ApprovalPending { id, ide_key, server, tool, .. }) => {
-                        let ide_name = match db.lookup_ide_key(&ide_key).await {
-                            Ok(Some(k)) => k.ide_name,
+                        let ide_name = match db.lookup_client_key(&ide_key).await {
+                            Ok(Some(k)) => k.name,
                             Ok(None) => {
                                 tracing::debug!(ide_key, "lookup_ide_key returned None; using fallback name");
                                 "Unknown IDE".to_string()

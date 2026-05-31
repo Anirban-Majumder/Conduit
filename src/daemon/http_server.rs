@@ -22,7 +22,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::approval::ApprovalCenter;
-use crate::daemon::db::types::Server;
+use crate::daemon::db::types::McpServer;
 use crate::daemon::db::Db;
 use crate::daemon::events::Bus;
 use crate::daemon::mcp_proxy::{route_tool_call, ProxyError, ProxyOutcome};
@@ -102,11 +102,11 @@ async fn handle_mcp(
         Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
     }
 
-    let ide_lookup = match state.db.lookup_ide_key(&key).await {
+    let client_lookup = match state.db.lookup_client_key(&key).await {
         Ok(v) => v,
         Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
     };
-    let Some(ide) = ide_lookup else {
+    let Some(client) = client_lookup else {
         return rpc_error_response(id, IDE_KEY_INVALID, "ide_key_invalid");
     };
 
@@ -127,8 +127,8 @@ async fn handle_mcp(
 
     match route_tool_call(
         &state,
-        &ide.key,
-        &ide.ide_name,
+        &client.mcp_key,
+        &client.name,
         &server_cfg,
         &method,
         params,
@@ -200,10 +200,10 @@ fn rpc_error_response(id: Value, code: i32, reason: &str) -> axum::response::Res
     .into_response()
 }
 
-/// Resolve a DB-stored `Server` into the upstream-layer `ServerConfig`, fetching
-/// keyring secrets. Caller must already have the `Server` row.
+/// Resolve a DB-stored `McpServer` into the upstream-layer `ServerConfig`, fetching
+/// keyring secrets. Caller must already have the `McpServer` row.
 pub(crate) fn server_to_config(
-    server: &Server,
+    server: &McpServer,
 ) -> Result<crate::daemon::upstream::manager::ServerConfig, ServerError> {
     use crate::daemon::db::types::{EnvValue, TRANSPORT_HTTP, TRANSPORT_STDIO};
     use crate::daemon::secrets;

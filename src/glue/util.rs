@@ -9,7 +9,6 @@ use slint::SharedString;
 use conduit::daemon::clients;
 use conduit::daemon::config_toml::Settings;
 use conduit::daemon::db::Db;
-use conduit::daemon::ide_detect::IdeKind;
 
 use crate::ui::{MainWindow, SettingsRow};
 
@@ -74,14 +73,16 @@ pub(crate) fn fire_background_hint() {
 }
 
 pub(crate) fn resolve_ide_config_path(
-    record: Option<&conduit::daemon::db::types::IdeRecord>,
+    record: Option<&conduit::daemon::db::types::ClientRow>,
 ) -> Option<std::path::PathBuf> {
     if let Some(rec) = record {
-        if let Some(p) = rec.config_path.clone() {
-            return Some(p);
+        // ClientRow always has mcp_config_path; use it if non-empty.
+        if !rec.mcp_config_path.is_empty() {
+            return Some(std::path::PathBuf::from(&rec.mcp_config_path));
         }
-        if let Some(kind) = IdeKind::from_db_kind(&rec.ide_kind) {
-            return clients::config_path_for(kind);
+        // Fallback: resolve from the builtin definition.
+        if let Some(def) = clients::builtin_by_id(&rec.id) {
+            return clients::paths::resolve(&def.config);
         }
     }
     None
@@ -111,18 +112,14 @@ pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> O
         .filter(|s: &String| !s.is_empty())
 }
 
-pub(crate) async fn remove_ide(db: &Db, port: u16, ide_kind: &str) {
-    let Some(record) = db.get_ide_by_kind(ide_kind).await.ok().flatten() else {
+pub(crate) async fn remove_ide(db: &Db, _port: u16, client_id: &str) {
+    let Some(client) = db.get_client(client_id).await.ok().flatten() else {
         return;
     };
-    let Some(kind) = IdeKind::from_db_kind(&record.ide_kind) else {
-        return;
-    };
-    if let Err(e) = clients::purge(kind, &record.ide_key, port) {
-        tracing::warn!(error = %e, kind = %record.ide_kind, "ide purge failed");
-    }
-    if let Err(e) = db.mark_ide_not_tracked(&record.ide_kind).await {
-        tracing::warn!(error = %e, kind = %record.ide_kind, "mark_ide_not_tracked failed");
+    // TODO: new render logic needed (clients::purge replacement)
+    tracing::debug!(client_id = %client.id, "TODO: clients::purge stub");
+    if let Err(e) = db.set_client_tracked(&client.id, false).await {
+        tracing::warn!(error = %e, client_id = %client.id, "set_client_tracked(false) failed");
     }
 }
 
@@ -130,20 +127,34 @@ pub(crate) async fn run_ide_detection(db: &Db) {
     let detected = tokio::task::spawn_blocking(conduit::daemon::ide_detect::detect_installed)
         .await
         .unwrap_or_default();
-    let mut seen_kinds: Vec<String> = Vec::with_capacity(detected.len());
     for d in &detected {
-        let kind_str = d.kind.as_db_kind().to_string();
-        seen_kinds.push(kind_str.clone());
-        let source_str = d.source.as_db_str();
-        if let Err(e) = db
-            .upsert_detected_ide(&kind_str, d.kind.display_name(), Some(source_str))
-            .await
-        {
-            tracing::warn!(error = %e, kind = %kind_str, "upsert_detected_ide failed");
+        let client_id = d.kind.as_db_kind();
+        if let Some(def) = clients::builtin_by_id(client_id) {
+            let config_path = clients::paths::resolve(&def.config)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let skills_dir = def
+                .skills
+                .as_ref()
+                .and_then(|s| clients::paths::resolve(s))
+                .map(|p| p.display().to_string());
+            // schema_json: use the config_spec to produce a schema stub.
+            let schema: clients::schema::ConfigSchema =
+                clients::schema::ConfigSchema::from(&def.config_spec);
+            let schema_json = serde_json::to_string(&schema).unwrap_or_default();
+            if let Err(e) = db
+                .project_builtin(
+                    client_id,
+                    def.display_name,
+                    &config_path,
+                    skills_dir.as_deref(),
+                    &schema_json,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, client_id = %client_id, "project_builtin failed");
+            }
         }
-    }
-    if let Err(e) = db.mark_ides_stale(seen_kinds).await {
-        tracing::warn!(error = %e, "mark_ides_stale failed");
     }
 }
 

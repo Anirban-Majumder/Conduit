@@ -9,9 +9,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::cascade;
-use conduit::daemon::db::types::{
-    ApprovalStatus, Decision, DecisionSource, ToolMeta as DbToolMeta,
-};
+use conduit::daemon::db::types::{ApprovalStatus, Decision, DecisionSource, McpTool as DbMcpTool};
 use conduit::daemon::events::Event;
 use conduit::daemon::upstream::probe::{self};
 
@@ -67,7 +65,7 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 return;
             }
             if let Err(e) = db
-                .set_policy(&server, &tool, Decision::Allow, DecisionSource::User)
+                .set_tool_decision(&server, &tool, Decision::Allow, DecisionSource::User)
                 .await
             {
                 tracing::warn!(error = %e, server = %server, tool = %tool, "approve always policy upgrade failed");
@@ -92,8 +90,7 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 Ok(report) => {
                     tracing::info!(
                         server = %name,
-                        ides_trimmed = report.ides_trimmed.len(),
-                        ides_skipped = report.ides_skipped.len(),
+                        affected_clients = report.affected_client_ids.len(),
                         cancelled = report.cancelled_approvals.len(),
                         "cascade delete complete",
                     );
@@ -151,14 +148,16 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
             match probe::probe(&draft, cancel).await {
                 Ok(result) => {
                     let now = unix_now();
-                    let tools: Vec<DbToolMeta> = result
+                    let tools: Vec<DbMcpTool> = result
                         .tools
                         .into_iter()
-                        .map(|t| DbToolMeta {
+                        .map(|t| DbMcpTool {
+                            server: server.name.clone(),
                             name: t.name,
                             description: t.description,
                             input_schema_json: t.input_schema.to_string(),
                             discovered_at: now,
+                            decision: None,
                         })
                         .collect();
                     if let Err(e) = db.upsert_server_with_tools(server, tools).await {
@@ -195,18 +194,18 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 if let Ok(tools) = db.list_server_tools(&server).await {
                     for t in tools {
                         if let Err(e) = db
-                            .set_policy(&server, &t.name, decision, DecisionSource::User)
+                            .set_tool_decision(&server, &t.name, decision, DecisionSource::User)
                             .await
                         {
-                            tracing::warn!(error = %e, "set policy failed");
+                            tracing::warn!(error = %e, "set tool decision failed");
                         }
                     }
                 }
             } else if let Err(e) = db
-                .set_policy(&server, &tool, decision, DecisionSource::User)
+                .set_tool_decision(&server, &tool, decision, DecisionSource::User)
                 .await
             {
-                tracing::warn!(error = %e, "set policy failed");
+                tracing::warn!(error = %e, "set tool decision failed");
             }
             refresh_server_detail(&weak, &db, &server).await;
         });

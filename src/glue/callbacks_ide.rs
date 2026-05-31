@@ -8,6 +8,7 @@
 use slint::{ComponentHandle, SharedString};
 
 use conduit::daemon::clients;
+use conduit::daemon::db::Db;
 
 use crate::glue::refresh::{refresh_ides, refresh_server_targets};
 use crate::glue::skills::refresh_skills;
@@ -22,14 +23,21 @@ use crate::ui::MainWindow;
 /// Shared by selection, retrack, and remove so the pane never goes stale
 /// when an action mutates the selected IDE's status under it.
 async fn refresh_selected_editor(weak: &slint::Weak<MainWindow>, db: &Db, kind_str: String) {
-    let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+    let record = db.get_client(&kind_str).await.ok().flatten();
     let path = resolve_ide_config_path(record.as_ref());
-    let status = record
-        .as_ref()
-        .map_or_else(|| "active".to_string(), |r| r.status.as_db_str().to_string());
+    let status = record.as_ref().map_or_else(
+        || "active".to_string(),
+        |r| {
+            if r.tracked {
+                "active".to_string()
+            } else {
+                "not_tracked".to_string()
+            }
+        },
+    );
     let display = record
         .as_ref()
-        .map_or_else(|| kind_str.clone(), |r| r.display_name.clone());
+        .map_or_else(|| kind_str.clone(), |r| r.name.clone());
     let text = match path.as_deref().map(clients::read_raw) {
         Some(Ok(Some(s))) => s,
         Some(Ok(None)) | None => String::new(),
@@ -112,7 +120,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
             let db = db.clone();
             let weak = weak.clone();
             rt.spawn(async move {
-                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                let record = db.get_client(&kind_str).await.ok().flatten();
                 let Some(path) = resolve_ide_config_path(record.as_ref()) else {
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_selected_editor_status(SharedString::from("no config path"));
@@ -151,7 +159,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
             let db = db.clone();
             let weak = weak.clone();
             rt.spawn(async move {
-                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                let record = db.get_client(&kind_str).await.ok().flatten();
                 let path = resolve_ide_config_path(record.as_ref());
                 let text = match path.as_deref().map(clients::read_raw) {
                     Some(Ok(Some(s))) => s,
@@ -175,7 +183,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
             let db = db.clone();
             let kind_str = kind_str.to_string();
             rt.spawn(async move {
-                let record = db.get_ide_by_kind(&kind_str).await.ok().flatten();
+                let record = db.get_client(&kind_str).await.ok().flatten();
                 if let Some(path) = resolve_ide_config_path(record.as_ref()) {
                     reveal_in_file_manager(&path);
                 }
@@ -215,7 +223,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
         let skills = skills_for_retrack.clone();
         let kind_str = kind_str.to_string();
         rt_for_retrack.spawn(async move {
-            if let Err(e) = db.retrack_ide(&kind_str).await {
+            if let Err(e) = db.set_client_tracked(&kind_str, true).await {
                 tracing::warn!(error = %e, kind = %kind_str, "retrack failed");
                 return;
             }

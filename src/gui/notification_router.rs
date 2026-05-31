@@ -68,7 +68,7 @@ async fn approve_always(
         return;
     }
     if let Err(e) = db
-        .set_policy(server, tool, Decision::Allow, DecisionSource::Notification)
+        .set_tool_decision(server, tool, Decision::Allow, DecisionSource::Notification)
         .await
     {
         tracing::warn!(

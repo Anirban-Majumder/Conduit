@@ -8,15 +8,18 @@
 use std::fs;
 use std::path::Path;
 
-use crate::daemon::clients::{self, ide_kind_from_db_name};
+use crate::daemon::clients::{self, paths};
 use crate::daemon::errors::SkillError;
 
-pub fn sync_to_target(source: &Path, ide_db_name: &str) -> Result<(), SkillError> {
-    let ide = ide_kind_from_db_name(ide_db_name)
-        .ok_or_else(|| SkillError::UnknownTarget(ide_db_name.to_string()))?;
-    let Some(base) = clients::skills_dir_for(ide) else {
-        return Err(SkillError::UnknownTarget(ide_db_name.to_string()));
-    };
+pub fn sync_to_target(source: &Path, client_id: &str) -> Result<(), SkillError> {
+    let def = clients::builtin_by_id(client_id)
+        .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
+    let skills_spec = def
+        .skills
+        .as_ref()
+        .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
+    let base = paths::resolve(skills_spec)
+        .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
     let install_name = source
         .file_name()
         .and_then(|n| n.to_str())
@@ -51,11 +54,14 @@ fn staging_nonce() -> u128 {
         .unwrap_or(0)
 }
 
-pub fn remove_from_target(install_name: &str, ide_db_name: &str) {
-    let Some(ide) = ide_kind_from_db_name(ide_db_name) else {
+pub fn remove_from_target(install_name: &str, client_id: &str) {
+    let Some(def) = clients::builtin_by_id(client_id) else {
         return;
     };
-    let Some(base) = clients::skills_dir_for(ide) else {
+    let Some(skills_spec) = def.skills.as_ref() else {
+        return;
+    };
+    let Some(base) = paths::resolve(skills_spec) else {
         return;
     };
     let dest = base.join(install_name);

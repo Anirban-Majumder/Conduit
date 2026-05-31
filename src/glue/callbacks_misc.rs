@@ -57,7 +57,7 @@ pub(crate) fn install_misc_callbacks(
         };
         rt_for_policy.spawn(async move {
             if let Err(e) = db
-                .set_policy(
+                .set_tool_decision(
                     server.as_str(),
                     tool.as_str(),
                     decision,

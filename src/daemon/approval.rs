@@ -60,7 +60,6 @@ pub struct ApprovalCenter {
     waiters: WaiterMap,
 }
 
-
 impl ApprovalCenter {
     pub fn new(db: Db, bus: Bus, timeout: Duration) -> Self {
         Self {
@@ -83,10 +82,10 @@ impl ApprovalCenter {
         let id = Uuid::new_v4().to_string();
         let approval = PendingApproval {
             id: id.clone(),
-            server: req.server.clone(),
+            mcp_server: req.server.clone(),
             tool: req.tool.clone(),
             args_json: req.args_json,
-            ide_key: req.ide_key.clone(),
+            client_key: req.ide_key.clone(),
             created_at: now_unix_secs(),
             status: ApprovalStatus::Pending,
         };

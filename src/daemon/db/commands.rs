@@ -5,20 +5,13 @@
 //! `query_*` function in a domain submodule. Adding a DB operation means
 //! adding a variant here, a dispatch arm in `mod.rs`, and the query fn.
 
-use std::path::PathBuf;
 use tokio::sync::oneshot;
 
 use crate::daemon::db::types::{
-    ApprovalStatus, AuditEntry, AuditFilter, Decision, DecisionSource, IdeKey, IdeRecord,
-    ManagedIdeConfig, PendingApproval, Policy, Server, Skill, SkillRepo, ToolMeta,
+    ApprovalStatus, AuditEntry, AuditFilter, ClientRow, Decision, DecisionSource, McpServer,
+    McpTool, PendingApproval, Skill, SkillRepo,
 };
 use crate::daemon::errors::DbError;
-
-#[derive(Debug, Clone)]
-pub struct CascadeTrim {
-    pub ide_kind: String,
-    pub remaining: Vec<String>,
-}
 
 #[derive(Debug)]
 pub enum DbCmd {
@@ -31,73 +24,117 @@ pub enum DbCmd {
     ListTables {
         reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
-    LookupIdeKey {
-        key: String,
-        reply: oneshot::Sender<Result<Option<IdeKey>, DbError>>,
+    ListColumns {
+        table: String,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
-    UpsertDetectedIde {
-        ide_kind: String,
-        display_name: String,
-        detection_source: Option<String>,
-        reply: oneshot::Sender<Result<IdeRecord, DbError>>,
-    },
-    ListIdes {
-        reply: oneshot::Sender<Result<Vec<IdeRecord>, DbError>>,
-    },
-    ListActiveIdes {
-        reply: oneshot::Sender<Result<Vec<IdeRecord>, DbError>>,
-    },
-    GetIdeByKind {
-        ide_kind: String,
-        reply: oneshot::Sender<Result<Option<IdeRecord>, DbError>>,
-    },
-    MarkIdesStale {
-        kinds_present: Vec<String>,
+
+    // ── MCP Servers ────────────────────────────────────────────────────
+    UpsertServer {
+        server: McpServer,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    MarkIdeNotTracked {
-        ide_kind: String,
+    GetServer {
+        name: String,
+        reply: oneshot::Sender<Result<Option<McpServer>, DbError>>,
+    },
+    ListServers {
+        reply: oneshot::Sender<Result<Vec<McpServer>, DbError>>,
+    },
+    DeleteServer {
+        name: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    RetrackIde {
-        ide_kind: String,
+    RenameServer {
+        old: String,
+        new: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    UpdateIdeManagedEntries {
-        ide_kind: String,
-        config_path: PathBuf,
-        managed_entries: Vec<String>,
+    UpsertServerWithTools {
+        server: McpServer,
+        tools: Vec<McpTool>,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    SetPolicy {
+    ListServerTools {
+        server: String,
+        reply: oneshot::Sender<Result<Vec<McpTool>, DbError>>,
+    },
+    SetServerAuthError {
+        server: String,
+        message: String,
+        reply: oneshot::Sender<Result<bool, DbError>>,
+    },
+    ClearServerAuthError {
+        server: String,
+        reply: oneshot::Sender<Result<bool, DbError>>,
+    },
+    CommitCascadeDelete {
+        server_name: String,
+        delete_audit_history: bool,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
+    },
+
+    // ── Tool decisions (replaces policies) ─────────────────────────────
+    SetToolDecision {
         server: String,
         tool: String,
         decision: Decision,
-        decision_source: DecisionSource,
-        reply: oneshot::Sender<Result<i64, DbError>>,
-    },
-    GetPolicy {
-        server: String,
-        tool: String,
-        reply: oneshot::Sender<Result<Option<Policy>, DbError>>,
-    },
-    GetPolicyScoped {
-        server: String,
-        tool: String,
-        scope: String,
-        reply: oneshot::Sender<Result<Option<Policy>, DbError>>,
-    },
-    ListPoliciesForServer {
-        server: String,
-        reply: oneshot::Sender<Result<Vec<Policy>, DbError>>,
-    },
-    ListAllPolicies {
-        reply: oneshot::Sender<Result<Vec<Policy>, DbError>>,
-    },
-    DeletePoliciesForServer {
-        server: String,
+        source: DecisionSource,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
+    GetToolDecision {
+        server: String,
+        tool: String,
+        reply: oneshot::Sender<Result<Option<Decision>, DbError>>,
+    },
+    ResolvePolicy {
+        server: String,
+        tool: String,
+        reply: oneshot::Sender<Result<Decision, DbError>>,
+    },
+
+    // ── Clients (replaces ides) ────────────────────────────────────────
+    ProjectBuiltin {
+        id: String,
+        name: String,
+        mcp_config_path: String,
+        skills_dir: Option<String>,
+        schema_json: String,
+        reply: oneshot::Sender<Result<ClientRow, DbError>>,
+    },
+    GetClient {
+        id: String,
+        reply: oneshot::Sender<Result<Option<ClientRow>, DbError>>,
+    },
+    LookupClientKey {
+        key: String,
+        reply: oneshot::Sender<Result<Option<ClientRow>, DbError>>,
+    },
+    ListClients {
+        reply: oneshot::Sender<Result<Vec<ClientRow>, DbError>>,
+    },
+    ListTrackedClients {
+        reply: oneshot::Sender<Result<Vec<ClientRow>, DbError>>,
+    },
+    SetClientTracked {
+        id: String,
+        tracked: bool,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    ListManagedServers {
+        client_id: String,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
+    },
+    SetManagedServers {
+        client_id: String,
+        server_names: Vec<String>,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    ListAllManagedMcp {
+        reply: oneshot::Sender<Result<Vec<(String, Vec<String>)>, DbError>>,
+    },
+
+    // ── Approvals ──────────────────────────────────────────────────────
     CreatePendingApproval {
         approval: PendingApproval,
         reply: oneshot::Sender<Result<(), DbError>>,
@@ -118,6 +155,8 @@ pub enum DbCmd {
         older_than_ts: i64,
         reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
+
+    // ── Audit ──────────────────────────────────────────────────────────
     InsertAuditEntry {
         entry: AuditEntry,
         reply: oneshot::Sender<Result<i64, DbError>>,
@@ -130,66 +169,19 @@ pub enum DbCmd {
         older_than_ts: i64,
         reply: oneshot::Sender<Result<u64, DbError>>,
     },
-    UpsertServer {
-        server: Server,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
-    GetServer {
-        name: String,
-        reply: oneshot::Sender<Result<Option<Server>, DbError>>,
-    },
-    ListServers {
-        reply: oneshot::Sender<Result<Vec<Server>, DbError>>,
-    },
-    DeleteServer {
-        name: String,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
-    SetServerAuthError {
-        server: String,
-        message: String,
-        reply: oneshot::Sender<Result<bool, DbError>>,
-    },
-    ClearServerAuthError {
-        server: String,
-        reply: oneshot::Sender<Result<bool, DbError>>,
-    },
+
+    // ── Settings ───────────────────────────────────────────────────────
     GetSettingsKv {
         key: String,
         reply: oneshot::Sender<Result<Option<String>, DbError>>,
-    },
-    ListColumns {
-        table: String,
-        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
     SetSettingsKv {
         key: String,
         value: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    UpsertServerWithTools {
-        server: Server,
-        tools: Vec<ToolMeta>,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
-    ListServerTools {
-        server: String,
-        reply: oneshot::Sender<Result<Vec<ToolMeta>, DbError>>,
-    },
-    RenameServer {
-        old: String,
-        new: String,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
-    ListAllIdeConfigs {
-        reply: oneshot::Sender<Result<Vec<ManagedIdeConfig>, DbError>>,
-    },
-    CommitCascadeDelete {
-        server_name: String,
-        trimmed: Vec<CascadeTrim>,
-        delete_audit_history: bool,
-        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
-    },
+
+    // ── Skills ─────────────────────────────────────────────────────────
     ListSkillRepos {
         reply: oneshot::Sender<Result<Vec<SkillRepo>, DbError>>,
     },
@@ -228,6 +220,8 @@ pub enum DbCmd {
     ListSkills {
         reply: oneshot::Sender<Result<Vec<Skill>, DbError>>,
     },
+
+    // ── OAuth drafts ───────────────────────────────────────────────────
     InsertOAuthDraft {
         draft_uuid: String,
         reply: oneshot::Sender<Result<(), DbError>>,

@@ -77,4 +77,3 @@ fn agent_dir() -> Result<PathBuf, InstallError> {
     let home = dirs::home_dir().ok_or(InstallError::NoHomeDir)?;
     Ok(home.join("Library").join("LaunchAgents"))
 }
-

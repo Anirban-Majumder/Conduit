@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use conduit::daemon::db::types::{
-    Decision, DecisionSource, EnvEntry, EnvValue, Server, ToolMeta as DbToolMeta, TRANSPORT_HTTP,
+    Decision, DecisionSource, EnvEntry, EnvValue, McpServer, McpTool as DbMcpTool, TRANSPORT_HTTP,
     TRANSPORT_STDIO,
 };
 use conduit::daemon::events::Event;
@@ -32,8 +32,8 @@ use crate::ui::{EnvVarRow, MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 
 #[derive(Default, Clone)]
 struct PendingWizard {
-    server: Option<Server>,
-    tools: Vec<DbToolMeta>,
+    server: Option<McpServer>,
+    tools: Vec<DbMcpTool>,
     descriptions: std::collections::HashMap<String, String>,
     oauth_session: Option<String>,
 }
@@ -159,7 +159,7 @@ pub(crate) fn install_wizard_callbacks(
                 })
                 .collect()
         };
-        let server_row = Server {
+        let server_row = McpServer {
             name: name.clone(),
             transport: transport.clone(),
             command: if transport == TRANSPORT_STDIO && !command.is_empty() {
@@ -175,16 +175,11 @@ pub(crate) fn install_wizard_callbacks(
                 None
             },
             lifecycle_seconds,
-            last_init_duration_ms: None,
-            package_version: None,
-            mcp_self_version: None,
-            created_at: 0,
-            server_name: None,
-            server_version: None,
+            reported_name: None,
+            reported_version: None,
             last_probed_at: None,
             last_probe_error: None,
             last_auth_error_msg: None,
-            last_auth_error_at: None,
         };
 
         let weak = weak.clone();
@@ -215,18 +210,20 @@ pub(crate) fn install_wizard_callbacks(
                 Ok(probed) => {
                     let now = unix_now();
                     let mut descriptions = std::collections::HashMap::new();
-                    let tools: Vec<DbToolMeta> = probed
+                    let tools: Vec<DbMcpTool> = probed
                         .tools
                         .into_iter()
                         .map(|t| {
                             if let Some(d) = &t.description {
                                 descriptions.insert(t.name.clone(), d.clone());
                             }
-                            DbToolMeta {
+                            DbMcpTool {
+                                server: name.clone(),
                                 name: t.name,
                                 description: t.description,
                                 input_schema_json: t.input_schema.to_string(),
                                 discovered_at: now,
+                                decision: None,
                             }
                         })
                         .collect();
@@ -241,8 +238,8 @@ pub(crate) fn install_wizard_callbacks(
                         })
                         .collect();
                     let mut updated_server = server_row;
-                    updated_server.server_name = Some(probed.server_name.clone());
-                    updated_server.server_version = Some(probed.server_version.clone());
+                    updated_server.reported_name = Some(probed.server_name.clone());
+                    updated_server.reported_version = Some(probed.server_version.clone());
                     updated_server.last_probed_at = Some(now);
                     updated_server.last_probe_error = None;
                     let draft_for_tracking = probed.oauth_session.clone();
@@ -357,7 +354,7 @@ pub(crate) fn install_wizard_callbacks(
                 Ok(()) => {
                     for (tool, decision) in &policy_overrides {
                         if let Err(e) = db
-                            .set_policy(&name, tool, *decision, DecisionSource::User)
+                            .set_tool_decision(&name, tool, *decision, DecisionSource::User)
                             .await
                         {
                             tracing::warn!(error = %e, tool = %tool, "policy override failed");
@@ -528,7 +525,7 @@ pub(crate) fn bearer_from_headers(headers: &[(String, String)]) -> Option<String
 
 /// Serialize a saved server's env/headers into the "k=v, k2=v2" string the
 /// wizard's env-row editor is populated from.
-pub(crate) fn env_field_from_server(server: &Server) -> String {
+pub(crate) fn env_field_from_server(server: &McpServer) -> String {
     if server.transport == TRANSPORT_HTTP {
         return headers_field_from_env(&server.env);
     }

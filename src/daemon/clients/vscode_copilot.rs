@@ -1,42 +1,29 @@
-//! VS Code Copilot config-path resolution (no global skills directory).
+//! VS Code Copilot — static client definition (no global skills directory).
 
 // Repo:   https://github.com/microsoft/vscode-copilot-chat
-// MCP:    <Code/User>/mcp.json — top-level `servers`; schema `{type:"http", url}`. Source: https://code.visualstudio.com/docs/copilot/reference/mcp-configuration
-// Skills: not supported (prompt files are workspace-scoped only: .github/prompts/*.prompt.md). Source: https://code.visualstudio.com/docs/copilot/customization/prompt-files
+// MCP:    <Code/User>/mcp.json — top-level `servers`; schema `{type:"http", url}`.
+// Skills: not supported (prompt files are workspace-scoped only).
 
-use std::path::{Path, PathBuf};
+use super::paths::PathSpec;
+use super::schema::{ConfigFormat, ConfigSpec};
 
-pub(crate) const IDE_NAME: &str = "VsCodeCopilot";
-pub(crate) const ICON_SVG: &[u8] = include_bytes!("../../../assets/client/copilot.svg");
-
-pub(crate) fn config_path_under(home: &Path) -> PathBuf {
-    // Linux-style fallback used by tests. Real per-OS resolution goes through
-    // dirs::config_dir() in config_path(), which picks Library/Application
-    // Support on macOS and %APPDATA% on Windows automatically.
-    home.join(".config")
-        .join("Code")
-        .join("User")
-        .join("mcp.json")
-}
-
-pub(crate) fn config_path() -> Option<PathBuf> {
-    let cfg = dirs::config_dir()?;
-    Some(cfg.join("Code").join("User").join("mcp.json"))
-}
-
-pub(super) static SPEC: Spec = Spec;
-
-pub(super) struct Spec;
-
-impl super::ClientSpec for Spec {
-    fn ide_name(&self) -> &'static str { IDE_NAME }
-    fn icon_svg(&self) -> &'static [u8] { ICON_SVG }
-    fn json_schema(&self) -> Option<super::JsonSchema> {
-        Some(super::JsonSchema { top_level_key: "servers", server_type: Some("http") })
-    }
-    fn config_path(&self) -> Option<PathBuf> { config_path() }
-    fn config_path_under(&self, home: &Path) -> PathBuf { config_path_under(home) }
-    // VS Code Copilot has no global skills directory (workspace-scoped only).
-    fn skills_dir(&self) -> Option<PathBuf> { None }
-    fn skills_dir_under(&self, _home: &Path) -> Option<PathBuf> { None }
-}
+pub static DEF: super::ClientDef = super::ClientDef {
+    id: "VsCodeCopilot",
+    display_name: "VS Code Copilot",
+    icon_svg: include_bytes!("../../../assets/client/copilot.svg"),
+    config: PathSpec::ConfigDir("Code/User/mcp.json"),
+    skills: None,
+    config_spec: ConfigSpec {
+        format: ConfigFormat::Jsonc,
+        key_path: &["servers"],
+        entry_template: r#"{"type":"http","url":"${url}"}"#,
+    },
+    binaries: &["code"],
+    #[cfg(target_os = "macos")]
+    mac_app: Some("Visual Studio Code.app"),
+    #[cfg(target_os = "windows")]
+    win_paths: &[
+        "$LOCALAPPDATA\\Programs\\Microsoft VS Code\\bin\\code.cmd",
+        "C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd",
+    ],
+};

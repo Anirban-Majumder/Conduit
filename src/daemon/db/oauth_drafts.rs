@@ -29,14 +29,17 @@ pub(super) fn list_oauth_drafts(conn: &Connection) -> Result<Vec<String>, DbErro
 
 impl Db {
     pub async fn insert_oauth_draft(&self, draft_uuid: String) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::InsertOAuthDraft { draft_uuid, reply }).await
+        self.send_cmd(|reply| DbCmd::InsertOAuthDraft { draft_uuid, reply })
+            .await
     }
 
     pub async fn delete_oauth_draft(&self, draft_uuid: String) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::DeleteOAuthDraft { draft_uuid, reply }).await
+        self.send_cmd(|reply| DbCmd::DeleteOAuthDraft { draft_uuid, reply })
+            .await
     }
 
     pub async fn list_oauth_drafts(&self) -> Result<Vec<String>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListOAuthDrafts { reply }).await
+        self.send_cmd(|reply| DbCmd::ListOAuthDrafts { reply })
+            .await
     }
 }

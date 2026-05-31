@@ -14,13 +14,13 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::daemon::approval::{ApprovalError, ApprovalOutcome, ApprovalRequest};
-use crate::daemon::db::types::{AuditDecision, AuditEntry, Decision, DecisionSource, Server};
+use crate::daemon::db::types::{AuditDecision, AuditEntry, Decision, DecisionSource, McpServer};
 use crate::daemon::errors::DbError;
 use crate::daemon::events::Event;
 use crate::daemon::http_server::{server_to_config, AppState};
+use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::manager::UpstreamError;
 use crate::daemon::upstream::probe::message_looks_like_auth_failure;
-use crate::daemon::time_util::now_unix_secs;
 
 #[derive(Debug)]
 pub enum ProxyOutcome {
@@ -58,7 +58,7 @@ pub async fn route_tool_call(
     state: &AppState,
     ide_key: &str,
     ide_name: &str,
-    server: &Server,
+    server: &McpServer,
     method: &str,
     params: Value,
 ) -> Result<ProxyOutcome, ProxyError> {
@@ -83,8 +83,8 @@ pub async fn route_tool_call(
         .to_string();
     let args_json = serde_json::to_string(&params).unwrap_or_else(|_| "null".to_string());
 
-    let (decision, source) = match state.db.get_policy(&server.name, &tool_name).await? {
-        Some(p) => (p.decision, p.decision_source),
+    let (decision, source) = match state.db.get_tool_decision(&server.name, &tool_name).await? {
+        Some(d) => (d, DecisionSource::User),
         None => (
             state.db.resolve_policy(&server.name, &tool_name).await?,
             DecisionSource::Default,
@@ -200,7 +200,7 @@ async fn forward_and_audit(
     state: &AppState,
     ide_key: &str,
     ide_name: &str,
-    server: &Server,
+    server: &McpServer,
     tool_name: &str,
     params: Value,
     args_json: &str,
@@ -303,9 +303,9 @@ async fn insert_audit(
     let entry = AuditEntry {
         id: None,
         ts: now_unix_secs(),
-        ide_key: Some(ide_key.to_string()),
-        ide_name: Some(ide_name.to_string()),
-        server: server.to_string(),
+        client_key: Some(ide_key.to_string()),
+        client_name: Some(ide_name.to_string()),
+        mcp_server: server.to_string(),
         tool: Some(tool.to_string()),
         decision,
         decision_source: source,
@@ -316,11 +316,12 @@ async fn insert_audit(
         error_code: None,
     };
     match state.db.insert_audit_entry(entry).await {
-        Ok(_) => { state.bus.publish(Event::AuditAppended); }
+        Ok(_) => {
+            state.bus.publish(Event::AuditAppended);
+        }
         Err(e) => tracing::warn!(error = %e, server, tool, "audit insert failed"),
     }
 }
-
 
 fn io_to_upstream(e: crate::daemon::http_server::ServerError) -> ProxyError {
     ProxyError::Upstream(UpstreamError::InitFailed(e.to_string()))
