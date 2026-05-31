@@ -8,7 +8,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmcp::ServiceError;
 use serde_json::Value;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -148,7 +147,7 @@ pub async fn probe_with_progress(
                         && bearer.is_none()
                         && looks_like_auth_failure(&e);
                     if !needs_oauth {
-                        return Err(map_connect_error(e));
+                        return Err(e.into());
                     }
                     emit(ProbeEvent::Phase(
                         "Sign in required — starting OAuth...".into(),
@@ -162,8 +161,7 @@ pub async fn probe_with_progress(
                         "Re-initializing with OAuth token...".into(),
                     ));
                     match http::connect_oauth(url, &draft, cancel.clone())
-                        .await
-                        .map_err(map_connect_error)?
+                        .await?
                     {
                         Some(c) => spawn_done(c, cancel.clone()).await?,
                         None => {
@@ -194,7 +192,7 @@ pub async fn probe_with_progress(
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 let _ignored = client.cancel().await;
-                return Err(map_tools_error(e));
+                return Err(e.into());
             }
             Err(_elapsed) => {
                 let _ignored = client.cancel().await;
@@ -300,7 +298,7 @@ async fn run_oauth_login(
         "Resolving authorization server...".into(),
     ));
     // `None` ⇒ rmcp builds its own client for discovery + DCR + token exchange.
-    let mut state = OAuthState::new(url, None).await.map_err(map_oauth_err)?;
+    let mut state = OAuthState::new(url, None).await?;
     // start_authorization discovers metadata (PRM → direct, no endpoint
     // guessing) then dynamically registers a client. Servers without a
     // registration_endpoint fail here; rmcp's OAuthState / OAuthClientConfig
@@ -308,10 +306,9 @@ async fn run_oauth_login(
     // deferral (documented in the README), not an oversight.
     state
         .start_authorization(&[], &redirect_uri, Some("Conduit"))
-        .await
-        .map_err(map_oauth_err)?;
+        .await?;
 
-    let authorize_url = state.get_authorization_url().await.map_err(map_oauth_err)?;
+    let authorize_url = state.get_authorization_url().await?;
     emit(ProbeEvent::AuthorizeUrl(authorize_url.clone()));
     if let Err(open_err) = open::that(&authorize_url) {
         tracing::warn!(error = %open_err, "browser launch failed");
@@ -323,10 +320,9 @@ async fn run_oauth_login(
     emit(ProbeEvent::Phase("Exchanging code for tokens...".into()));
     state
         .handle_callback(&code, &csrf)
-        .await
-        .map_err(map_oauth_err)?;
+        .await?;
 
-    let (client_id, token_response) = state.get_credentials().await.map_err(map_oauth_err)?;
+    let (client_id, token_response) = state.get_credentials().await?;
     if token_response.is_none() {
         return Err(ProbeError::OauthFlow(
             "authorization completed but no token was returned".into(),
@@ -349,15 +345,17 @@ async fn run_oauth_login(
     Ok(())
 }
 
-fn map_oauth_err(e: rmcp::transport::auth::AuthError) -> ProbeError {
-    use rmcp::transport::auth::AuthError;
-    match e {
-        AuthError::NoAuthorizationSupport => ProbeError::OauthRequired,
-        AuthError::RegistrationFailed(msg) => ProbeError::OauthFlow(format!(
-            "server does not support Dynamic Client Registration ({msg}); a \
-             pre-registered client_id is not yet supported"
-        )),
-        other => ProbeError::OauthFlow(other.to_string()),
+impl From<rmcp::transport::auth::AuthError> for ProbeError {
+    fn from(e: rmcp::transport::auth::AuthError) -> Self {
+        use rmcp::transport::auth::AuthError;
+        match e {
+            AuthError::NoAuthorizationSupport => ProbeError::OauthRequired,
+            AuthError::RegistrationFailed(msg) => ProbeError::OauthFlow(format!(
+                "server does not support Dynamic Client Registration ({msg}); a \
+                 pre-registered client_id is not yet supported"
+            )),
+            other => ProbeError::OauthFlow(other.to_string()),
+        }
     }
 }
 
@@ -379,7 +377,7 @@ where
         () = cancel.cancelled() => Err(ProbeError::Cancelled),
         r = tokio::time::timeout(CONNECT_TIMEOUT, &mut fut) => match r {
             Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(map_connect_error(e)),
+            Ok(Err(e)) => Err(e.into()),
             Err(_elapsed) => Err(ProbeError::InitTimeout(CONNECT_TIMEOUT)),
         },
     }
@@ -390,18 +388,22 @@ async fn spawn_done<T>(value: T, _cancel: CancellationToken) -> Result<T, ProbeE
     Ok(value)
 }
 
-fn map_connect_error(e: crate::daemon::upstream::manager::UpstreamError) -> ProbeError {
-    use crate::daemon::upstream::manager::UpstreamError;
-    match e {
-        UpstreamError::Io(io) => ProbeError::Connect(io.to_string()),
-        UpstreamError::InitFailed(msg) => ProbeError::InitRejected(msg),
-        UpstreamError::Rmcp(rmcp) => ProbeError::InitRejected(rmcp.to_string()),
-        other => ProbeError::Connect(other.to_string()),
+impl From<crate::daemon::upstream::manager::UpstreamError> for ProbeError {
+    fn from(e: crate::daemon::upstream::manager::UpstreamError) -> Self {
+        use crate::daemon::upstream::manager::UpstreamError;
+        match e {
+            UpstreamError::Io(io) => ProbeError::Connect(io.to_string()),
+            UpstreamError::InitFailed(msg) => ProbeError::InitRejected(msg),
+            UpstreamError::Rmcp(rmcp) => ProbeError::InitRejected(rmcp.to_string()),
+            other => ProbeError::Connect(other.to_string()),
+        }
     }
 }
 
-fn map_tools_error(e: ServiceError) -> ProbeError {
-    ProbeError::ToolsListFailed(e.to_string())
+impl From<rmcp::ServiceError> for ProbeError {
+    fn from(e: rmcp::ServiceError) -> Self {
+        ProbeError::ToolsListFailed(e.to_string())
+    }
 }
 
 #[cfg(test)]

@@ -205,21 +205,13 @@ impl UpstreamManager {
             return Err(e);
         }
 
-        let mut state = self.state.lock().await;
-        let peer = {
-            let Some(entry) = state.get_mut(&config.name) else {
-                self.record(&config.name, Some("crashed".into())).await;
-                return Err(UpstreamError::Crashed);
-            };
-            if entry.client.is_closed() {
-                state.remove(&config.name);
-                self.record(&config.name, Some("crashed".into())).await;
-                return Err(UpstreamError::Crashed);
+        let peer = match self.get_peer_for_call(&config.name).await {
+            Ok(p) => p,
+            Err(e) => {
+                self.record(&config.name, Some(e.to_string())).await;
+                return Err(e);
             }
-            entry.last_use = Instant::now();
-            entry.client.peer().clone()
         };
-        drop(state);
 
         let response = match peer.call_tool(request).await {
             Ok(call_result) => serde_json::to_value(call_result)?,
@@ -242,19 +234,7 @@ impl UpstreamManager {
     pub async fn list_tools(&self, config: &ServerConfig) -> Result<Value, UpstreamError> {
         self.ensure_running(config).await?;
 
-        let mut state = self.state.lock().await;
-        let peer = {
-            let Some(entry) = state.get_mut(&config.name) else {
-                return Err(UpstreamError::Crashed);
-            };
-            if entry.client.is_closed() {
-                state.remove(&config.name);
-                return Err(UpstreamError::Crashed);
-            }
-            entry.last_use = Instant::now();
-            entry.client.peer().clone()
-        };
-        drop(state);
+        let peer = self.get_peer_for_call(&config.name).await?;
 
         match peer.list_tools(None).await {
             Ok(list) => Ok(serde_json::to_value(list)?),
@@ -282,6 +262,22 @@ impl UpstreamManager {
         for (name, entry) in drained {
             cancel_entry(&name, entry).await;
         }
+    }
+
+    async fn get_peer_for_call(
+        &self,
+        server_name: &str,
+    ) -> Result<rmcp::service::Peer<rmcp::service::RoleClient>, UpstreamError> {
+        let mut state = self.state.lock().await;
+        let Some(entry) = state.get_mut(server_name) else {
+            return Err(UpstreamError::Crashed);
+        };
+        if entry.client.is_closed() {
+            state.remove(server_name);
+            return Err(UpstreamError::Crashed);
+        }
+        entry.last_use = Instant::now();
+        Ok(entry.client.peer().clone())
     }
 
     async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {
