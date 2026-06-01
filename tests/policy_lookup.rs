@@ -120,3 +120,29 @@ async fn reprobe_drops_decision_for_vanished_tool() {
     );
     assert_eq!(source, DecisionSource::Default);
 }
+
+#[tokio::test]
+async fn reprobe_preserves_decision_for_surviving_tool() {
+    // The re-probe upsert must NOT overwrite a user's decision on a tool that is
+    // still advertised. (Guards the `ON CONFLICT DO UPDATE` set-list in
+    // query_upsert_server_with_tools from regressing to `decision = excluded.decision`.)
+    let db = Db::spawn_in_memory().unwrap();
+    db.set_settings_kv("default_unknown_tool_policy", "ask")
+        .await
+        .unwrap();
+    seed_server(&db, "gmail", &["send", "read"]).await;
+    db.set_tool_decision("gmail", "send", Decision::Allow, DecisionSource::User)
+        .await
+        .unwrap();
+
+    // Re-probe with "send" STILL present (metadata refresh / discovered_at bump).
+    seed_server(&db, "gmail", &["send", "read"]).await;
+
+    let (decision, source) = db.resolve_policy("gmail", "send").await.unwrap();
+    assert_eq!(
+        decision,
+        Decision::Allow,
+        "surviving tool keeps its user decision"
+    );
+    assert_eq!(source, DecisionSource::User);
+}

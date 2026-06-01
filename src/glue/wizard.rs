@@ -227,6 +227,17 @@ pub(crate) fn install_wizard_callbacks(
                             }
                         })
                         .collect();
+                    // Pre-fill each tool's decision with the current GLOBAL default
+                    // (settings_kv.default_unknown_tool_policy, fallback Ask) so the
+                    // wizard explicitly pins new tools to it on save — e.g. a global
+                    // default of `deny` yields denied tools.
+                    let default_decision = db
+                        .get_settings_kv("default_unknown_tool_policy")
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|s| Decision::from_db_str(&s))
+                        .unwrap_or(Decision::Ask);
                     let tool_rows: Vec<ToolPolicyUiRow> = tools
                         .iter()
                         .map(|t| ToolPolicyUiRow {
@@ -234,7 +245,7 @@ pub(crate) fn install_wizard_callbacks(
                             description: SharedString::from(
                                 t.description.clone().unwrap_or_default(),
                             ),
-                            decision: SharedString::from("ask"),
+                            decision: SharedString::from(default_decision.as_db_str()),
                         })
                         .collect();
                     let mut updated_server = server_row;

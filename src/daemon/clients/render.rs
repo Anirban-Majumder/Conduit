@@ -123,6 +123,14 @@ pub fn render_servers(
     servers: &[String],
     port: u16,
 ) -> Result<(), ClientError> {
+    // An empty key_path would insert our entries at the file root, mangling the
+    // user's real editor config. A built-in's schema is a code-owned cache that
+    // should never be empty; if it is (corrupt row / unparsable schema_json that
+    // defaulted), fail closed rather than corrupt the file.
+    if schema.key_path.is_empty() {
+        return Err(ClientError::EmptyKeyPath);
+    }
+
     let entries: Vec<(String, Value)> = servers
         .iter()
         .map(|s| {
@@ -501,6 +509,27 @@ mod tests {
     fn tmp(name: &str) -> std::path::PathBuf {
         use crate::daemon::time_util::now_unix_nanos;
         std::env::temp_dir().join(format!("conduit-render-test-{name}-{}", now_unix_nanos()))
+    }
+
+    // Guard: an empty key_path (corrupt/defaulted schema) must NOT write our
+    // entries at the file root — it would mangle the user's real editor config.
+    #[test]
+    fn render_refuses_empty_key_path_and_leaves_file_untouched() {
+        let dir = tmp("empty-keypath");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"userSetting":"keep"}"#).unwrap();
+
+        let s = schema(ConfigFormat::Json, &[], json!({"url": "${url}"}));
+        let err = render_servers(&s, &path, "k0000000", &["gmail".to_string()], 9876);
+        assert!(matches!(err, Err(ClientError::EmptyKeyPath)));
+
+        // File is byte-for-byte untouched (no root-level junk written).
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"userSetting":"keep"}"#
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Rule 1: recursive substitution of the full token vocab at any depth,
