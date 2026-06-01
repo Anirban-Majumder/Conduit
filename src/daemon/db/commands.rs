@@ -235,17 +235,4 @@ pub enum DbCmd {
     ListSkills {
         reply: oneshot::Sender<Result<Vec<Skill>, DbError>>,
     },
-
-    // ── OAuth drafts ───────────────────────────────────────────────────
-    InsertOAuthDraft {
-        draft_uuid: String,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
-    DeleteOAuthDraft {
-        draft_uuid: String,
-        reply: oneshot::Sender<Result<(), DbError>>,
-    },
-    ListOAuthDrafts {
-        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
-    },
 }

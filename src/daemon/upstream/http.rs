@@ -1,10 +1,11 @@
 //! Streamable-HTTP transport for HTTP MCP upstreams.
 //!
-//! `connect` handles static-bearer / no-auth servers; `connect_oauth` drives
-//! the rmcp `AuthClient` path against credentials in `KeyringCredentialStore`,
-//! which auto-refreshes tokens. A keyring miss or read failure deliberately
-//! falls through to the non-OAuth path so a broken keyring can't brick plain
-//! HTTP servers.
+//! `connect` handles static-bearer / no-auth servers; `connect_with_store`
+//! drives the rmcp `AuthClient` path against any `CredentialStore` (keyring for
+//! saved servers via `connect_oauth`, in-memory during the Add-Server probe),
+//! auto-refreshing tokens. A store miss or read failure deliberately falls
+//! through to the non-OAuth path so a broken keyring can't brick plain HTTP
+//! servers.
 
 use rmcp::service::{serve_client_with_ct, RoleClient, RunningService};
 use rmcp::transport::auth::{AuthClient, AuthorizationManager, CredentialStore};
@@ -39,30 +40,31 @@ pub async fn connect(
     Ok(client)
 }
 
-/// Connect an OAuth upstream from stored credentials.
+/// Connect an OAuth upstream from credentials held in `store`.
 ///
-/// Returns `Ok(None)` when no credentials exist for `server` (caller falls back
-/// to static-bearer / no-auth). rmcp's `AuthClient` attaches the access token
-/// to every request and refreshes transparently, persisting through
-/// `KeyringCredentialStore`.
-pub async fn connect_oauth(
+/// Returns `Ok(None)` when the store holds no usable credentials (caller falls
+/// back to static-bearer / no-auth). rmcp's `AuthClient` attaches the access
+/// token to every request and refreshes transparently, persisting through the
+/// store. `label` names the upstream (server name, or draft name during a probe)
+/// for the credential-read-failure log.
+pub async fn connect_with_store<S: CredentialStore + 'static>(
     url: &str,
-    server: &str,
+    store: S,
+    label: &str,
     cancel: CancellationToken,
 ) -> Result<Option<HttpClient>, UpstreamError> {
-    // Decide OAuth-ness from the keyring first, and treat *both* a miss and a
+    // Decide OAuth-ness from the store first, and treat *both* a miss and a
     // read failure as "not OAuth here" → fall through to the static-bearer /
     // no-auth path. A broken/absent keyring (e.g. no gnome-keyring on Linux)
     // must not brick plain HTTP servers — matches pre-migration behavior, where
     // a keyring miss or error simply meant "no token". Loading here also warms
     // the store cache so the manager's load below is a cache hit, not a second
     // keyring round-trip.
-    let store = KeyringCredentialStore::new(server);
     match store.load().await {
         Ok(Some(creds)) if creds.token_response.is_some() => {}
         Ok(_) => return Ok(None),
         Err(e) => {
-            tracing::warn!(server = %server, error = %e, "OAuth credential read failed; treating as non-OAuth");
+            tracing::warn!(server = %label, error = %e, "OAuth credential read failed; treating as non-OAuth");
             return Ok(None);
         }
     }
@@ -92,4 +94,13 @@ pub async fn connect_oauth(
         .await
         .map_err(|e| UpstreamError::InitFailed(e.to_string()))?;
     Ok(Some(client))
+}
+
+/// Connect a saved OAuth upstream from its keyring-backed credentials.
+pub async fn connect_oauth(
+    url: &str,
+    server: &str,
+    cancel: CancellationToken,
+) -> Result<Option<HttpClient>, UpstreamError> {
+    connect_with_store(url, KeyringCredentialStore::new(server), server, cancel).await
 }

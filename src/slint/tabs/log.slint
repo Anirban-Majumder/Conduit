@@ -244,5 +244,9 @@ export component LogTab inherits Rectangle {
                 }
             }
         }
+
+        // Spacer absorbs the vertical slack (no Flickable here, unlike Servers/Editors)
+        // so rows stay top-aligned and the status strip drops to the window bottom.
+        Rectangle { vertical-stretch: 1; }
     }
 }

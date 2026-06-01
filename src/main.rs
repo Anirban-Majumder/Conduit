@@ -105,43 +105,14 @@ fn main() -> Result<()> {
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
 
-    // Purge orphaned OAuth draft tokens from abandoned wizards, and clear any
-    // pre-migration token entries for saved servers (D6 — the old 4-entry
-    // format is unreadable now, so those servers re-login; this just tidies the
-    // stale keyring entries. Idempotent: it only removes legacy suffixes, never
-    // the current `:cred` blob).
+    // Clear any pre-migration OAuth token entries for saved servers (D6 — the
+    // old 4-entry format is unreadable now, so those servers re-login; this just
+    // tidies the stale keyring entries. Idempotent: it only removes legacy
+    // suffixes, never the current `:cred` blob).
     {
-        let db_purge = db.clone();
+        let db_cleanup = db.clone();
         worker.handle().spawn(async move {
-            match db_purge.list_oauth_drafts().await {
-                Ok(drafts) if !drafts.is_empty() => {
-                    let drafts_for_purge = drafts.clone();
-                    let purged = match tokio::task::spawn_blocking(move || {
-                        conduit::daemon::upstream::oauth::purge_draft_oauth_tokens(
-                            &drafts_for_purge,
-                        )
-                    })
-                    .await
-                    {
-                        Ok(n) => n,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "purge_draft_oauth_tokens task panicked");
-                            0
-                        }
-                    };
-                    if purged > 0 {
-                        tracing::info!(count = purged, "purged orphaned OAuth draft tokens");
-                    }
-                    // Clear the tracking entries regardless — tokens are gone.
-                    for d in &drafts {
-                        if let Err(e) = db_purge.delete_oauth_draft(d.clone()).await {
-                            tracing::debug!(draft = %d, error = %e, "clear draft tracking failed");
-                        }
-                    }
-                }
-                _ => {}
-            }
-            if let Ok(servers) = db_purge.list_servers().await {
+            if let Ok(servers) = db_cleanup.list_servers().await {
                 let names: Vec<String> = servers.into_iter().map(|s| s.name).collect();
                 let cleanup = tokio::task::spawn_blocking(move || {
                     for name in &names {

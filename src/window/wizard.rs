@@ -2,14 +2,16 @@
 //!
 //! Drives the multi-step Slint dialog: step 1 collects the form, `on_start_probe`
 //! connects/initializes the upstream (streaming OAuth/phase progress to the UI),
-//! and `on_wizard_save` promotes draft OAuth tokens to the canonical server name
-//! and persists. `PendingWizard` (behind a `std::sync::Mutex`) stages the probed
-//! server between steps. The `*_field` / `*_picker` helpers convert UI strings to
-//! domain types.
+//! and `on_wizard_save` writes any in-memory OAuth credentials to the keyring
+//! under the server name and persists. `PendingWizard` (behind a
+//! `std::sync::Mutex`) stages the probed server — including freshly-minted OAuth
+//! credentials — between steps. The `*_field` / `*_picker` helpers convert UI
+//! strings to domain types.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
+use rmcp::transport::auth::StoredCredentials;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
@@ -35,7 +37,7 @@ struct PendingWizard {
     server: Option<McpServer>,
     tools: Vec<DbMcpTool>,
     descriptions: std::collections::HashMap<String, String>,
-    oauth_session: Option<String>,
+    oauth_credentials: Option<StoredCredentials>,
 }
 
 #[expect(
@@ -253,18 +255,11 @@ pub(crate) fn install_wizard_callbacks(
                     updated_server.reported_version = Some(probed.server_version.clone());
                     updated_server.last_probed_at = Some(now);
                     updated_server.last_probe_error = None;
-                    let draft_for_tracking = probed.oauth_session.clone();
                     if let Ok(mut guard) = pending.lock() {
                         guard.server = Some(updated_server);
                         guard.tools = tools;
                         guard.descriptions = descriptions;
-                        guard.oauth_session = probed.oauth_session;
-                    }
-                    // Track the draft in DB so startup can purge abandoned drafts.
-                    if let Some(session) = draft_for_tracking {
-                        if let Err(e) = db.insert_oauth_draft(session).await {
-                            tracing::debug!(error = %e, "track oauth draft failed");
-                        }
+                        guard.oauth_credentials = probed.oauth_credentials;
                     }
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_add_server_busy(false);
@@ -325,38 +320,28 @@ pub(crate) fn install_wizard_callbacks(
         let pending = pending_for_save.clone();
         let tools = staged.tools.clone();
         let name = server_row.name.clone();
-        let oauth_session = staged.oauth_session.clone();
+        let oauth_credentials = staged.oauth_credentials.clone();
         let server_to_save = server_row;
         rt_for_save.spawn(async move {
-            // Promote OAuth tokens from draft session → canonical server name.
-            tracing::info!(
-                server = %name,
-                has_oauth_session = oauth_session.is_some(),
-                "wizard save: starting OAuth token promotion",
-            );
-            if let Some(draft) = oauth_session.as_deref() {
-                let draft = draft.to_string();
+            // Persist the wizard's in-memory OAuth credentials to the keyring
+            // under the canonical server name — present only if this server ran
+            // OAuth during Test connection.
+            if let Some(cred) = oauth_credentials {
                 let server = name.clone();
                 match tokio::task::spawn_blocking(move || {
-                    conduit::daemon::secrets::promote_oauth_tokens(&draft, &server)
+                    conduit::daemon::secrets::store_oauth_cred(&server, &cred)
                 })
                 .await
                 {
-                    Ok(Ok(())) => {
-                        if let Some(ref session) = oauth_session {
-                            if let Err(e) = db.delete_oauth_draft(session.clone()).await {
-                                tracing::debug!(error = %e, "delete oauth draft after save failed");
-                            }
-                        }
-                    }
+                    Ok(Ok(())) => {}
                     Ok(Err(secrets_err)) => tracing::error!(
                         server = %name,
                         error = %secrets_err,
-                        "oauth token promotion failed — server will save without working auth",
+                        "oauth credential save failed — server will save without working auth",
                     ),
                     Err(join_err) => tracing::warn!(
                         error = %join_err,
-                        "oauth token promotion join failed",
+                        "oauth credential save join failed",
                     ),
                 }
             }
@@ -468,7 +453,6 @@ pub(crate) fn build_draft(
         name: name.to_string(),
         transport,
         lifecycle_seconds,
-        draft_session: uuid::Uuid::new_v4().to_string(),
     }
 }
 

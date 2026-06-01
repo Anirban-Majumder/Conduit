@@ -23,7 +23,6 @@ use super::clients::{
     query_project_builtin, query_set_client_tracked, query_set_managed_servers, query_touch_client,
 };
 use super::migrations::{query_list_columns, query_list_tables, query_schema_version};
-use super::oauth_drafts::{delete_oauth_draft, insert_oauth_draft, list_oauth_drafts};
 use super::servers::{
     query_clear_server_auth_error, query_commit_cascade_delete, query_delete_server,
     query_get_server, query_get_tool_decision, query_list_server_tools, query_list_servers,
@@ -315,17 +314,6 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
         }
         DbCmd::ListSkills { reply } => {
             reply.send(query_list_skills(conn)).ok();
-        }
-
-        // ── OAuth drafts ───────────────────────────────────────────────
-        DbCmd::InsertOAuthDraft { draft_uuid, reply } => {
-            reply.send(insert_oauth_draft(conn, &draft_uuid)).ok();
-        }
-        DbCmd::DeleteOAuthDraft { draft_uuid, reply } => {
-            reply.send(delete_oauth_draft(conn, &draft_uuid)).ok();
-        }
-        DbCmd::ListOAuthDrafts { reply } => {
-            reply.send(list_oauth_drafts(conn)).ok();
         }
     }
 }

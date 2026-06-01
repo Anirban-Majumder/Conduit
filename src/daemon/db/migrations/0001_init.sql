@@ -130,8 +130,3 @@ CREATE TABLE IF NOT EXISTS managed_skill (                          -- replaces 
     PRIMARY KEY (client_id, scope, skill_dir)
 );
 CREATE INDEX IF NOT EXISTS idx_managed_skill_dir ON managed_skill(skill_dir);
-
-CREATE TABLE IF NOT EXISTS pending_oauth_drafts (
-    draft_uuid TEXT PRIMARY KEY,
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-);

@@ -14,7 +14,6 @@ mod clients;
 mod commands;
 mod dispatch;
 mod migrations;
-mod oauth_drafts;
 mod servers;
 mod settings;
 mod skills;
