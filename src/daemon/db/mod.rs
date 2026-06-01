@@ -34,9 +34,9 @@ use approvals::{
 };
 use audit::{query_insert_audit_entry, query_purge_old_audit_entries, query_query_audit_log};
 use clients::{
-    query_get_client, query_list_all_managed_mcp, query_list_clients, query_list_managed_servers,
-    query_list_tracked_clients, query_lookup_client_key, query_project_builtin,
-    query_set_client_tracked, query_set_managed_servers,
+    query_get_client, query_list_clients, query_list_clients_managing_server,
+    query_list_managed_servers, query_list_tracked_clients, query_lookup_client_key,
+    query_project_builtin, query_set_client_tracked, query_set_managed_servers, query_touch_client,
 };
 use migrations::{init_conn, query_list_columns, query_list_tables, query_schema_version};
 
@@ -51,9 +51,10 @@ use servers::{
 };
 use settings::{query_get_settings_kv, query_set_settings_kv};
 use skills::{
-    query_delete_skill, query_delete_skill_repo, query_get_skill, query_list_skill_repos,
-    query_list_skills, query_set_skill_repo_enabled, query_set_skill_targets,
-    query_upsert_skill_repo, query_upsert_skill_with_targets,
+    query_add_skill_target, query_delete_skill, query_delete_skill_repo, query_get_skill,
+    query_list_skill_repos, query_list_skills, query_remove_skill_target,
+    query_set_skill_repo_enabled, query_set_skill_targets, query_upsert_skill_metadata,
+    query_upsert_skill_repo,
 };
 
 const CMD_CHANNEL_DEPTH: usize = 64;
@@ -275,6 +276,9 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
                 ))
                 .ok();
         }
+        DbCmd::TouchClient { id, reply } => {
+            reply.send(query_touch_client(conn, &id)).ok();
+        }
         DbCmd::GetClient { id, reply } => {
             reply.send(query_get_client(conn, &id)).ok();
         }
@@ -306,8 +310,10 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
                 .send(query_set_managed_servers(conn, &client_id, &server_names))
                 .ok();
         }
-        DbCmd::ListAllManagedMcp { reply } => {
-            reply.send(query_list_all_managed_mcp(conn)).ok();
+        DbCmd::ListClientsManagingServer { server_name, reply } => {
+            reply
+                .send(query_list_clients_managing_server(conn, &server_name))
+                .ok();
         }
 
         // ── Approvals ──────────────────────────────────────────────────
@@ -386,10 +392,8 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
                 .send(query_set_skill_repo_enabled(conn, &owner, &name, enabled))
                 .ok();
         }
-        DbCmd::UpsertSkillWithTargets { skill, reply } => {
-            reply
-                .send(query_upsert_skill_with_targets(conn, &skill))
-                .ok();
+        DbCmd::UpsertSkillMetadata { skill, reply } => {
+            reply.send(query_upsert_skill_metadata(conn, &skill)).ok();
         }
         DbCmd::SetSkillTargets {
             directory,
@@ -398,6 +402,24 @@ fn dispatch(conn: &Connection, cmd: DbCmd) {
         } => {
             reply
                 .send(query_set_skill_targets(conn, &directory, &targets))
+                .ok();
+        }
+        DbCmd::AddSkillTarget {
+            directory,
+            client_id,
+            reply,
+        } => {
+            reply
+                .send(query_add_skill_target(conn, &directory, &client_id))
+                .ok();
+        }
+        DbCmd::RemoveSkillTarget {
+            directory,
+            client_id,
+            reply,
+        } => {
+            reply
+                .send(query_remove_skill_target(conn, &directory, &client_id))
                 .ok();
         }
         DbCmd::DeleteSkill { directory, reply } => {

@@ -300,7 +300,13 @@ impl SkillManager {
             installed_at: now_unix_secs(),
             targets: normalized_targets.clone(),
         };
-        self.db.upsert_skill_with_targets(skill.clone()).await?;
+        // Metadata and targets are written separately: a re-install refresh
+        // must not clobber targets the user later changed. Here the caller's
+        // `targets` IS the intended set, so set them explicitly after metadata.
+        self.db.upsert_skill_metadata(skill.clone()).await?;
+        self.db
+            .set_skill_targets(&install_name, normalized_targets.clone())
+            .await?;
 
         // First push every requested target; then prune anything we previously
         // had but were just told to remove. sync_to_target is std::fs heavy
@@ -397,7 +403,9 @@ impl SkillManager {
                 installed_at: now,
                 targets: Vec::new(),
             };
-            if let Err(e) = self.db.upsert_skill_with_targets(skill).await {
+            // Metadata-only: a locally-discovered skill starts with zero
+            // targets and must never disturb existing managed_skill rows.
+            if let Err(e) = self.db.upsert_skill_metadata(skill).await {
                 tracing::warn!(error = %e, skill = %name, "register_local_skills failed");
                 continue;
             }

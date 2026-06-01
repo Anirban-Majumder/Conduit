@@ -1,9 +1,21 @@
 # DB + Client/Editor Rework — Implementation Plan
 
-Status: **LOCKED — ready for Phase 1.** Schema + types are the lockable contract; the build
-proceeds in phases against this fixed target. Conduit is pre-v0 with **no real user data**, so
-this is a clean reset: local `state.db` is wiped on first run of the new schema, and there is
-**no back-compat / migration-shim code** for the prior schema.
+Status: **Phases 1–4 COMPLETE + green.** Schema, the pure-data `ClientDef` catalog, the unified
+renderer (`render.rs` / `ResolvedClient` / `project.rs` / `detect.rs`), the 2-tier resolver, the
+migration seam + `foreign_key_check`, the skills write-path split, and the cascade re-derivation
+all landed. `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and the full test
+suite (211 tests) are green. The three D2 behavioral gates pass — the `managed_skill` resync gate
+and the cascade re-derivation were both verified red-against-the-bug first.
+
+**Deferred (Phase 5, genuinely new features — not regressions):** custom-client declare-directly
+add/edit UI + its DB CRUD (no caller yet), and directory-scope UI + `project_config_rel` /
+`skills_project_rel` columns. The schema reserves `scope` for these; adding them is additive.
+Also intentionally left: the cosmetic health-event field names (`Event::AuthFailure{server}` etc.)
+were NOT renamed — they have no DB pairing and renaming is churn for zero correctness value.
+
+Conduit is pre-v0 with **no real user data**, so this is a clean reset: local `state.db` is wiped
+on first run of the new schema, and there is **no back-compat / migration-shim code** for the prior
+schema.
 
 ## Locked decisions
 

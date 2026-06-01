@@ -1,3 +1,8 @@
+//! Renderer fidelity gate (§3): the one `render`/`purge` path must reproduce
+//! every built-in's exact MCP-config output, preserve user entries, and obey
+//! the four pinned rules. Drives the real `BUILTINS` schemas, not hand-rolled
+//! ones, so a DEF drift is caught here.
+
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -8,18 +13,19 @@
 
 use std::path::PathBuf;
 
-use conduit::daemon::clients::{
-    purge_one_server_for_ide, purge_uniform_mcp_servers, read_raw, validate_json, write_raw,
-    write_uniform_mcp_servers, IdeKind, JsonSchema,
-};
+use conduit::daemon::clients::render::{purge_mcp, purge_one, render_servers};
+use conduit::daemon::clients::schema::ConfigSchema;
+use conduit::daemon::clients::{builtin_by_id, read_raw, validate_json, write_raw};
 use serde_json::json;
 
-// Cursor's shape: top-level `mcpServers`, no `type` field. The shared JSON
-// helpers used to hardcode this; the tests still exercise that shape.
-const CURSOR_SCHEMA: JsonSchema = JsonSchema {
-    top_level_key: "mcpServers",
-    server_type: None,
-};
+/// The `ConfigSchema` for a built-in, as projected into the DB.
+fn schema_of(id: &str) -> ConfigSchema {
+    ConfigSchema::from(&builtin_by_id(id).expect("known built-in").config_spec)
+}
+
+fn cursor_schema() -> ConfigSchema {
+    schema_of("Cursor")
+}
 
 fn fresh_tmp(name: &str) -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,7 +33,7 @@ fn fresh_tmp(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("conduit-ide-writer-{name}-{ns}"))
+    std::env::temp_dir().join(format!("conduit-client-writer-{name}-{ns}"))
 }
 
 #[test]
@@ -36,9 +42,9 @@ fn write_creates_fresh_file_with_our_entries() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mcp.json");
 
-    write_uniform_mcp_servers(
+    render_servers(
+        &cursor_schema(),
         &path,
-        &CURSOR_SCHEMA,
         "key12345",
         &["gmail".to_string()],
         9876,
@@ -51,7 +57,6 @@ fn write_creates_fresh_file_with_our_entries() {
         written["mcpServers"]["gmail"]["url"],
         "http://127.0.0.1:9876/key12345/gmail/mcp"
     );
-
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -63,15 +68,13 @@ fn write_preserves_users_other_top_level_keys_and_servers() {
 
     let existing = json!({
         "userSetting": "do not touch",
-        "mcpServers": {
-            "user-server": { "command": "their-binary" }
-        }
+        "mcpServers": { "user-server": { "command": "their-binary" } }
     });
     std::fs::write(&path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
 
-    write_uniform_mcp_servers(
+    render_servers(
+        &cursor_schema(),
         &path,
-        &CURSOR_SCHEMA,
         "ourkey00",
         &["gmail".to_string()],
         9876,
@@ -85,7 +88,6 @@ fn write_preserves_users_other_top_level_keys_and_servers() {
         .as_str()
         .unwrap()
         .contains("ourkey00"));
-
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -96,9 +98,9 @@ fn write_refuses_to_clobber_invalid_json() {
     let path = dir.join("mcp.json");
     std::fs::write(&path, b"{this is not json").unwrap();
 
-    let result = write_uniform_mcp_servers(
+    let result = render_servers(
+        &cursor_schema(),
         &path,
-        &CURSOR_SCHEMA,
         "anykey00",
         &["gmail".to_string()],
         9876,
@@ -107,7 +109,6 @@ fn write_refuses_to_clobber_invalid_json() {
 
     let raw = std::fs::read(&path).unwrap();
     assert_eq!(raw, b"{this is not json", "should not clobber user's file");
-
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -117,27 +118,25 @@ fn purge_removes_only_our_entries() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mcp.json");
 
-    write_uniform_mcp_servers(
+    render_servers(
+        &cursor_schema(),
         &path,
-        &CURSOR_SCHEMA,
         "ourkey00",
         &["gmail".to_string(), "github".to_string()],
         9876,
     )
     .unwrap();
-    // Splice in a user-added server alongside ours
     let mut current: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     current["mcpServers"]["user-server"] = json!({ "command": "their-bin" });
     std::fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
 
-    purge_uniform_mcp_servers(&path, &CURSOR_SCHEMA, "ourkey00", 9876).unwrap();
+    purge_mcp(&cursor_schema(), &path, "ourkey00", 9876).unwrap();
 
     let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(after["mcpServers"]["gmail"].is_null());
     assert!(after["mcpServers"]["github"].is_null());
     assert!(after["mcpServers"]["user-server"]["command"] == "their-bin");
-
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -145,7 +144,7 @@ fn purge_removes_only_our_entries() {
 fn purge_of_missing_file_is_idempotent() {
     let dir = fresh_tmp("missing");
     let path = dir.join("mcp.json");
-    purge_uniform_mcp_servers(&path, &CURSOR_SCHEMA, "key12345", 9876).unwrap();
+    purge_mcp(&cursor_schema(), &path, "key12345", 9876).unwrap();
 }
 
 #[test]
@@ -153,16 +152,16 @@ fn purge_one_server_drops_just_that_entry() {
     let dir = fresh_tmp("purge-one");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mcp.json");
-    write_uniform_mcp_servers(
+    render_servers(
+        &cursor_schema(),
         &path,
-        &CURSOR_SCHEMA,
         "abcd1234",
         &["gmail".to_string(), "github".to_string()],
         9876,
     )
     .unwrap();
 
-    purge_one_server_for_ide(IdeKind::Cursor, &path, 9876, "abcd1234", "gmail").unwrap();
+    purge_one(&cursor_schema(), &path, "abcd1234", "gmail", 9876).unwrap();
 
     let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(after["mcpServers"]["gmail"].is_null());
@@ -170,37 +169,13 @@ fn purge_one_server_drops_just_that_entry() {
 }
 
 #[test]
-fn purge_one_keeps_top_level_settings() {
-    let dir = fresh_tmp("purge-top-level");
+fn purge_one_keeps_other_routers_and_stdio_entries() {
+    let dir = fresh_tmp("purge-keep");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("mcp.json");
-    write_uniform_mcp_servers(
+    render_servers(
+        &cursor_schema(),
         &path,
-        &CURSOR_SCHEMA,
-        "k0000000",
-        &["gmail".to_string()],
-        9876,
-    )
-    .unwrap();
-    let mut cur: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    cur["editor"] = json!({ "fontSize": 14 });
-    std::fs::write(&path, serde_json::to_vec_pretty(&cur).unwrap()).unwrap();
-
-    purge_one_server_for_ide(IdeKind::Cursor, &path, 9876, "k0000000", "gmail").unwrap();
-
-    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(after["editor"]["fontSize"], 14);
-}
-
-#[test]
-fn purge_one_keeps_other_routers() {
-    let dir = fresh_tmp("purge-other-router");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("mcp.json");
-    write_uniform_mcp_servers(
-        &path,
-        &CURSOR_SCHEMA,
         "ourskey0",
         &["gmail".to_string()],
         9876,
@@ -208,40 +183,17 @@ fn purge_one_keeps_other_routers() {
     .unwrap();
     let mut cur: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    cur["mcpServers"]["other"] = json!({
-        "url": "http://localhost:9999/other/svc/mcp"
-    });
-    std::fs::write(&path, serde_json::to_vec_pretty(&cur).unwrap()).unwrap();
-
-    purge_one_server_for_ide(IdeKind::Cursor, &path, 9876, "ourskey0", "gmail").unwrap();
-
-    let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert!(after["mcpServers"]["gmail"].is_null());
-    assert!(after["mcpServers"]["other"]["url"].is_string());
-}
-
-#[test]
-fn purge_one_keeps_stdio_entries() {
-    let dir = fresh_tmp("purge-stdio");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("mcp.json");
-    write_uniform_mcp_servers(
-        &path,
-        &CURSOR_SCHEMA,
-        "k0000000",
-        &["gmail".to_string()],
-        9876,
-    )
-    .unwrap();
-    let mut cur: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    cur["editor"] = json!({ "fontSize": 14 });
+    cur["mcpServers"]["other"] = json!({ "url": "http://localhost:9999/other/svc/mcp" });
     cur["mcpServers"]["my-custom"] = json!({ "command": "/usr/local/bin/x" });
     std::fs::write(&path, serde_json::to_vec_pretty(&cur).unwrap()).unwrap();
 
-    purge_one_server_for_ide(IdeKind::Cursor, &path, 9876, "k0000000", "gmail").unwrap();
+    purge_one(&cursor_schema(), &path, "ourskey0", "gmail", 9876).unwrap();
 
     let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(after["mcpServers"]["gmail"].is_null());
+    assert_eq!(after["editor"]["fontSize"], 14);
+    assert!(after["mcpServers"]["other"]["url"].is_string());
     assert_eq!(
         after["mcpServers"]["my-custom"]["command"],
         "/usr/local/bin/x"
@@ -276,26 +228,16 @@ fn read_raw_returns_none_for_missing_file() {
     assert!(read_raw(&path).unwrap().is_none());
 }
 
-// Per-IDE schema sanity checks. Each IDE's docs / source dictates a specific
-// top-level key + optional `type` discriminator. If any of these regress, the
-// IDE rejects the file at load time (OpenCode in particular hard-errors).
-#[test]
-fn write_emits_claude_code_shape_with_type_http() {
-    use conduit::daemon::clients::config_path_under;
-    let home = fresh_tmp("ide-claude-code");
-    std::fs::create_dir_all(&home).unwrap();
-    let cfg = config_path_under(IdeKind::ClaudeCode, &home);
-    // Sanity: Claude Code reads ~/.claude.json (not ~/.claude/claude_desktop_config.json).
-    assert_eq!(cfg, home.join(".claude.json"));
-    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+// ── Built-in shape fidelity: each DEF reproduces its exact entry JSON/TOML ───
 
-    // Exercise the shared helper with the same schema the dispatcher uses.
-    write_uniform_mcp_servers(
+#[test]
+fn claude_code_emits_type_http_under_mcpservers() {
+    let dir = fresh_tmp("bi-claude");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.json");
+    render_servers(
+        &schema_of("ClaudeCode"),
         &cfg,
-        &JsonSchema {
-            top_level_key: "mcpServers",
-            server_type: Some("http"),
-        },
         "claude123",
         &["gmail".to_string()],
         9876,
@@ -307,20 +249,17 @@ fn write_emits_claude_code_shape_with_type_http() {
         v["mcpServers"]["gmail"]["url"],
         "http://127.0.0.1:9876/claude123/gmail/mcp"
     );
-    std::fs::remove_dir_all(&home).ok();
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
-fn write_emits_vscode_copilot_shape_servers_with_type_http() {
-    let dir = fresh_tmp("ide-vscode");
+fn vscode_copilot_uses_servers_key_with_type_http() {
+    let dir = fresh_tmp("bi-vscode");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("mcp.json");
-    write_uniform_mcp_servers(
+    render_servers(
+        &schema_of("VsCodeCopilot"),
         &cfg,
-        &JsonSchema {
-            top_level_key: "servers",
-            server_type: Some("http"),
-        },
         "vsc12345",
         &["gmail".to_string()],
         9876,
@@ -334,16 +273,13 @@ fn write_emits_vscode_copilot_shape_servers_with_type_http() {
 }
 
 #[test]
-fn write_emits_opencode_shape_mcp_with_type_remote() {
-    let dir = fresh_tmp("ide-opencode");
+fn opencode_uses_mcp_key_with_type_remote() {
+    let dir = fresh_tmp("bi-opencode");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("opencode.json");
-    write_uniform_mcp_servers(
+    render_servers(
+        &schema_of("OpenCode"),
         &cfg,
-        &JsonSchema {
-            top_level_key: "mcp",
-            server_type: Some("remote"),
-        },
         "opcd1234",
         &["gmail".to_string()],
         9876,
@@ -357,13 +293,13 @@ fn write_emits_opencode_shape_mcp_with_type_remote() {
 }
 
 #[test]
-fn write_emits_cursor_shape_without_type_field() {
-    let dir = fresh_tmp("ide-cursor");
+fn cursor_emits_url_only_no_type_field() {
+    let dir = fresh_tmp("bi-cursor");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("mcp.json");
-    write_uniform_mcp_servers(
+    render_servers(
+        &cursor_schema(),
         &cfg,
-        &CURSOR_SCHEMA,
         "cur12345",
         &["gmail".to_string()],
         9876,
@@ -372,5 +308,25 @@ fn write_emits_cursor_shape_without_type_field() {
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&cfg).unwrap()).unwrap();
     assert_eq!(v["mcpServers"]["gmail"]["type"], serde_json::Value::Null);
     assert!(v["mcpServers"]["gmail"]["url"].is_string());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn codex_emits_toml_under_mcp_servers_table() {
+    let dir = fresh_tmp("bi-codex");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.toml");
+    render_servers(
+        &schema_of("Codex"),
+        &cfg,
+        "cdx12345",
+        &["gmail".to_string()],
+        9876,
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    let v: toml::Value = toml::from_str(&text).unwrap();
+    let url = v["mcp_servers"]["gmail"]["url"].as_str().unwrap();
+    assert_eq!(url, "http://127.0.0.1:9876/cdx12345/gmail/mcp");
     std::fs::remove_dir_all(&dir).ok();
 }

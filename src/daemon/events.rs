@@ -16,9 +16,9 @@ const BUS_CAPACITY: usize = 256;
 pub enum Event {
     ApprovalPending {
         id: String,
-        server: String,
+        mcp_server: String,
         tool: String,
-        ide_key: String,
+        client_key: String,
     },
     ApprovalResolved {
         id: String,

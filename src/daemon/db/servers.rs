@@ -5,7 +5,7 @@
 //! auth-error transition tracking, and `commit_cascade_delete` which removes a
 //! server while trimming client entries and cancelling its pending approvals.
 
-use super::{bind_in_clause, now_unix, Db, DbCmd};
+use super::{bind_in_clause, Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::daemon::db::types::{Decision, DecisionSource, EnvEntry, McpServer, McpTool};
@@ -85,10 +85,11 @@ pub(super) fn query_rename_server(conn: &Connection, old: &str, new: &str) -> Re
     Ok(())
 }
 
-/// Atomic save: upsert server + sync mcp_tool rows to the probed set.
+/// Atomic save: upsert server + sync `mcp_tool` rows to the probed set.
 ///
-/// For each tool, if no existing decision is set, defaults to `ask`. Tools that
-/// vanished from the probe are deleted (CASCADE removes them from mcp_tool).
+/// Existing per-tool decisions are preserved on re-probe; a freshly-probed tool
+/// stores `decision = NULL` (inherit the global default). Tools that vanished
+/// from the probe are deleted (delete-on-absent), dropping their decision too.
 pub(super) fn query_upsert_server_with_tools(
     conn: &Connection,
     server: &McpServer,
@@ -126,7 +127,7 @@ pub(super) fn query_upsert_server_with_tools(
             &tool.description,
             &tool.input_schema_json,
             tool.discovered_at,
-            tool.decision.map(|d| d.as_db_str()),
+            tool.decision.map(Decision::as_db_str),
         ])?;
     }
     tx.commit()?;
@@ -146,7 +147,7 @@ pub(super) fn query_list_server_tools(
 }
 
 /// Set the decision for a single (server, tool) pair. If the tool doesn't exist
-/// in mcp_tool yet, this is a no-op (caller should probe first).
+/// in `mcp_tool` yet, this is a no-op (caller should probe first).
 pub(super) fn query_set_tool_decision(
     conn: &Connection,
     server: &str,
@@ -172,28 +173,31 @@ pub(super) fn query_get_tool_decision(
     Ok(dec.flatten().and_then(|s| Decision::from_db_str(&s)))
 }
 
-/// 3-tier policy resolution: tool decision → settings_kv default → fallback Ask.
+/// Two-tier policy resolution in a single query path (§2):
+///   1. the per-tool `mcp_tool.decision` (source = `User`), else
+///   2. the global `settings_kv.default_unknown_tool_policy` (source = `Default`,
+///      falling back to `Ask` when unset/garbage).
+///
+/// Returns the decision *and* its source so the caller needs no second read —
+/// the old `get_tool_decision` → `resolve_policy`(→`get_tool_decision`) miss
+/// path is gone.
 pub(super) fn query_resolve_policy(
     conn: &Connection,
     server: &str,
     tool: &str,
-) -> Result<Decision, DbError> {
-    // Tier 1: per-tool decision
+) -> Result<(Decision, DecisionSource), DbError> {
     if let Some(d) = query_get_tool_decision(conn, server, tool)? {
-        return Ok(d);
+        return Ok((d, DecisionSource::User));
     }
-    // Tier 2: global default from settings_kv
     let default_str: Option<String> = conn
         .prepare_cached("SELECT value FROM settings_kv WHERE key = 'default_unknown_tool_policy'")?
         .query_row([], |row| row.get::<_, String>(0))
         .optional()?;
-    if let Some(ref s) = default_str {
-        if let Some(d) = Decision::from_db_str(s) {
-            return Ok(d);
-        }
-    }
-    // Tier 3: hardcoded fallback
-    Ok(Decision::Ask)
+    let decision = default_str
+        .as_deref()
+        .and_then(Decision::from_db_str)
+        .unwrap_or(Decision::Ask);
+    Ok((decision, DecisionSource::Default))
 }
 
 pub(super) fn query_set_server_auth_error(
@@ -437,8 +441,12 @@ impl Db {
         .await
     }
 
-    /// 3-tier policy resolution: tool → global default → Ask.
-    pub async fn resolve_policy(&self, server: &str, tool: &str) -> Result<Decision, DbError> {
+    /// Two-tier policy resolution returning the decision and its source (§2).
+    pub async fn resolve_policy(
+        &self,
+        server: &str,
+        tool: &str,
+    ) -> Result<(Decision, DecisionSource), DbError> {
         self.send_cmd(|reply| DbCmd::ResolvePolicy {
             server: server.to_string(),
             tool: tool.to_string(),

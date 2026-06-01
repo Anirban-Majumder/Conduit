@@ -62,12 +62,16 @@ pub(super) fn query_set_skill_repo_enabled(
     Ok(())
 }
 
-pub(super) fn query_upsert_skill_with_targets(
-    conn: &Connection,
-    skill: &Skill,
-) -> Result<(), DbError> {
-    let tx = conn.unchecked_transaction()?;
-    tx.prepare_cached(
+/// Upsert skill *metadata only* — never touches `managed_skill`.
+///
+/// The write path is deliberately split: a metadata re-sync (install refresh,
+/// `register_local_skills`) must NOT wipe user-set client targets. Targets are
+/// mutated only through `query_set_skill_targets` / `query_add_skill_target` /
+/// `query_remove_skill_target`. (The old combined fn delete-then-reinserted
+/// `managed_skill` here, so any refresh with a stale `targets` vec destroyed
+/// user intent under `ON DELETE CASCADE`.)
+pub(super) fn query_upsert_skill_metadata(conn: &Connection, skill: &Skill) -> Result<(), DbError> {
+    conn.prepare_cached(
         "INSERT INTO skills
              (directory, repo_owner, repo_name, repo_branch, source_directory,
               skill_name, description, readme_url, installed_at)
@@ -93,17 +97,30 @@ pub(super) fn query_upsert_skill_with_targets(
         &skill.readme_url,
         skill.installed_at,
     ])?;
+    Ok(())
+}
 
-    // Replace targets — now in `managed_skill` with `client_id` (was `skill_targets.ide_name`).
-    tx.prepare_cached("DELETE FROM managed_skill WHERE skill_dir = ?1 AND scope = 'global'")?
-        .execute(params![&skill.directory])?;
-    for client_id in &skill.targets {
-        tx.prepare_cached(
-            "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, 'global', ?2)",
-        )?
-        .execute(params![client_id, &skill.directory])?;
-    }
-    tx.commit()?;
+pub(super) fn query_add_skill_target(
+    conn: &Connection,
+    directory: &str,
+    client_id: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, 'global', ?2)",
+    )?
+    .execute(params![client_id, directory])?;
+    Ok(())
+}
+
+pub(super) fn query_remove_skill_target(
+    conn: &Connection,
+    directory: &str,
+    client_id: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached(
+        "DELETE FROM managed_skill WHERE skill_dir = ?1 AND client_id = ?2 AND scope = 'global'",
+    )?
+    .execute(params![directory, client_id])?;
     Ok(())
 }
 
@@ -225,9 +242,32 @@ impl Db {
         .await
     }
 
-    pub async fn upsert_skill_with_targets(&self, skill: Skill) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertSkillWithTargets { skill, reply })
+    /// Upsert skill metadata only — does not touch the client targets.
+    pub async fn upsert_skill_metadata(&self, skill: Skill) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::UpsertSkillMetadata { skill, reply })
             .await
+    }
+
+    pub async fn add_skill_target(&self, directory: &str, client_id: &str) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::AddSkillTarget {
+            directory: directory.to_string(),
+            client_id: client_id.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn remove_skill_target(
+        &self,
+        directory: &str,
+        client_id: &str,
+    ) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::RemoveSkillTarget {
+            directory: directory.to_string(),
+            client_id: client_id.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn set_skill_targets(

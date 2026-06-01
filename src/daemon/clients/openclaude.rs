@@ -1,4 +1,4 @@
-//! OpenClaude — static client definition.
+//! `OpenClaude` — static client definition.
 
 // Repo:   https://github.com/Gitlawb/openclaude
 // MCP:    ~/.openclaude.json — top-level `mcpServers`; schema `{type:"http", url}`.

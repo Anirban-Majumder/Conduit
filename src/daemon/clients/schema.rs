@@ -7,18 +7,13 @@
 use serde::{Deserialize, Serialize};
 
 /// MCP config file format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigFormat {
+    #[default]
     Json,
     Jsonc,
     Toml,
-}
-
-impl Default for ConfigFormat {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 /// Static config writing spec — lives in `ClientDef`, compile-time.

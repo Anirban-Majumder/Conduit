@@ -2,9 +2,10 @@
 //! approval enforcement, audit, upstream lifecycle, IDE config sync, and IPC.
 //!
 //! Submodules cover the request path (`http_server`, `mcp_proxy`, `approval`),
-//! state (`db`, `secrets`, `config_toml`), IDE integration (`ide_detect`,
-//! `clients`, `cascade`), and lifecycle plumbing (`events`, `config_watcher`,
-//! `ipc`, `onboarding`). Shared error enums live in `errors`.
+//! state (`db`, `secrets`, `config_toml`), editor integration (`clients` —
+//! detection, projection, config rendering — and `cascade`), and lifecycle
+//! plumbing (`events`, `config_watcher`, `ipc`, `onboarding`). Shared error
+//! enums live in `errors`.
 
 pub mod approval;
 pub mod cascade;
@@ -15,7 +16,6 @@ pub mod db;
 pub mod errors;
 pub mod events;
 pub mod http_server;
-pub mod ide_detect;
 pub mod ipc;
 pub mod mcp_proxy;
 pub mod onboarding;

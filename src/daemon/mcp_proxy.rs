@@ -83,13 +83,8 @@ pub async fn route_tool_call(
         .to_string();
     let args_json = serde_json::to_string(&params).unwrap_or_else(|_| "null".to_string());
 
-    let (decision, source) = match state.db.get_tool_decision(&server.name, &tool_name).await? {
-        Some(d) => (d, DecisionSource::User),
-        None => (
-            state.db.resolve_policy(&server.name, &tool_name).await?,
-            DecisionSource::Default,
-        ),
-    };
+    // Single 2-tier read: per-tool decision, else the global default (§2).
+    let (decision, source) = state.db.resolve_policy(&server.name, &tool_name).await?;
 
     let start = Instant::now();
     let outcome = match decision {
@@ -129,10 +124,10 @@ pub async fn route_tool_call(
             let approval_outcome = state
                 .approvals
                 .request(ApprovalRequest {
-                    server: server.name.clone(),
+                    mcp_server: server.name.clone(),
                     tool: tool_name.clone(),
                     args_json: args_json.clone(),
-                    ide_key: ide_key.to_string(),
+                    client_key: ide_key.to_string(),
                 })
                 .await?;
             match approval_outcome {

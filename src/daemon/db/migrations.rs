@@ -1,8 +1,10 @@
-//! Schema bootstrap, run once by the DB actor.
+//! Schema bootstrap + forward-migration runner, run once by the DB actor.
 //!
-//! `init_conn` sets connection PRAGMAs and applies the compiled baseline
-//! `0001_init.sql`. The `schema_version` table is a forward seam: the first
-//! post-v0 change lands as an additive `0002_*.sql` — no wipe.
+//! `init_conn` sets connection PRAGMAs, then walks `MIGRATIONS`, applying any
+//! whose version exceeds the stored `schema_version` and bumping it after each.
+//! Today the slice holds only the compiled baseline `(1, INIT_SQL)`; the first
+//! post-v0 change appends `(2, …)` — additive, no wipe. A `foreign_key_check`
+//! runs after each applied migration to catch dangling references early.
 
 use rusqlite::Connection;
 
@@ -13,6 +15,11 @@ use super::DbCmd;
 /// The single compiled schema baseline. `CREATE TABLE IF NOT EXISTS` /
 /// `INSERT OR IGNORE` make it safe to re-run on an existing database.
 const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
+
+/// The ordered migration ledger. Each entry is `(version, sql)`; apply in order,
+/// skipping any whose version is already recorded in `schema_version`. Append the
+/// next change as `(2, V0002_SQL)` — never edit a released entry.
+const MIGRATIONS: &[(i64, &str)] = &[(1, INIT_SQL)];
 
 #[cfg(all(unix, not(debug_assertions)))]
 pub(super) fn restrict_db_perms(path: &std::path::Path) {
@@ -71,7 +78,43 @@ pub(super) fn init_conn(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
     )?;
-    conn.execute_batch(INIT_SQL)?;
+    run_migrations(conn)?;
+    Ok(())
+}
+
+/// Apply every migration whose version exceeds the stored `schema_version`,
+/// recording each and checking FK integrity after it.
+fn run_migrations(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL PRIMARY KEY);",
+    )?;
+    let current: i64 = conn
+        .prepare_cached("SELECT COALESCE(MAX(version), 0) FROM schema_version")?
+        .query_row([], |row| row.get(0))?;
+
+    for &(version, sql) in MIGRATIONS {
+        if version <= current {
+            continue;
+        }
+        conn.execute_batch(sql)?;
+        conn.prepare_cached("INSERT OR IGNORE INTO schema_version (version) VALUES (?1)")?
+            .execute([version])?;
+        check_foreign_keys(conn)?;
+    }
+    Ok(())
+}
+
+/// `PRAGMA foreign_key_check` yields one row per dangling reference; any row is
+/// a corrupt migration. Surface the first as a `DbError` rather than limping on.
+fn check_foreign_keys(conn: &Connection) -> Result<(), DbError> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        let table: String = row.get(0)?;
+        return Err(DbError::Encoding(format!(
+            "foreign_key_check failed after migration: dangling reference in '{table}'"
+        )));
+    }
     Ok(())
 }
 

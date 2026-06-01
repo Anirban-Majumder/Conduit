@@ -1,10 +1,10 @@
 -- 0001_init.sql — Conduit complete schema (single compiled baseline).
-
-CREATE TABLE schema_version (version INTEGER NOT NULL PRIMARY KEY);
-INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+-- `schema_version` and its bookkeeping are owned by the migration runner
+-- (migrations.rs); this file only defines the v1 tables. Every statement is
+-- idempotent (IF NOT EXISTS / INSERT OR IGNORE) so re-running is safe.
 
 -- ── MCP servers & tools ───────────────────────────────────────────────
-CREATE TABLE mcp_server (
+CREATE TABLE IF NOT EXISTS mcp_server (
     name                  TEXT NOT NULL PRIMARY KEY,
     transport             TEXT NOT NULL,            -- 'stdio' | 'http'
     command               TEXT,
@@ -20,7 +20,7 @@ CREATE TABLE mcp_server (
 );
 
 -- merges server_tools (metadata) + policies(scope='tool') (decision)
-CREATE TABLE mcp_tool (
+CREATE TABLE IF NOT EXISTS mcp_tool (
     mcp_server      TEXT NOT NULL REFERENCES mcp_server(name) ON UPDATE CASCADE ON DELETE CASCADE,
     name            TEXT NOT NULL,
     description     TEXT,
@@ -31,7 +31,7 @@ CREATE TABLE mcp_tool (
 );
 
 -- ── Approvals & audit ─────────────────────────────────────────────────
-CREATE TABLE pending_approvals (
+CREATE TABLE IF NOT EXISTS pending_approvals (
     id          TEXT NOT NULL PRIMARY KEY,
     mcp_server  TEXT NOT NULL,
     tool        TEXT NOT NULL,
@@ -40,9 +40,9 @@ CREATE TABLE pending_approvals (
     created_at  INTEGER NOT NULL,
     status      TEXT NOT NULL                       -- 'pending'|'approved'|'denied'|'timeout'|'cancelled'
 );
-CREATE INDEX idx_pending_approvals_status ON pending_approvals(status);
+CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status);
 
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
     id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     ts              INTEGER NOT NULL,
     client_key      TEXT,                            -- was ide_key
@@ -57,12 +57,12 @@ CREATE TABLE audit_log (
     response_length INTEGER,
     error_code      TEXT
 );
-CREATE INDEX idx_audit_log_ts ON audit_log(ts DESC);
-CREATE INDEX idx_audit_log_server_tool ON audit_log(mcp_server, tool);
-CREATE INDEX idx_audit_log_client_key ON audit_log(client_key);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_server_tool ON audit_log(mcp_server, tool);
+CREATE INDEX IF NOT EXISTS idx_audit_log_client_key ON audit_log(client_key);
 
 -- ── Settings (created before the skill_repos seed reads its sentinel) ──
-CREATE TABLE settings_kv (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS settings_kv (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO settings_kv (key, value) VALUES
   ('default_unknown_tool_policy', 'ask'),
   ('open_window_at_startup',      'false'),
@@ -71,7 +71,7 @@ INSERT OR IGNORE INTO settings_kv (key, value) VALUES
   ('shown_background_hint',       'false');
 
 -- ── Skills (skills table precedes managed_skill's FK target) ──────────
-CREATE TABLE skill_repos (
+CREATE TABLE IF NOT EXISTS skill_repos (
     owner   TEXT NOT NULL,
     name    TEXT NOT NULL,
     branch  TEXT NOT NULL DEFAULT 'main',
@@ -79,7 +79,7 @@ CREATE TABLE skill_repos (
     PRIMARY KEY (owner, name)
 );
 
-CREATE TABLE skills (
+CREATE TABLE IF NOT EXISTS skills (
     directory        TEXT NOT NULL PRIMARY KEY,
     repo_owner       TEXT NOT NULL,
     repo_name        TEXT NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE skills (
     readme_url       TEXT,
     installed_at     INTEGER NOT NULL
 );
-CREATE INDEX idx_skills_repo ON skills(repo_owner, repo_name);
+CREATE INDEX IF NOT EXISTS idx_skills_repo ON skills(repo_owner, repo_name);
 
 INSERT INTO skill_repos (owner, name, branch, enabled)
 SELECT 'anthropics', 'skills', 'main', 1
@@ -101,7 +101,7 @@ WHERE NOT EXISTS (SELECT 1 FROM settings_kv WHERE key = 'skill_repos_seeded');
 INSERT OR IGNORE INTO settings_kv (key, value) VALUES ('skill_repos_seeded', '1');
 
 -- ── Clients (editors) — single merged table ───────────────────────────
-CREATE TABLE client (
+CREATE TABLE IF NOT EXISTS client (
     id                 TEXT NOT NULL PRIMARY KEY,    -- built-in: code id ("Cursor"); custom: random uid
     mcp_key            TEXT NOT NULL UNIQUE,         -- URL routing token  …/<mcp_key>/<server>/mcp
     tracked            INTEGER NOT NULL DEFAULT 1,   -- user intent; 0 = "never manage this editor"
@@ -115,23 +115,23 @@ CREATE TABLE client (
     schema_json        TEXT NOT NULL                  -- serialized ConfigSchema {format,key_path,entry_template}
 );
 
-CREATE TABLE managed_mcp (
+CREATE TABLE IF NOT EXISTS managed_mcp (
     client_id   TEXT NOT NULL REFERENCES client(id) ON DELETE CASCADE,
     scope       TEXT NOT NULL DEFAULT 'global',       -- 'global' | absolute project dir
     server_name TEXT NOT NULL REFERENCES mcp_server(name) ON UPDATE CASCADE ON DELETE CASCADE,
     PRIMARY KEY (client_id, scope, server_name)
 );
-CREATE INDEX idx_managed_mcp_server ON managed_mcp(server_name);
+CREATE INDEX IF NOT EXISTS idx_managed_mcp_server ON managed_mcp(server_name);
 
-CREATE TABLE managed_skill (                          -- replaces skill_targets; scope-aware
+CREATE TABLE IF NOT EXISTS managed_skill (                          -- replaces skill_targets; scope-aware
     client_id TEXT NOT NULL REFERENCES client(id) ON DELETE CASCADE,
     scope     TEXT NOT NULL DEFAULT 'global',
     skill_dir TEXT NOT NULL REFERENCES skills(directory) ON UPDATE CASCADE ON DELETE CASCADE,
     PRIMARY KEY (client_id, scope, skill_dir)
 );
-CREATE INDEX idx_managed_skill_dir ON managed_skill(skill_dir);
+CREATE INDEX IF NOT EXISTS idx_managed_skill_dir ON managed_skill(skill_dir);
 
-CREATE TABLE pending_oauth_drafts (
+CREATE TABLE IF NOT EXISTS pending_oauth_drafts (
     draft_uuid TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );

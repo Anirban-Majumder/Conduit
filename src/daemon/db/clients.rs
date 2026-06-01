@@ -49,6 +49,14 @@ pub(super) fn query_project_builtin(
         .ok_or_else(|| DbError::Encoding(format!("projected client '{id}' vanished after upsert")))
 }
 
+/// Bump `last_seen_at` without touching identity columns. Used by the projection
+/// when the code version is unchanged and the row already exists (§1a).
+pub(super) fn query_touch_client(conn: &Connection, id: &str) -> Result<(), DbError> {
+    conn.prepare_cached("UPDATE client SET last_seen_at = ?1 WHERE id = ?2")?
+        .execute(params![now_unix(), id])?;
+    Ok(())
+}
+
 pub(super) fn query_get_client(conn: &Connection, id: &str) -> Result<Option<ClientRow>, DbError> {
     conn.prepare_cached(
         "SELECT id, mcp_key, tracked, is_builtin, first_seen_at, last_seen_at,
@@ -104,7 +112,7 @@ pub(super) fn query_set_client_tracked(
     Ok(())
 }
 
-/// List server names managed for a given client (from managed_mcp, global scope).
+/// List server names managed for a given client (from `managed_mcp`, global scope).
 pub(super) fn query_list_managed_servers(
     conn: &Connection,
     client_id: &str,
@@ -137,23 +145,20 @@ pub(super) fn query_set_managed_servers(
     Ok(())
 }
 
-/// List all (client_id, server_name) pairs from managed_mcp (for cascade ops).
-pub(super) fn query_list_all_managed_mcp(
+/// List the `(client_id, scope)` of every client managing `server_name` — the
+/// reverse lookup the cascade needs. Hits `idx_managed_mcp_server`.
+pub(super) fn query_list_clients_managing_server(
     conn: &Connection,
-) -> Result<Vec<(String, Vec<String>)>, DbError> {
+    server_name: &str,
+) -> Result<Vec<(String, String)>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT client_id, server_name FROM managed_mcp WHERE scope = 'global' ORDER BY client_id, server_name",
+        "SELECT client_id, scope FROM managed_mcp
+         WHERE server_name = ?1 ORDER BY client_id, scope",
     )?;
-    let mut map: std::collections::BTreeMap<String, Vec<String>> =
-        std::collections::BTreeMap::new();
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![server_name], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    for row in rows {
-        let (cid, sname) = row?;
-        map.entry(cid).or_default().push(sname);
-    }
-    Ok(map.into_iter().collect())
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 fn decode_client_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClientRow> {
@@ -186,6 +191,14 @@ impl Db {
             mcp_config_path: mcp_config_path.to_string(),
             skills_dir: skills_dir.map(String::from),
             schema_json: schema_json.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn touch_client(&self, id: &str) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::TouchClient {
+            id: id.to_string(),
             reply,
         })
         .await
@@ -246,8 +259,14 @@ impl Db {
         .await
     }
 
-    pub async fn list_all_managed_mcp(&self) -> Result<Vec<(String, Vec<String>)>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListAllManagedMcp { reply })
-            .await
+    pub async fn list_clients_managing_server(
+        &self,
+        server_name: &str,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        self.send_cmd(|reply| DbCmd::ListClientsManagingServer {
+            server_name: server_name.to_string(),
+            reply,
+        })
+        .await
     }
 }

@@ -1,4 +1,4 @@
-//! OpenCode — static client definition (XDG on Linux+macOS, not ~/Library).
+//! `OpenCode` — static client definition (XDG on Linux+macOS, not `~/Library`).
 
 // Repo:   https://github.com/sst/opencode
 // MCP:    ~/.config/opencode/opencode.json — top-level `mcp`; schema `{type:"remote", url}`.

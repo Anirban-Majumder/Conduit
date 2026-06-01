@@ -340,47 +340,44 @@ pub(crate) async fn refresh_server_targets(
     });
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "enable/disable branches with write vs purge paths and DB updates"
-)]
+/// Add/remove a server from a client's managed set, then re-derive its config
+/// file from the resulting set (the one renderer, no per-IDE branching).
 pub(crate) async fn toggle_server_for_ide(
     db: &Db,
-    _port: u16,
+    port: u16,
     server_name: &str,
     client_id: &str,
     enable: bool,
 ) {
-    let Some(client) = db.get_client(client_id).await.ok().flatten() else {
+    let Some(client) = clients::resolve_client(db, client_id).await.ok().flatten() else {
         tracing::warn!(client_id = %client_id, "no client row for id");
         return;
     };
-    if !client.tracked {
-        tracing::warn!(client_id = %client_id, "client is not tracked; ignoring toggle");
+    if !client.is_builtin {
+        tracing::warn!(client_id = %client_id, "custom client config is user-authored; ignoring toggle");
         return;
     }
 
-    let mut entries = db
-        .list_managed_servers(&client.id)
-        .await
-        .unwrap_or_default();
-    let already_present = entries.iter().any(|n| n == server_name);
-    if enable {
-        if !already_present {
-            entries.push(server_name.to_string());
-        }
-        // TODO: new render logic needed (clients::write replacement)
-        tracing::debug!(client_id = %client_id, server = %server_name, "TODO: clients::write stub");
-    } else {
-        if already_present {
-            entries.retain(|n| n != server_name);
-        }
-        // TODO: new render logic needed (clients::purge_one_server_for_ide replacement)
-        tracing::debug!(client_id = %client_id, server = %server_name, "TODO: clients::purge_one_server_for_ide stub");
+    let mut entries = db.list_managed_servers(client_id).await.unwrap_or_default();
+    let present = entries.iter().any(|n| n == server_name);
+    if enable && !present {
+        entries.push(server_name.to_string());
+    } else if !enable && present {
+        entries.retain(|n| n != server_name);
     }
 
-    if let Err(e) = db.set_managed_servers(&client.id, entries).await {
+    if let Err(e) = db.set_managed_servers(client_id, entries.clone()).await {
         tracing::warn!(error = %e, "set_managed_servers failed");
+        return;
+    }
+
+    // render_mcp makes the file hold exactly `entries` (purge ours + render).
+    let render =
+        tokio::task::spawn_blocking(move || clients::render_mcp(&client, &entries, port)).await;
+    match render {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, client_id, "render failed"),
+        Err(e) => tracing::warn!(error = %e, client_id, "render join failed"),
     }
 }
 

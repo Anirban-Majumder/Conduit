@@ -90,7 +90,7 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 Ok(report) => {
                     tracing::info!(
                         server = %name,
-                        affected_clients = report.affected_client_ids.len(),
+                        rewritten_clients = report.rewritten_clients.len(),
                         cancelled = report.cancelled_approvals.len(),
                         "cascade delete complete",
                     );

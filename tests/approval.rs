@@ -30,10 +30,10 @@ fn now_unix() -> i64 {
 
 fn sample_req() -> ApprovalRequest {
     ApprovalRequest {
-        server: "gmail".into(),
+        mcp_server: "gmail".into(),
         tool: "send_email".into(),
         args_json: "{\"to\":\"x@y\"}".into(),
-        ide_key: "abc12345".into(),
+        client_key: "abc12345".into(),
     }
 }
 
@@ -130,7 +130,7 @@ async fn request_persists_pending_row_before_resolution() {
             .unwrap()
             .expect("row present");
         assert_eq!(row.status, ApprovalStatus::Pending);
-        assert_eq!(row.server, "gmail");
+        assert_eq!(row.mcp_server, "gmail");
         assert_eq!(row.tool, "send_email");
         center.resolve(&id, ApprovalStatus::Approved).await.unwrap();
     };
@@ -172,13 +172,13 @@ async fn approval_pending_event_published_before_waiting() {
         match evt {
             Event::ApprovalPending {
                 id,
-                server,
+                mcp_server,
                 tool,
-                ide_key,
+                client_key,
             } => {
-                assert_eq!(server, "gmail");
+                assert_eq!(mcp_server, "gmail");
                 assert_eq!(tool, "send_email");
-                assert_eq!(ide_key, "abc12345");
+                assert_eq!(client_key, "abc12345");
                 center.resolve(&id, ApprovalStatus::Approved).await.unwrap();
             }
             other => panic!("expected ApprovalPending, got {other:?}"),
@@ -259,10 +259,10 @@ async fn sweeper_flips_pre_existing_stale_rows_to_timeout() {
     let stale_id = "stale-1".to_string();
     db.create_pending_approval(PendingApproval {
         id: stale_id.clone(),
-        server: "s".into(),
+        mcp_server: "s".into(),
         tool: "t".into(),
         args_json: "{}".into(),
-        ide_key: "k1234567".into(),
+        client_key: "k1234567".into(),
         created_at: now_unix() - 3600,
         status: ApprovalStatus::Pending,
     })
@@ -273,10 +273,10 @@ async fn sweeper_flips_pre_existing_stale_rows_to_timeout() {
     let fresh_id = "fresh-1".to_string();
     db.create_pending_approval(PendingApproval {
         id: fresh_id.clone(),
-        server: "s".into(),
+        mcp_server: "s".into(),
         tool: "t".into(),
         args_json: "{}".into(),
-        ide_key: "k1234567".into(),
+        client_key: "k1234567".into(),
         created_at: now_unix(),
         status: ApprovalStatus::Pending,
     })
@@ -330,10 +330,10 @@ async fn sweep_publishes_one_resolved_event_per_swept_id() {
     for id in ["a", "b"] {
         db.create_pending_approval(PendingApproval {
             id: id.to_string(),
-            server: "s".into(),
+            mcp_server: "s".into(),
             tool: "t".into(),
             args_json: "{}".into(),
-            ide_key: "k1234567".into(),
+            client_key: "k1234567".into(),
             created_at: 50,
             status: ApprovalStatus::Pending,
         })

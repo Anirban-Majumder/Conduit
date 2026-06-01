@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 /// Declarative path strategy — 4 variants cover all 6 current IDEs.
 #[derive(Debug, Clone, Copy)]
 pub enum PathSpec {
-    /// `home_dir().join(rel)` — ClaudeCode, OpenClaude.
+    /// `home_dir().join(rel)` — `ClaudeCode`, `OpenClaude`.
     Home(&'static str),
-    /// `config_dir().join(rel)` on ALL platforms — VsCodeCopilot.
+    /// `config_dir().join(rel)` on ALL platforms — `VsCodeCopilot`.
     ConfigDir(&'static str),
-    /// `home_dir().join(unix)` normally, `config_dir().join(win)` on Windows — Cursor, OpenCode.
+    /// `home_dir().join(unix)` normally, `config_dir().join(win)` on Windows — Cursor, `OpenCode`.
     PlatformSplit {
         unix: &'static str,
         windows: &'static str,

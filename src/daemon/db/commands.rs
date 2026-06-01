@@ -90,7 +90,7 @@ pub enum DbCmd {
     ResolvePolicy {
         server: String,
         tool: String,
-        reply: oneshot::Sender<Result<Decision, DbError>>,
+        reply: oneshot::Sender<Result<(Decision, DecisionSource), DbError>>,
     },
 
     // ── Clients (replaces ides) ────────────────────────────────────────
@@ -101,6 +101,10 @@ pub enum DbCmd {
         skills_dir: Option<String>,
         schema_json: String,
         reply: oneshot::Sender<Result<ClientRow, DbError>>,
+    },
+    TouchClient {
+        id: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
     },
     GetClient {
         id: String,
@@ -130,8 +134,9 @@ pub enum DbCmd {
         server_names: Vec<String>,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    ListAllManagedMcp {
-        reply: oneshot::Sender<Result<Vec<(String, Vec<String>)>, DbError>>,
+    ListClientsManagingServer {
+        server_name: String,
+        reply: oneshot::Sender<Result<Vec<(String, String)>, DbError>>,
     },
 
     // ── Approvals ──────────────────────────────────────────────────────
@@ -200,13 +205,23 @@ pub enum DbCmd {
         enabled: bool,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
-    UpsertSkillWithTargets {
+    UpsertSkillMetadata {
         skill: Skill,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     SetSkillTargets {
         directory: String,
         targets: Vec<String>,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    AddSkillTarget {
+        directory: String,
+        client_id: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    RemoveSkillTarget {
+        directory: String,
+        client_id: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     DeleteSkill {

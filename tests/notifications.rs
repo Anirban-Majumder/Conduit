@@ -11,14 +11,14 @@ use std::time::Duration;
 
 use conduit::daemon::approval::{ApprovalCenter, ApprovalRequest};
 use conduit::daemon::db::types::{
-    ApprovalStatus, Decision, DecisionSource, PendingApproval, Server,
+    ApprovalStatus, Decision, DecisionSource, McpServer, PendingApproval,
 };
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
 use conduit::gui::notification_router::{dispatch_action, NotificationAction};
 
-fn sample_server(name: &str) -> Server {
-    Server {
+fn sample_server(name: &str) -> McpServer {
+    McpServer {
         name: name.to_string(),
         transport: "stdio".to_string(),
         command: Some("echo".to_string()),
@@ -26,27 +26,37 @@ fn sample_server(name: &str) -> Server {
         env: vec![],
         url: None,
         lifecycle_seconds: 300,
-        last_init_duration_ms: None,
-        package_version: None,
-        mcp_self_version: None,
-        created_at: 0,
-        server_name: None,
-        server_version: None,
+        reported_name: None,
+        reported_version: None,
         last_probed_at: None,
         last_probe_error: None,
         last_auth_error_msg: None,
-        last_auth_error_at: None,
     }
 }
 
 async fn fresh_pending(db: &Db, id: &str, server: &str, tool: &str) {
-    db.upsert_server(sample_server(server)).await.unwrap();
+    use conduit::daemon::db::types::McpTool;
+    // Seed the server + the advertised tool so a later set_tool_decision
+    // (UPDATE on the mcp_tool row) actually persists.
+    db.upsert_server_with_tools(
+        sample_server(server),
+        vec![McpTool {
+            server: server.to_string(),
+            name: tool.to_string(),
+            description: None,
+            input_schema_json: "{}".to_string(),
+            discovered_at: 0,
+            decision: None,
+        }],
+    )
+    .await
+    .unwrap();
     db.create_pending_approval(PendingApproval {
         id: id.to_string(),
-        server: server.to_string(),
+        mcp_server: server.to_string(),
         tool: tool.to_string(),
         args_json: "{}".to_string(),
-        ide_key: "k1234567".to_string(),
+        client_key: "k1234567".to_string(),
         created_at: 0,
         status: ApprovalStatus::Pending,
     })
@@ -126,13 +136,19 @@ async fn approve_always_resolves_then_writes_policy_with_notification_source() {
     let row = db.get_pending_approval("uuid-3").await.unwrap().unwrap();
     assert_eq!(row.status, ApprovalStatus::Approved);
 
-    let policy = db
-        .get_policy("github", "list_issues")
+    // The decision is persisted on the mcp_tool row. (Provenance —
+    // DecisionSource::Notification — now lives only in audit_log, not on the
+    // tool row, so we assert the decision itself + that resolution sees it as
+    // a per-tool User decision.)
+    let decision = db
+        .get_tool_decision("github", "list_issues")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(policy.decision, Decision::Allow);
-    assert_eq!(policy.decision_source, DecisionSource::Notification);
+    assert_eq!(decision, Decision::Allow);
+    let (resolved, source) = db.resolve_policy("github", "list_issues").await.unwrap();
+    assert_eq!(resolved, Decision::Allow);
+    assert_eq!(source, DecisionSource::User);
 }
 
 #[tokio::test]

@@ -23,15 +23,17 @@ pub mod example;
 pub mod error;
 pub use error::ClientError;
 
+pub mod detect;
 pub mod paths;
+pub mod project;
+pub mod render;
+pub mod resolved;
 pub mod schema;
 
 mod io;
-mod merger;
 
-// Re-export the merge helpers that integration tests drive directly.
-pub use merger::{purge_uniform_mcp_servers, write_uniform_mcp_servers};
-
+pub use render::{purge_mcp, purge_one, render_mcp, render_servers};
+pub use resolved::{resolve_client, ResolvedClient};
 pub use schema::{ConfigFormat, ConfigSchema, ConfigSpec};
 
 /// The full static definition of a built-in client.
@@ -39,6 +41,7 @@ pub use schema::{ConfigFormat, ConfigSchema, ConfigSpec};
 /// Replaces `ClientSpec` trait + per-IDE `Spec` structs + `IdeKind` enum methods.
 /// Each built-in is a single `static DEF: ClientDef` — zero functions, zero trait
 /// impls. Paths are declarative via `PathSpec`; detection data is co-located.
+#[derive(Debug)]
 pub struct ClientDef {
     pub id: &'static str,
     pub display_name: &'static str,

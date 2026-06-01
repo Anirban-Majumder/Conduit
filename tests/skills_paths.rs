@@ -1,47 +1,49 @@
+//! Per-built-in skills-directory layout, resolved via `PathSpec` under a fake
+//! home. "Supports skills" = `def.skills.is_some()` (no `SKILL_TARGET_IDES`).
+
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
 use std::path::Path;
 
-use conduit::daemon::clients::{
-    ide_db_name, ide_kind_from_db_name, skills_dir_under, SKILL_TARGET_IDES,
-};
+use conduit::daemon::clients::builtin_by_id;
+use conduit::daemon::clients::paths::resolve_under;
 use conduit::paths::Paths;
 
-#[test]
-fn ide_db_name_round_trips_through_kind_lookup() {
-    for ide in SKILL_TARGET_IDES {
-        let name = ide_db_name(*ide);
-        let back = ide_kind_from_db_name(name).expect("known db name");
-        assert_eq!(back, *ide);
-    }
+/// Resolve a built-in's skills dir under a fake home, or `None` if unsupported.
+fn skills_under(id: &str, home: &Path) -> Option<std::path::PathBuf> {
+    let def = builtin_by_id(id)?;
+    def.skills.as_ref().map(|spec| resolve_under(spec, home))
 }
 
 #[test]
 fn skills_dir_under_matches_per_ide_layout() {
     let home = Path::new("/test-home");
-    let claude = skills_dir_under(ide_kind_from_db_name("ClaudeCode").unwrap(), home).unwrap();
-    assert_eq!(claude, home.join(".claude").join("skills"));
-
-    let cursor = skills_dir_under(ide_kind_from_db_name("Cursor").unwrap(), home).unwrap();
-    assert_eq!(cursor, home.join(".cursor").join("skills"));
-
-    let openclaude = skills_dir_under(ide_kind_from_db_name("OpenClaude").unwrap(), home).unwrap();
-    assert_eq!(openclaude, home.join(".openclaude").join("skills"));
-
-    let opencode = skills_dir_under(ide_kind_from_db_name("OpenCode").unwrap(), home).unwrap();
     assert_eq!(
-        opencode,
+        skills_under("ClaudeCode", home).unwrap(),
+        home.join(".claude").join("skills")
+    );
+    assert_eq!(
+        skills_under("Cursor", home).unwrap(),
+        home.join(".cursor").join("skills")
+    );
+    assert_eq!(
+        skills_under("OpenClaude", home).unwrap(),
+        home.join(".openclaude").join("skills")
+    );
+    assert_eq!(
+        skills_under("OpenCode", home).unwrap(),
         home.join(".config").join("opencode").join("skills")
     );
-
-    let codex = skills_dir_under(ide_kind_from_db_name("Codex").unwrap(), home).unwrap();
-    assert_eq!(codex, home.join(".codex").join("skills"));
+    assert_eq!(
+        skills_under("Codex", home).unwrap(),
+        home.join(".codex").join("skills")
+    );
 }
 
 #[test]
-fn skills_dir_under_returns_none_for_vscode_copilot() {
+fn vscode_copilot_has_no_skills_dir() {
     let home = Path::new("/test-home");
-    assert!(skills_dir_under(ide_kind_from_db_name("VsCodeCopilot").unwrap(), home).is_none());
+    assert!(skills_under("VsCodeCopilot", home).is_none());
 }
 
 #[test]

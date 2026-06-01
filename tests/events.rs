@@ -10,9 +10,9 @@ use conduit::daemon::events::{Bus, Event};
 fn sample_pending(id: &str) -> Event {
     Event::ApprovalPending {
         id: id.to_string(),
-        server: "gmail".to_string(),
+        mcp_server: "gmail".to_string(),
         tool: "send_email".to_string(),
-        ide_key: "abc12345".to_string(),
+        client_key: "abc12345".to_string(),
     }
 }
 

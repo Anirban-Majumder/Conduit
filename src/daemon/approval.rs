@@ -37,10 +37,10 @@ pub enum ApprovalError {
 
 #[derive(Debug, Clone)]
 pub struct ApprovalRequest {
-    pub server: String,
+    pub mcp_server: String,
     pub tool: String,
     pub args_json: String,
-    pub ide_key: String,
+    pub client_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,10 +82,10 @@ impl ApprovalCenter {
         let id = Uuid::new_v4().to_string();
         let approval = PendingApproval {
             id: id.clone(),
-            mcp_server: req.server.clone(),
+            mcp_server: req.mcp_server.clone(),
             tool: req.tool.clone(),
             args_json: req.args_json,
-            client_key: req.ide_key.clone(),
+            client_key: req.client_key.clone(),
             created_at: now_unix_secs(),
             status: ApprovalStatus::Pending,
         };
@@ -109,9 +109,9 @@ impl ApprovalCenter {
 
         self.bus.publish(Event::ApprovalPending {
             id: id.clone(),
-            server: req.server,
+            mcp_server: req.mcp_server,
             tool: req.tool,
-            ide_key: req.ide_key,
+            client_key: req.client_key,
         });
 
         let outcome = tokio::select! {

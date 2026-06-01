@@ -72,20 +72,14 @@ pub(crate) fn fire_background_hint() {
     }
 }
 
+/// The config path is the projected `client.mcp_config_path` — already
+/// OS-resolved at detect. Empty means we have no mapping for this OS.
 pub(crate) fn resolve_ide_config_path(
     record: Option<&conduit::daemon::db::types::ClientRow>,
 ) -> Option<std::path::PathBuf> {
-    if let Some(rec) = record {
-        // ClientRow always has mcp_config_path; use it if non-empty.
-        if !rec.mcp_config_path.is_empty() {
-            return Some(std::path::PathBuf::from(&rec.mcp_config_path));
-        }
-        // Fallback: resolve from the builtin definition.
-        if let Some(def) = clients::builtin_by_id(&rec.id) {
-            return clients::paths::resolve(&def.config);
-        }
-    }
-    None
+    record
+        .filter(|rec| !rec.mcp_config_path.is_empty())
+        .map(|rec| std::path::PathBuf::from(&rec.mcp_config_path))
 }
 
 /// Read a value from the UI thread into an async context.
@@ -112,49 +106,42 @@ pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> O
         .filter(|s: &String| !s.is_empty())
 }
 
-pub(crate) async fn remove_ide(db: &Db, _port: u16, client_id: &str) {
-    let Some(client) = db.get_client(client_id).await.ok().flatten() else {
-        return;
+/// Untrack a client and purge our entries from its config file.
+pub(crate) async fn remove_ide(db: &Db, port: u16, client_id: &str) {
+    let resolved = match clients::resolve_client(db, client_id).await {
+        Ok(Some(c)) => Some(c),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, client_id, "resolve_client failed");
+            None
+        }
     };
-    // TODO: new render logic needed (clients::purge replacement)
-    tracing::debug!(client_id = %client.id, "TODO: clients::purge stub");
-    if let Err(e) = db.set_client_tracked(&client.id, false).await {
-        tracing::warn!(error = %e, client_id = %client.id, "set_client_tracked(false) failed");
+    if let Some(client) = resolved {
+        let schema = client.schema.clone();
+        let path = client.config_path.clone();
+        let key = client.mcp_key.clone();
+        let purge =
+            tokio::task::spawn_blocking(move || clients::purge_mcp(&schema, &path, &key, port))
+                .await;
+        match purge {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, client_id, "purge_mcp failed"),
+            Err(e) => tracing::warn!(error = %e, client_id, "purge_mcp join failed"),
+        }
+    }
+    if let Err(e) = db.set_client_tracked(client_id, false).await {
+        tracing::warn!(error = %e, client_id, "set_client_tracked(false) failed");
     }
 }
 
+/// Detect installed built-ins and project their identity into the `client`
+/// table (version-gated, §1a). The single source of truth thereafter is the DB.
 pub(crate) async fn run_ide_detection(db: &Db) {
-    let detected = tokio::task::spawn_blocking(conduit::daemon::ide_detect::detect_installed)
+    let detected = tokio::task::spawn_blocking(clients::detect::detect_installed)
         .await
         .unwrap_or_default();
-    for d in &detected {
-        let client_id = d.kind.as_db_kind();
-        if let Some(def) = clients::builtin_by_id(client_id) {
-            let config_path = clients::paths::resolve(&def.config)
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            let skills_dir = def
-                .skills
-                .as_ref()
-                .and_then(|s| clients::paths::resolve(s))
-                .map(|p| p.display().to_string());
-            // schema_json: use the config_spec to produce a schema stub.
-            let schema: clients::schema::ConfigSchema =
-                clients::schema::ConfigSchema::from(&def.config_spec);
-            let schema_json = serde_json::to_string(&schema).unwrap_or_default();
-            if let Err(e) = db
-                .project_builtin(
-                    client_id,
-                    def.display_name,
-                    &config_path,
-                    skills_dir.as_deref(),
-                    &schema_json,
-                )
-                .await
-            {
-                tracing::warn!(error = %e, client_id = %client_id, "project_builtin failed");
-            }
-        }
+    if let Err(e) = clients::project::project_builtins(db, &detected).await {
+        tracing::warn!(error = %e, "project_builtins failed");
     }
 }
 
