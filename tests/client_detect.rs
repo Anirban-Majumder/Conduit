@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use conduit::daemon::clients::detect::{detect_installed, scan_paths, DetectionSource};
+use conduit::daemon::client_config::detect::{detect_installed, scan_paths, DetectionSource};
 
 #[cfg(target_os = "macos")]
-use conduit::daemon::clients::detect::scan_apps;
+use conduit::daemon::client_config::detect::scan_apps;
 
 // ── scan_paths unit tests ────────────────────────────────────────────────────
 

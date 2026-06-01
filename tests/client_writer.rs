@@ -13,9 +13,9 @@
 
 use std::path::PathBuf;
 
-use conduit::daemon::clients::render::{purge_mcp, purge_one, render_servers};
-use conduit::daemon::clients::schema::ConfigSchema;
-use conduit::daemon::clients::{builtin_by_id, read_raw, validate_json, write_raw};
+use conduit::daemon::client_config::render::{purge_mcp, purge_one, render_servers};
+use conduit::daemon::client_config::types::ConfigSchema;
+use conduit::daemon::client_config::{builtin_by_id, read_raw, validate_json, write_raw};
 use serde_json::json;
 
 /// The `ConfigSchema` for a built-in, as projected into the DB.

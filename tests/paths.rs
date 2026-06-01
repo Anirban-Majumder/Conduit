@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use conduit::paths::Paths;
+use conduit::daemon::paths::Paths;
 
 #[test]
 fn under_composes_paths_from_root() {

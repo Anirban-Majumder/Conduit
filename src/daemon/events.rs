@@ -7,7 +7,7 @@
 
 use tokio::sync::broadcast;
 
-use crate::daemon::config_toml::Settings;
+use crate::daemon::config::toml::Settings;
 use crate::daemon::db::types::ApprovalStatus;
 
 const BUS_CAPACITY: usize = 256;

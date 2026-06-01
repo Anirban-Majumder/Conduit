@@ -8,11 +8,11 @@
 use std::fs;
 use std::path::Path;
 
-use crate::daemon::clients::{self, paths};
+use crate::daemon::client_config::{self, paths};
 use crate::daemon::errors::SkillError;
 
 pub fn sync_to_target(source: &Path, client_id: &str) -> Result<(), SkillError> {
-    let def = clients::builtin_by_id(client_id)
+    let def = client_config::builtin_by_id(client_id)
         .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
     let skills_spec = def
         .skills
@@ -55,7 +55,7 @@ fn staging_nonce() -> u128 {
 }
 
 pub fn remove_from_target(install_name: &str, client_id: &str) {
-    let Some(def) = clients::builtin_by_id(client_id) else {
+    let Some(def) = client_config::builtin_by_id(client_id) else {
         return;
     };
     let Some(skills_spec) = def.skills.as_ref() else {

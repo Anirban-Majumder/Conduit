@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use conduit::daemon::cascade::delete_server_with_cascade;
-use conduit::daemon::clients::builtin_by_id;
-use conduit::daemon::clients::render::render_servers;
-use conduit::daemon::clients::schema::ConfigSchema;
+use conduit::daemon::client_config::builtin_by_id;
+use conduit::daemon::client_config::render::render_servers;
+use conduit::daemon::client_config::types::ConfigSchema;
 use conduit::daemon::db::types::{ApprovalStatus, McpServer, McpTool, PendingApproval};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};

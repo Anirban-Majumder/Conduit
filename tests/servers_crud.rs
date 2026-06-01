@@ -122,7 +122,7 @@ async fn http_transport_preserves_url() {
 
 #[test]
 fn invalid_server_names_rejected() {
-    use conduit::daemon::server_validators::is_valid_server_name;
+    use conduit::daemon::wizard_input::is_valid_server_name;
 
     for bad in [
         "",
@@ -150,7 +150,7 @@ fn invalid_server_names_rejected() {
 
 #[test]
 fn lifecycle_idle_clamped_to_1_to_86400() {
-    use conduit::daemon::server_validators::{
+    use conduit::daemon::wizard_input::{
         clamp_idle_lifecycle, lifecycle_from_wizard, LIFECYCLE_EPHEMERAL, LIFECYCLE_PERSISTENT,
     };
 

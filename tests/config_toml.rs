@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
-use conduit::daemon::config_toml::Settings;
+use conduit::daemon::config::toml::Settings;
 
 #[test]
 fn empty_toml_parses_to_spec_defaults() {

@@ -7,7 +7,7 @@
 //! entry disappears from every editor that was managing it — no denormalized
 //! blob, no per-IDE branching: `resolve_client` + the one renderer.
 
-use crate::daemon::clients::{render_mcp, resolve_client};
+use crate::daemon::client_config::{render_mcp, resolve_client};
 use crate::daemon::db::types::ApprovalStatus;
 use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;

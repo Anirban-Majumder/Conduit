@@ -8,12 +8,12 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use conduit::daemon::approval::{
+use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
+use conduit::daemon::db::Db;
+use conduit::daemon::downstream::approval::{
     spawn_timeout_sweeper, sweep_and_publish_timeouts, ApprovalCenter, ApprovalOutcome,
     ApprovalRequest,
 };
-use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
-use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
 use tokio::time::timeout as wait_for;
 use tokio_util::sync::CancellationToken;
@@ -247,7 +247,7 @@ async fn resolve_to_pending_rejected() {
         .expect_err("resolving to Pending is invalid");
     assert!(matches!(
         err,
-        conduit::daemon::approval::ApprovalError::InvalidStatus
+        conduit::daemon::downstream::approval::ApprovalError::InvalidStatus
     ));
 }
 

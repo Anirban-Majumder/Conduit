@@ -2,21 +2,21 @@
 //!
 //! `main` wires every subsystem — keyring backend, paths, settings, the tokio
 //! worker, DB actor, event bus, HTTP server, notifications, IPC, tray, and
-//! hotkey — builds the `MainWindow`, installs glue callbacks, then runs the
+//! hotkey — builds the `MainWindow`, installs window callbacks, then runs the
 //! Slint event loop. Shutdown order is load-bearing: the event loop returns,
 //! the cancel token fires, then the worker is dropped (runtime shutdown) before
 //! the keyring store is released.
 
 #![warn(rustdoc::broken_intra_doc_links)]
 #![warn(rustdoc::private_intra_doc_links)]
-// reason: this is a binary crate (nothing is exported), so the GUI-glue
-// submodules under `glue` are private; `pub(crate)` is the correct visibility
+// reason: this is a binary crate (nothing is exported), so the window
+// submodules under `window` are private; `pub(crate)` is the correct visibility
 // for cross-module access between them, but `redundant_pub_crate` flags it as
 // redundant against the private parent. `pub` is not an option — it would trip
 // `unreachable_pub`. The two lints conflict for cross-module bin code.
 #![expect(
     clippy::redundant_pub_crate,
-    reason = "bin crate: glue submodules need pub(crate) for cross-module access"
+    reason = "bin crate: window submodules need pub(crate) for cross-module access"
 )]
 
 use std::sync::Arc;
@@ -27,32 +27,30 @@ use slint::ComponentHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-use conduit::daemon::approval::{spawn_timeout_sweeper, ApprovalCenter};
-use conduit::daemon::config_toml::Settings;
-use conduit::daemon::config_watcher;
+use conduit::daemon::config::toml::Settings;
+use conduit::daemon::config::watcher;
 use conduit::daemon::db::Db;
+use conduit::daemon::downstream::approval::{spawn_timeout_sweeper, ApprovalCenter};
+use conduit::daemon::downstream::http_server::{self, AppState};
 use conduit::daemon::events::Bus;
-use conduit::daemon::http_server::{self, AppState};
 use conduit::daemon::ipc;
 use conduit::daemon::onboarding::{
     check_background_hint, should_show_window_at_startup, BackgroundHintAction,
 };
+use conduit::daemon::paths::Paths;
 use conduit::daemon::skills::SkillManager;
 use conduit::daemon::upstream::manager::UpstreamManager;
-use conduit::gui::{
-    hotkey, notification_router as gui_notification_router, notifications as gui_notifications,
-    tray as gui_tray,
+use conduit::os::{
+    hotkey, notification_router as os_notification_router, notifications as os_notifications,
+    tray as os_tray,
 };
-use conduit::paths::Paths;
 use conduit::runtime::Worker;
 
-mod ui;
-use ui::MainWindow;
-
-pub(crate) mod glue;
-use glue::callbacks::install_callbacks;
-use glue::refresh::{push_initial_models, spawn_event_bridge};
-use glue::util::fire_background_hint;
+pub(crate) mod window;
+use window::callbacks::install_callbacks;
+use window::refresh::{push_initial_models, spawn_event_bridge};
+use window::util::fire_background_hint;
+use window::MainWindow;
 
 #[expect(
     clippy::too_many_lines,
@@ -162,7 +160,7 @@ fn main() -> Result<()> {
 
     let _watcher = {
         let _guard = worker.handle().enter();
-        config_watcher::spawn(&paths.config_toml(), bus.clone(), cancel.clone())
+        watcher::spawn(&paths.config_toml(), bus.clone(), cancel.clone())
             .context("spawn config watcher")?
     };
 
@@ -243,8 +241,8 @@ fn main() -> Result<()> {
         let _guard = worker.handle().enter();
         // reason: bounded at 256; on full, sender uses try_send + drop (drop-on-full, not back-pressure — see notifications.rs)
         let (action_tx, mut action_rx) =
-            tokio::sync::mpsc::channel::<gui_notification_router::NotificationAction>(256);
-        let _notif = gui_notifications::spawn(
+            tokio::sync::mpsc::channel::<os_notification_router::NotificationAction>(256);
+        let _notif = os_notifications::spawn(
             bus.subscribe(),
             db.clone(),
             settings_arc,
@@ -261,7 +259,7 @@ fn main() -> Result<()> {
                     () = cancel_for_router.cancelled() => break,
                     msg = action_rx.recv() => {
                         let Some(action) = msg else { break };
-                        gui_notification_router::dispatch_action(
+                        os_notification_router::dispatch_action(
                             action,
                             &db_for_router,
                             &approvals_for_router,
@@ -344,7 +342,7 @@ fn install_tray(
     cancel: &CancellationToken,
     window: &MainWindow,
     rt: tokio::runtime::Handle,
-) -> Option<gui_tray::TrayHandle> {
+) -> Option<os_tray::TrayHandle> {
     let weak_show = window.as_weak();
     let on_show = Arc::new(move || {
         let weak = weak_show.clone();
@@ -377,13 +375,13 @@ fn install_tray(
         });
     });
 
-    let callbacks = gui_tray::TrayCallbacks {
+    let callbacks = os_tray::TrayCallbacks {
         on_show,
         on_quit,
         on_pause_toggle,
     };
 
-    gui_tray::install(db.clone(), rt, bus.subscribe(), cancel.clone(), callbacks)
+    os_tray::install(db.clone(), rt, bus.subscribe(), cancel.clone(), callbacks)
 }
 
 fn install_hotkey(window: &MainWindow) -> Option<hotkey::HotkeyHandles> {

@@ -1,7 +1,7 @@
 //! `client` table CRUD — replaces the old `ides.rs`.
 //!
 //! Each row is a detected (or manually registered) editor. Built-in rows are
-//! projected from `clients::BUILTINS` at startup; custom rows are user-added.
+//! projected from `client_config::BUILTINS` at startup; custom rows are user-added.
 //! `mcp_key` is the URL routing token; `tracked` is user-intent (never manage
 //! if false). `managed_mcp` and `managed_skill` are the N:M join tables.
 

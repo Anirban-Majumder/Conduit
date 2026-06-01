@@ -5,9 +5,9 @@
 
 use std::path::Path;
 
-use conduit::daemon::clients::builtin_by_id;
-use conduit::daemon::clients::paths::resolve_under;
-use conduit::paths::Paths;
+use conduit::daemon::client_config::builtin_by_id;
+use conduit::daemon::client_config::paths::resolve_under;
+use conduit::daemon::paths::Paths;
 
 /// Resolve a built-in's skills dir under a fake home, or `None` if unsupported.
 fn skills_under(id: &str, home: &Path) -> Option<std::path::PathBuf> {
