@@ -27,8 +27,8 @@ use super::clients::{
 use super::migrations::{query_list_columns, query_list_tables, query_schema_version};
 use super::servers::{
     query_clear_server_auth_error, query_commit_cascade_delete, query_delete_server,
-    query_get_server, query_get_tool_decision, query_list_server_tools, query_list_servers,
-    query_rename_server, query_resolve_policy, query_set_server_auth_error,
+    query_get_server, query_get_tool_decision, query_list_all_tools, query_list_server_tools,
+    query_list_servers, query_rename_server, query_resolve_policy, query_set_server_auth_error,
     query_set_tool_decision, query_upsert_server, query_upsert_server_with_tools,
 };
 use super::settings::{query_get_settings_kv, query_set_settings_kv};
@@ -82,6 +82,9 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
         }
         DbCmd::ListServerTools { server, reply } => {
             reply.send(query_list_server_tools(conn, &server)).ok();
+        }
+        DbCmd::ListAllTools { reply } => {
+            reply.send(query_list_all_tools(conn)).ok();
         }
         DbCmd::SetServerAuthError {
             server,

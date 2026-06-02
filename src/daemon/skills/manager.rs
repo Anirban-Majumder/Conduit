@@ -485,10 +485,23 @@ impl SkillManager {
         &self,
         directory: &str,
     ) -> Result<Vec<(ResolvedClient, Scope)>, SkillError> {
+        let scoped = self.db.list_skill_targets_scoped(directory).await?;
+        if scoped.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Resolve all client rows once and look up locally — the per-row
+        // `resolve_client` (a `get_client` actor roundtrip each) was an N+1.
+        let clients: std::collections::HashMap<String, ResolvedClient> = self
+            .db
+            .list_clients()
+            .await?
+            .into_iter()
+            .map(|row| (row.id.clone(), ResolvedClient::from_row(row)))
+            .collect();
         let mut out = Vec::new();
-        for (client_id, scope) in self.db.list_skill_targets_scoped(directory).await? {
-            if let Some(client) = client_config::resolve_client(&self.db, &client_id).await? {
-                out.push((client, Scope::from_db(&scope)));
+        for (client_id, scope) in scoped {
+            if let Some(client) = clients.get(&client_id) {
+                out.push((client.clone(), Scope::from_db(&scope)));
             }
         }
         Ok(out)

@@ -49,9 +49,15 @@ pub(crate) fn push_initial_models(
     let weak = window.as_weak();
     let db_for_refresh = db.clone();
     let weak_for_skills = weak.clone();
+    let port = settings.daemon.port;
     rt.spawn(async move {
         skills.purge_tmp().await;
         run_ide_detection(&db_for_refresh).await;
+        // Repair any DB↔on-disk config divergence from an interrupted cascade
+        // before the first paint reads the (now-authoritative) DB state.
+        if let Err(e) = client_config::project::reconcile_configs(&db_for_refresh, port).await {
+            tracing::warn!(error = %e, "startup config reconcile failed");
+        }
         refresh_all(&weak, &db_for_refresh).await;
         // Before refresh_skills — that runs slow network discovery and would
         // otherwise delay the dashboard's first paint.
@@ -202,13 +208,14 @@ pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
 
 pub(crate) async fn refresh_servers(weak: &slint::Weak<MainWindow>, db: &Db) {
     let servers = db.list_servers().await.unwrap_or_default();
+    let mut tool_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for t in db.list_all_tools().await.unwrap_or_default() {
+        *tool_counts.entry(t.server).or_default() += 1;
+    }
     let mut rows: Vec<ServerRow> = Vec::with_capacity(servers.len());
     for s in servers {
-        let tool_count = db
-            .list_server_tools(&s.name)
-            .await
-            .map(|v| v.len())
-            .unwrap_or(0);
+        let tool_count = tool_counts.get(&s.name).copied().unwrap_or(0);
         let count_label = if tool_count == 0 {
             "no tools".to_string()
         } else {
@@ -486,20 +493,17 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
 }
 
 pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
-    // list_all_policies is removed; collect per-server tools with their decisions.
-    let servers = db.list_servers().await.unwrap_or_default();
+    // list_all_policies is removed; collect tool decisions in one batched query.
+    let tools = db.list_all_tools().await.unwrap_or_default();
     let mut rows: Vec<PolicyRow> = Vec::new();
-    for s in servers {
-        let tools = db.list_server_tools(&s.name).await.unwrap_or_default();
-        for t in tools {
-            if let Some(decision) = t.decision {
-                rows.push(PolicyRow {
-                    server: SharedString::from(t.server.clone()),
-                    tool: SharedString::from(t.name),
-                    decision: SharedString::from(decision.as_db_str()),
-                    source: SharedString::from(""), // decision source not tracked per-tool anymore
-                });
-            }
+    for t in tools {
+        if let Some(decision) = t.decision {
+            rows.push(PolicyRow {
+                server: SharedString::from(t.server.clone()),
+                tool: SharedString::from(t.name),
+                decision: SharedString::from(decision.as_db_str()),
+                source: SharedString::from(""), // decision source not tracked per-tool anymore
+            });
         }
     }
     weak.upgrade_in_event_loop(move |ui| {

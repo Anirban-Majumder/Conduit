@@ -146,6 +146,17 @@ pub(super) fn query_list_server_tools(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// All tools across every server in one statement — the batched form of
+/// `query_list_server_tools`, so policy/server refreshes avoid an N+1 per server.
+pub(super) fn query_list_all_tools(conn: &Connection) -> Result<Vec<McpTool>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT mcp_server, name, description, input_schema, discovered_at, decision
+         FROM mcp_tool ORDER BY mcp_server, name",
+    )?;
+    let rows = stmt.query_map([], decode_tool_row)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Set the decision for a single (server, tool) pair. If the tool doesn't exist
 /// in `mcp_tool` yet, this is a no-op (caller should probe first).
 pub(super) fn query_set_tool_decision(
@@ -376,6 +387,10 @@ impl Db {
             reply,
         })
         .await
+    }
+
+    pub async fn list_all_tools(&self) -> Result<Vec<McpTool>, DbError> {
+        self.send_cmd(|reply| DbCmd::ListAllTools { reply }).await
     }
 
     pub async fn list_server_tools(&self, server: &str) -> Result<Vec<McpTool>, DbError> {

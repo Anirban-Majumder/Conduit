@@ -151,8 +151,12 @@ pub(crate) fn display_scope(scope: &str) -> String {
     if scope == "global" {
         return "Global".to_string();
     }
+    // Scope keys are `std::fs::canonicalize` output, which on Windows is a
+    // verbatim `\\?\C:\...` path; `home_dir()` is non-verbatim, so `strip_prefix`
+    // would never match and we'd show the raw `\\?\` string. De-verbatim first.
+    let scope = strip_verbatim(scope);
     if let Some(home) = dirs::home_dir() {
-        if let Ok(rel) = std::path::Path::new(scope).strip_prefix(&home) {
+        if let Ok(rel) = std::path::Path::new(scope.as_ref()).strip_prefix(&home) {
             return if rel.as_os_str().is_empty() {
                 "~".to_string()
             } else {
@@ -160,7 +164,24 @@ pub(crate) fn display_scope(scope: &str) -> String {
             };
         }
     }
-    scope.to_string()
+    scope.into_owned()
+}
+
+#[cfg(windows)]
+fn strip_verbatim(s: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        Cow::Owned(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        Cow::Borrowed(rest)
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+#[cfg(not(windows))]
+const fn strip_verbatim(s: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(s)
 }
 
 pub(crate) fn lifecycle_label(secs: i32) -> String {

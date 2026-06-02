@@ -59,6 +59,9 @@ pub enum DbCmd {
         server: String,
         reply: oneshot::Sender<Result<Vec<McpTool>, DbError>>,
     },
+    ListAllTools {
+        reply: oneshot::Sender<Result<Vec<McpTool>, DbError>>,
+    },
     SetServerAuthError {
         server: String,
         message: String,

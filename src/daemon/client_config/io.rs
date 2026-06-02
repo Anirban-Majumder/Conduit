@@ -15,33 +15,33 @@ use crate::atomic_io::atomic_rename_or_replace;
 use crate::daemon::time_util::now_unix_nanos;
 
 pub(super) fn atomic_write_json(path: &Path, value: &JsonValue) -> Result<(), ClientError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let mut serialized = serde_json::to_vec_pretty(value)?;
     serialized.push(b'\n');
-    let tmp = tmp_path_for(path)?;
-    fs::write(&tmp, &serialized)?;
-    atomic_rename_or_replace(&tmp, path).map_err(|e| {
-        let _ignored = fs::remove_file(&tmp);
-        ClientError::Io(e)
-    })
+    write_atomic(path, &serialized)
 }
 
 pub(super) fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), ClientError> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let mut serialized = toml::to_string_pretty(value)?.into_bytes();
     if !serialized.ends_with(b"\n") {
         serialized.push(b'\n');
     }
+    write_atomic(path, &serialized)
+}
+
+/// Tempfile + platform-safe rename. Skips the write entirely when the file is
+/// already byte-identical — keeps the startup config reconcile idempotent (no
+/// gratuitous rewrites, no comment-stripping churn when nothing changed).
+fn write_atomic(path: &Path, serialized: &[u8]) -> Result<(), ClientError> {
+    if fs::read(path).is_ok_and(|existing| existing == serialized) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
     let tmp = tmp_path_for(path)?;
-    fs::write(&tmp, &serialized)?;
+    fs::write(&tmp, serialized)?;
     atomic_rename_or_replace(&tmp, path).map_err(|e| {
         let _ignored = fs::remove_file(&tmp);
         ClientError::Io(e)

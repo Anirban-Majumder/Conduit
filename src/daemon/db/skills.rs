@@ -232,12 +232,27 @@ pub(super) fn query_list_skills(conn: &Connection) -> Result<Vec<Skill>, DbError
                 skill_name, description, readme_url, installed_at
          FROM skills ORDER BY skill_name",
     )?;
-    let rows = stmt.query_map([], decode_skill_row)?;
-    let mut out = Vec::new();
+    let mut out: Vec<Skill> = stmt
+        .query_map([], decode_skill_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Bucket all (skill_dir -> clients) in one query instead of one per skill.
+    // DISTINCT collapses a client present in both global and a repo to one entry,
+    // matching `read_skill_targets`; ORDER keeps the per-skill client order stable.
+    let mut targets: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT skill_dir, client_id FROM managed_skill ORDER BY skill_dir, client_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     for r in rows {
-        let mut s = r?;
-        s.targets = read_skill_targets(conn, &s.directory)?;
-        out.push(s);
+        let (dir, client) = r?;
+        targets.entry(dir).or_default().push(client);
+    }
+    for s in &mut out {
+        s.targets = targets.remove(&s.directory).unwrap_or_default();
     }
     Ok(out)
 }
