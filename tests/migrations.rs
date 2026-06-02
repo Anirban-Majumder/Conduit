@@ -100,14 +100,14 @@ async fn mcp_tool_merges_metadata_and_decision() {
 }
 
 #[tokio::test]
-async fn schema_version_is_two() {
+async fn schema_version_is_one() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
-    assert_eq!(db.schema_version().await.unwrap(), 2);
+    assert_eq!(db.schema_version().await.unwrap(), 1);
 }
 
 #[tokio::test]
 async fn client_has_project_scope_columns() {
-    // 0002 adds the two repo-relative path columns used by directory-scope.
+    // The baseline carries the two repo-relative path columns used by directory-scope.
     let db = Db::spawn_in_memory().expect("spawn db actor");
     let cols = db.table_columns("client").await.expect("columns");
     for expected in ["project_config_rel", "project_skills_rel"] {
@@ -161,13 +161,13 @@ async fn migrations_idempotent_on_re_open() {
     {
         let db = Db::spawn_at(&path).expect("first spawn");
         db.ping().await.expect("first ping");
-        assert_eq!(db.schema_version().await.unwrap(), 2);
+        assert_eq!(db.schema_version().await.unwrap(), 1);
     }
     {
         let db = Db::spawn_at(&path).expect("second spawn re-runs migrations");
         db.ping().await.expect("second ping");
         // Re-running migrations is a no-op (already at the recorded version).
-        assert_eq!(db.schema_version().await.unwrap(), 2);
+        assert_eq!(db.schema_version().await.unwrap(), 1);
         let cols = db.table_columns("mcp_server").await.unwrap();
         assert!(cols.iter().any(|c| c == "last_auth_error_msg"));
     }

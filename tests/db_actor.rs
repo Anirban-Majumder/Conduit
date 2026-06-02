@@ -31,9 +31,9 @@ async fn ping_round_trips_through_db_actor() {
 }
 
 #[tokio::test]
-async fn schema_version_is_two() {
+async fn schema_version_is_one() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
-    assert_eq!(db.schema_version().await.expect("schema version"), 2);
+    assert_eq!(db.schema_version().await.expect("schema version"), 1);
 }
 
 #[tokio::test]

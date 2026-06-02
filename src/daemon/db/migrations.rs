@@ -5,6 +5,10 @@
 //! Today the slice holds only the compiled baseline `(1, INIT_SQL)`; the first
 //! post-v0 change appends `(2, …)` — additive, no wipe. A `foreign_key_check`
 //! runs after each applied migration to catch dangling references early.
+//!
+//! Pre-release the baseline still moves: schema changes fold straight into
+//! `0001_init.sql` rather than appending an entry. Once v1 ships, freeze the
+//! baseline and append `(2, …)` — never edit a released entry.
 
 use rusqlite::Connection;
 
@@ -16,13 +20,11 @@ use super::DbCmd;
 /// `INSERT OR IGNORE` make it safe to re-run on an existing database.
 const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
 
-/// Phase 5b: adds `client.project_config_rel` / `project_skills_rel`.
-const V0002_SQL: &str = include_str!("migrations/0002_repo_scope.sql");
-
 /// The ordered migration ledger. Each entry is `(version, sql)`; apply in order,
-/// skipping any whose version is already recorded in `schema_version`. Append the
-/// next change as `(3, V0003_SQL)` — never edit a released entry.
-const MIGRATIONS: &[(i64, &str)] = &[(1, INIT_SQL), (2, V0002_SQL)];
+/// skipping any whose version is already recorded in `schema_version`. While the
+/// baseline is unfrozen, fold changes into `0001_init.sql`; post-v1, append the
+/// next change as `(2, V0002_SQL)` — never edit a released entry.
+const MIGRATIONS: &[(i64, &str)] = &[(1, INIT_SQL)];
 
 #[cfg(all(unix, not(debug_assertions)))]
 pub(super) fn restrict_db_perms(path: &std::path::Path) {

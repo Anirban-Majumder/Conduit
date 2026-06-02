@@ -112,7 +112,9 @@ CREATE TABLE IF NOT EXISTS client (
     name               TEXT NOT NULL,                -- display label
     mcp_config_path    TEXT NOT NULL,                -- absolute global config path (OS-resolved)
     skills_dir         TEXT,                          -- absolute global skills dir (NULL = no skills support)
-    schema_json        TEXT NOT NULL                  -- serialized ConfigSchema {format,key_path,entry_template}
+    schema_json        TEXT NOT NULL,                 -- serialized ConfigSchema {format,key_path,entry_template}
+    project_config_rel TEXT,                           -- repo-root-relative; NULL = no repo MCP
+    project_skills_rel TEXT                            -- repo-root-relative; NULL = no repo skills
 );
 
 CREATE TABLE IF NOT EXISTS managed_mcp (
