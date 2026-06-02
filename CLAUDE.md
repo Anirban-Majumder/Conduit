@@ -5,7 +5,7 @@ MCPs and skills, synced to every IDE. Single Rust binary using Slint for the GUI
 # Tech
 
 - Rust stable, edition 2021. Single crate at root. Toolchain pinned in `rust-toolchain.toml`.
-- GUI: Slint 1.x (`.slint` markup in `src/ui/`, Rust glue in `src/gui/`). No webview, no Node.
+- GUI: Slint 1.x (`.slint` markup in `src/slint/`, Rust glue in `src/window/`). No webview, no Node.
 - HTTP server: axum on tokio.
 - MCP wire: `rmcp = "~1.7"` (tilde — pin minor, allow patches).
 - Storage: rusqlite (single `state.db` w/ audit table inside), OS keyring for secrets, `config.toml` for user-tunable settings.
@@ -34,17 +34,25 @@ If context7 doesn't help, say "I don't know the exact API" and read the source o
 
 # Layout
 
+Top level reads as: **slint** (markup) · **window** (GUI Rust) · **os** (desktop integration) · **client** (IDE catalog) · **daemon** (headless core) · **installer**. The binary crate is `main.rs` + `window/`; everything else is the library crate.
+
 | Path | Purpose |
 |---|---|
-| `src/main.rs` | Entry: starts tokio runtime + Slint event loop |
-| `src/daemon/` | axum HTTP server, MCP routing, policy, audit, upstream lifecycle |
-| `src/daemon/upstream/` | MCP server spawn / lifecycle / install (pnpm/uv) |
-| `src/daemon/ide_writer/` | Per-IDE config writers (5 IDEs × 3 OSes) |
-| `src/gui/` | Slint Rust glue: tray, window, notifications, callback handlers, models, event bridge |
+| `src/main.rs` | Entry: bootstraps every subsystem, then hands the main thread to Slint |
+| `src/window/` | Binary-side Slint GUI glue: generated bindings (`view.rs`), `callbacks/`, `refresh`, `wizard`, `skills` |
+| `src/slint/` | `.slint` markup: `main.slint`, `theme.slint`, `components/`, `tabs/` |
+| `src/os/` | OS integration: tray, notifications, global hotkey |
+| `src/client/` | Static per-IDE definitions — one `ClientDef` per editor + `example.rs` template |
+| `src/daemon/` | Headless core (library): HTTP MCP server, routing, policy, audit, DB actor, upstream lifecycle, IPC |
+| `src/daemon/downstream/` | IDE-facing MCP (we're the server): `http_server`, `proxy`, `approval` gate |
+| `src/daemon/upstream/` | Server-facing MCP (we're the client): spawn / lifecycle / install (pnpm/uv) / OAuth |
+| `src/daemon/client_config/` | Detect installed IDEs, resolve them, render + write their MCP config files |
+| `src/daemon/config/` | `config.toml` schema/loader (`toml`) + filesystem watcher |
+| `src/daemon/db/` | DB-actor: `Db` handle + `actor_loop` + `dispatch` + per-table query modules |
 | `src/installer/` | systemd / launchd / scheduled-task install at first run |
-| `src/ui/` | `.slint` markup: `main.slint`, `theme.slint`, `components/`, `tabs/` |
-| `assets/` | Bundled fonts (Anton, Space Grotesk, Space Mono) + tray icons |
-| `build.rs` | `slint_build::compile("src/ui/main.slint")` |
+| `src/runtime.rs`, `src/atomic_io.rs` | Cross-cutting: the tokio worker; cross-platform atomic file write |
+| `assets/` | Bundled fonts (Anton, Space Grotesk, Space Mono) + client/tray icons |
+| `build.rs` | `slint_build::compile("src/slint/main.slint")` |
 | `docs/` | Spec, design system, deferred-feature docs |
 
 # Architectural contract (read this before writing any code)
@@ -167,7 +175,7 @@ Shutdown sequence: Slint `app.run()` returns → fire token → `runtime.shutdow
 
 # Project-specific gotchas
 
-- `lifecycle_seconds` is a single int: `0` = ephemeral, `-1` = persistent, `N > 0` = idle TTL seconds. Auto-detection upgrades only (never shortens). See `src/daemon/upstream/lifecycle.rs`.
+- `lifecycle_seconds` is a single int: `0` = ephemeral, `-1` = persistent, `N > 0` = idle TTL seconds. Auto-detection upgrades only (never shortens). See `src/daemon/upstream/manager.rs`.
 - IDE auto-write tracks every entry in `managed_ide_configs` table. Removing an IDE must purge entries via this table + URL regex match (entries pointing to `localhost:9876/<key>/<server>/mcp`). NO inline `_mcpRouter: { managed: true }` marker — some IDEs schema-validate and would reject. Don't rewrite IDE config files blindly.
 - `config.toml` is authoritative for user settings; watched via `notify` crate (5s debounce). Settings tab writes back to TOML, not DB.
 - `state.db` is the single SQLite file. Audit log is a TABLE inside; don't reintroduce `audit.db`.

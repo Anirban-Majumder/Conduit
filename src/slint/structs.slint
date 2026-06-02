@@ -1,0 +1,153 @@
+// Data structs shared across the UI and the Rust GUI glue.
+// Each `export struct` here becomes a generated Rust type the daemon fills in
+// and pushes to the window. main.slint re-exports these; the tabs import the
+// specific rows they render. Markup-only helper components live in components/.
+
+export struct ApprovalRow {
+    id: string,
+    ide_name: string,
+    server: string,
+    tool: string,
+    created_at: string,
+    args_json: string,
+}
+
+export struct EnvVarRow {
+    key: string,
+    value: string,
+}
+
+export struct DashboardStats {
+    server_count: int,
+    server_live: int,
+    server_auth_failures: int,
+    skill_count: int,
+    editor_count: int,
+    calls_24h: int,
+    denied_24h: int,
+}
+
+export struct ServerRow {
+    name: string,
+    transport: string,
+    lifecycle_label: string,    // "persistent" / "ephemeral" / "300s idle"
+    status: string,             // "running" | "idle" | "crashed"
+    tool_count_label: string,
+    auth_failure: bool,
+}
+
+export struct IdeRow {
+    kind: string,
+    display_name: string,
+    key: string,
+    status: string,
+    config_path: string,
+    icon: image,
+}
+
+export struct PolicyRow {
+    server: string,
+    tool: string,
+    decision: string,           // "allow" | "deny" | "ask"
+    source: string,
+}
+
+export struct ToolPolicyRow {
+    name: string,
+    description: string,
+    summary: string,            // first line of description, shown when collapsed
+    decision: string,           // "allow" | "ask" | "deny"
+}
+
+// One detected IDE rendered as an icon toggle, shared by the Servers tab
+// (per-server "Connected Editors") and the Skills tab (per-skill targets). The
+// Rust glue builds this list from `IdeKind`, so adding an IDE touches no
+// `.slint`. `icon` is decoded from the client module's brand SVG on the UI
+// thread (slint::Image is !Send).
+export struct IdeTarget {
+    ide_kind: string,
+    label: string,
+    icon: image,
+    active: bool,
+}
+
+export struct ServerDetail {
+    name: string,
+    version: string,                // "server_version" from probe
+    transport: string,              // "stdio" | "http"
+    command_or_url: string,
+    lifecycle_label: string,
+    health_state: string,           // "live" | "idle" | "down" | "unprobed" | "needsauth" | "paused" | "probing"
+    last_probe_label: string,       // "2m ago" or "never"
+    last_error: string,             // empty if no error
+    tool_count_label: string,       // "12 tools"
+    auth_failure_msg: string,       // empty if no auth failure
+    latency_label: string,          // "14ms" init duration, empty if unknown
+}
+
+
+export struct AuditRow {
+    id: string,
+    ts_label: string,
+    ide_name: string,
+    server: string,
+    tool: string,
+    decision: string,
+    latency_label: string,
+    // Detail-pane fields (visible when row is expanded)
+    ts_full: string,
+    decision_source: string,
+    request_args: string,
+    response_status: string,
+    response_length: string,
+    error_code: string,
+}
+
+export struct SettingsRow {
+    port: string,
+    approval_timeout: string,
+    default_lifecycle: string,
+    audit_retention: string,
+    theme: string,
+    autostart_at_login: string,
+    notifications_enabled: string,
+    skills_sync_mode: string,
+}
+
+export struct SkillRow {
+    key: string,
+    directory: string,
+    name: string,
+    description: string,
+    repo_label: string,
+    repo_owner: string,
+    repo_name: string,
+    repo_branch: string,
+    source_directory: string,
+    readme_url: string,
+    installed: bool,
+    targets: [IdeTarget],
+}
+
+export struct SkillRepoRow {
+    owner: string,
+    name: string,
+    branch: string,
+    enabled: bool,
+}
+
+// One row in the scope popover (shared by Server + Skill detail): whether this
+// item is in this scope for the selected editor. `removable` is false for Global
+// (no ✕). `scope-key` is "global" or the canonical repo path the Rust glue keys on.
+export struct ScopeRow {
+    label: string,        // "Global" or home-relative "~/work/foo"
+    scope-key: string,    // "global" | canonical absolute repo dir
+    active: bool,
+    removable: bool,
+}
+
+// One choice in the Editors-tab scope selector (which scope's config file to view).
+export struct ScopeOption {
+    label: string,        // "Global" or "~/work/foo"
+    scope-key: string,    // "global" | canonical absolute repo dir
+}

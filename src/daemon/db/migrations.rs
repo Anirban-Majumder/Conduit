@@ -1,24 +1,30 @@
-//! Schema bootstrap and forward-migration logic, run once by the DB actor.
+//! Schema bootstrap + forward-migration runner, run once by the DB actor.
 //!
-//! `init_conn` sets connection PRAGMAs, applies the bundled `migrations/*.sql`
-//! batches in order, then performs idempotent ad-hoc fixups (`ensure_column`,
-//! FK rebuild, legacy `ide_keys`/`managed_ide_configs` → `ides` migration).
-//! Everything here must be safe to re-run on an already-migrated database.
+//! `init_conn` sets connection PRAGMAs, then walks `MIGRATIONS`, applying any
+//! whose version exceeds the stored `schema_version` and bumping it after each.
+//! Today the slice holds only the compiled baseline `(1, INIT_SQL)`; the first
+//! post-v0 change appends `(2, …)` — additive, no wipe. A `foreign_key_check`
+//! runs after each applied migration to catch dangling references early.
+//!
+//! Pre-release the baseline still moves: schema changes fold straight into
+//! `0001_init.sql` rather than appending an entry. Once v1 ships, freeze the
+//! baseline and append `(2, …)` — never edit a released entry.
 
-use super::{Db, DbCmd};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 
 use crate::daemon::errors::DbError;
 
+use super::DbCmd;
+
+/// The single compiled schema baseline. `CREATE TABLE IF NOT EXISTS` /
+/// `INSERT OR IGNORE` make it safe to re-run on an existing database.
 const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
 
-const V01_SQL: &str = include_str!("migrations/0002_v01.sql");
-
-const SKILLS_SQL: &str = include_str!("migrations/0003_skills.sql");
-
-const IDES_SQL: &str = include_str!("migrations/0004_ides.sql");
-
-const OAUTH_DRAFTS_SQL: &str = include_str!("migrations/0005_oauth_drafts.sql");
+/// The ordered migration ledger. Each entry is `(version, sql)`; apply in order,
+/// skipping any whose version is already recorded in `schema_version`. While the
+/// baseline is unfrozen, fold changes into `0001_init.sql`; post-v1, append the
+/// next change as `(2, V0002_SQL)` — never edit a released entry.
+const MIGRATIONS: &[(i64, &str)] = &[(1, INIT_SQL)];
 
 #[cfg(all(unix, not(debug_assertions)))]
 pub(super) fn restrict_db_perms(path: &std::path::Path) {
@@ -55,11 +61,6 @@ pub(super) fn restrict_db_perms(path: &std::path::Path) {
         if !p.exists() {
             continue;
         }
-        // TODO: /inheritance:r strips ALL ACEs before /grant:r applies new ones.
-        // A partial failure (e.g. unresolvable account) can leave a broken DACL.
-        // Consider using the *S-1-5-... SID form for the current user (via
-        // whoami) instead of USERNAME/USERDOMAIN, and verifying success before
-        // proceeding.
         let status = std::process::Command::new("icacls")
             .arg(&p)
             .args([
@@ -82,196 +83,42 @@ pub(super) fn init_conn(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
     )?;
-    conn.execute_batch(INIT_SQL)?;
-    conn.execute_batch(V01_SQL)?;
-    conn.execute_batch(SKILLS_SQL)?;
-    conn.execute_batch(IDES_SQL)?;
-    conn.execute_batch(OAUTH_DRAFTS_SQL)?;
-    ensure_column(conn, "servers", "server_name", "TEXT")?;
-    ensure_column(conn, "servers", "server_version", "TEXT")?;
-    ensure_column(conn, "servers", "last_probed_at", "INTEGER")?;
-    ensure_column(conn, "servers", "last_probe_error", "TEXT")?;
-    ensure_column(conn, "servers", "last_auth_error_msg", "TEXT")?;
-    ensure_column(conn, "servers", "last_auth_error_at", "INTEGER")?;
-    // OAuth client_id + scopes now live in the keyring credential blob; drop the
-    // legacy write-only columns from pre-migration databases.
-    for col in [
-        "oauth_authority",
-        "oauth_client_id",
-        "oauth_client_secret_ref",
-        "oauth_scopes",
-    ] {
-        drop_column_if_exists(conn, "servers", col)?;
-    }
-    ensure_column(conn, "policies", "scope", "TEXT NOT NULL DEFAULT 'tool'")?;
-    ensure_policies_fk(conn)?;
-    migrate_legacy_ide_tables(conn)?;
+    run_migrations(conn)?;
     Ok(())
 }
 
-struct LegacyIdeRow {
-    ide_name: String,
-    key: String,
-    created_at: i64,
-    config_path: Option<String>,
-    entries_json: Option<String>,
-    written_at: Option<i64>,
-}
-
-fn migrate_legacy_ide_tables(conn: &Connection) -> Result<(), DbError> {
-    let legacy_present: bool = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ide_keys'")?
-        .query_row([], |_| Ok(()))
-        .optional()?
-        .is_some();
-    if !legacy_present {
-        return Ok(());
-    }
-
-    let tx = conn.unchecked_transaction()?;
-    let mut select = tx.prepare(
-        "SELECT k.ide_name, k.key, k.created_at, m.config_path, m.managed_entries_json, m.written_at
-         FROM ide_keys k
-         LEFT JOIN managed_ide_configs m
-           ON m.ide_name = k.ide_name AND m.ide_key = k.key
-         ORDER BY k.created_at DESC",
-    )?;
-    let rows: Vec<LegacyIdeRow> = select
-        .query_map([], |r| {
-            Ok(LegacyIdeRow {
-                ide_name: r.get::<_, String>(0)?,
-                key: r.get::<_, String>(1)?,
-                created_at: r.get::<_, i64>(2)?,
-                config_path: r.get::<_, Option<String>>(3)?,
-                entries_json: r.get::<_, Option<String>>(4)?,
-                written_at: r.get::<_, Option<i64>>(5)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?;
-    drop(select);
-
-    let mut seen_kinds = std::collections::HashSet::<String>::new();
-    for row in rows {
-        let Some(kind) = legacy_ide_name_to_kind(&row.ide_name) else {
-            continue;
-        };
-        if !seen_kinds.insert(kind.to_string()) {
-            continue;
-        }
-        let display = legacy_ide_name_to_display(&row.ide_name).to_string();
-        let last_seen = row.written_at.unwrap_or(row.created_at);
-        tx.prepare_cached(
-            "INSERT OR IGNORE INTO ides
-                (ide_kind, display_name, ide_key, status, detection_source,
-                 config_path, managed_entries_json, first_seen_at, last_seen_at, not_tracked_at)
-             VALUES (?1, ?2, ?3, 'active', NULL, ?4, ?5, ?6, ?7, NULL)",
-        )?
-        .execute(params![
-            kind,
-            display,
-            row.key,
-            row.config_path,
-            row.entries_json.unwrap_or_else(|| "[]".to_string()),
-            row.created_at,
-            last_seen,
-        ])?;
-    }
-
-    tx.execute_batch(
-        "DROP TABLE IF EXISTS managed_ide_configs;
-         DROP TABLE IF EXISTS ide_keys;",
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-const fn legacy_ide_name_to_kind(name: &str) -> Option<&'static str> {
-    match name.as_bytes() {
-        b"ClaudeCode" | b"Claude Code" => Some("ClaudeCode"),
-        b"Cursor" => Some("Cursor"),
-        b"VsCodeCopilot" | b"VS Code Copilot" | b"VS Code" => Some("VsCodeCopilot"),
-        b"OpenCode" => Some("OpenCode"),
-        b"OpenClaude" => Some("OpenClaude"),
-        b"Codex" => Some("Codex"),
-        _ => None,
-    }
-}
-
-const fn legacy_ide_name_to_display(name: &str) -> &'static str {
-    match name.as_bytes() {
-        b"ClaudeCode" | b"Claude Code" => "Claude Code",
-        b"Cursor" => "Cursor",
-        b"VsCodeCopilot" | b"VS Code Copilot" | b"VS Code" => "VS Code Copilot",
-        b"OpenCode" => "OpenCode",
-        b"OpenClaude" => "OpenClaude",
-        b"Codex" => "Codex",
-        _ => "Unknown",
-    }
-}
-
-fn ensure_policies_fk(conn: &Connection) -> Result<(), DbError> {
-    let has_fk = {
-        let mut stmt = conn.prepare("PRAGMA foreign_key_list(policies)")?;
-        let mut rows = stmt.query([])?;
-        let mut found = false;
-        while let Some(r) = rows.next()? {
-            if r.get::<_, String>(2)? == "servers" {
-                found = true;
-                break;
-            }
-        }
-        found
-    };
-    if has_fk {
-        return Ok(());
-    }
+/// Apply every migration whose version exceeds the stored `schema_version`,
+/// recording each and checking FK integrity after it.
+fn run_migrations(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE policies_new (
-             id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-             server          TEXT NOT NULL,
-             tool            TEXT NOT NULL,
-             scope           TEXT NOT NULL DEFAULT 'tool',
-             decision        TEXT NOT NULL,
-             decision_source TEXT NOT NULL,
-             created_at      INTEGER NOT NULL,
-             UNIQUE(server, tool, scope),
-             FOREIGN KEY (server) REFERENCES servers(name) ON UPDATE CASCADE ON DELETE CASCADE
-         );
-         INSERT INTO policies_new (id, server, tool, scope, decision, decision_source, created_at)
-             SELECT id, server, tool,
-                    COALESCE(NULLIF(scope, ''), 'tool'),
-                    decision, decision_source, created_at
-               FROM policies;
-         DROP TABLE policies;
-         ALTER TABLE policies_new RENAME TO policies;
-         CREATE INDEX IF NOT EXISTS idx_policies_server ON policies(server);
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL PRIMARY KEY);",
     )?;
-    Ok(())
-}
+    let current: i64 = conn
+        .prepare_cached("SELECT COALESCE(MAX(version), 0) FROM schema_version")?
+        .query_row([], |row| row.get(0))?;
 
-pub(super) fn query_list_columns(conn: &Connection, table: &str) -> Result<Vec<String>, DbError> {
-    let sql = format!("PRAGMA table_info({table})");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
-}
-
-fn ensure_column(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<(), DbError> {
-    let exists = query_list_columns(conn, table)?.iter().any(|c| c == col);
-    if !exists {
-        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
+    for &(version, sql) in MIGRATIONS {
+        if version <= current {
+            continue;
+        }
+        conn.execute_batch(sql)?;
+        conn.prepare_cached("INSERT OR IGNORE INTO schema_version (version) VALUES (?1)")?
+            .execute([version])?;
+        check_foreign_keys(conn)?;
     }
     Ok(())
 }
 
-fn drop_column_if_exists(conn: &Connection, table: &str, col: &str) -> Result<(), DbError> {
-    let exists = query_list_columns(conn, table)?.iter().any(|c| c == col);
-    if exists {
-        conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {col}"), [])?;
+/// `PRAGMA foreign_key_check` yields one row per dangling reference; any row is
+/// a corrupt migration. Surface the first as a `DbError` rather than limping on.
+fn check_foreign_keys(conn: &Connection) -> Result<(), DbError> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        let table: String = row.get(0)?;
+        return Err(DbError::Encoding(format!(
+            "foreign_key_check failed after migration: dangling reference in '{table}'"
+        )));
     }
     Ok(())
 }
@@ -289,9 +136,17 @@ pub(super) fn query_list_tables(conn: &Connection) -> Result<Vec<String>, DbErro
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-impl Db {
+pub(super) fn query_list_columns(conn: &Connection, table: &str) -> Result<Vec<String>, DbError> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+impl super::Db {
     pub async fn schema_version(&self) -> Result<i64, DbError> {
-        self.send_cmd(|reply| DbCmd::GetSchemaVersion { reply }).await
+        self.send_cmd(|reply| DbCmd::GetSchemaVersion { reply })
+            .await
     }
 
     pub async fn list_tables(&self) -> Result<Vec<String>, DbError> {
@@ -299,6 +154,10 @@ impl Db {
     }
 
     pub async fn table_columns(&self, table: &str) -> Result<Vec<String>, DbError> {
-        self.send_cmd(|reply| DbCmd::ListColumns { table: table.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::ListColumns {
+            table: table.to_string(),
+            reply,
+        })
+        .await
     }
 }

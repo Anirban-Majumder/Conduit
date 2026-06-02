@@ -1,39 +1,24 @@
-//! Server deletion with cascade: purge the server's managed entries from every
-//! IDE config, cancel its pending approvals, and drop its OAuth tokens.
+//! Server deletion with cascade.
 //!
-//! `delete_server_with_cascade` plans targets from `managed_ide_configs`, rewrites
-//! each IDE file off-thread (bounded by `APPLY_PARALLELISM`), then commits the DB
-//! delete with the surviving entries. Per-IDE failures are collected into the
-//! report and skipped, never aborting the whole cascade.
+//! DB-side FK CASCADE removes `managed_mcp` + `mcp_tool` rows; we additionally
+//! cancel pending approvals, optionally drop audit history, and purge OAuth
+//! tokens from the keyring. Crucially we then **re-derive each affected client's
+//! config file** from the surviving `managed_mcp` rows, so the deleted server's
+//! entry disappears from every editor that was managing it — no denormalized
+//! blob, no per-IDE branching: `resolve_client` + the one renderer.
 
-use std::path::PathBuf;
-
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
-
-use crate::daemon::clients::ide_kind_from_db_name;
-use crate::daemon::clients::{self, ClientError};
-use crate::daemon::db::types::{ApprovalStatus, ManagedIdeConfig};
-use crate::daemon::db::{CascadeTrim, Db};
+use crate::daemon::client_config::{render_scope, resolve_client, Scope};
+use crate::daemon::db::types::ApprovalStatus;
+use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
 use crate::daemon::secrets;
 
-const APPLY_PARALLELISM: usize = 4;
-
-#[derive(Debug, Clone)]
-pub struct TargetIde {
-    pub ide_name: String,
-    pub ide_key: String,
-    pub config_path: PathBuf,
-    pub remaining: Vec<String>,
-}
-
 #[derive(Debug, Default)]
 pub struct CascadeReport {
-    pub ides_trimmed: Vec<TargetIde>,
-    pub ides_skipped: Vec<(TargetIde, String)>,
     pub cancelled_approvals: Vec<String>,
+    /// Client IDs whose config files were re-derived after the delete.
+    pub rewritten_clients: Vec<String>,
 }
 
 pub async fn delete_server_with_cascade(
@@ -43,21 +28,13 @@ pub async fn delete_server_with_cascade(
     port: u16,
     delete_audit_history: bool,
 ) -> Result<CascadeReport, DbError> {
-    let plan = plan_targets(db, server_name).await?;
-    let mut report = apply_targets_parallel(&plan, server_name, port).await;
+    // Snapshot affected (client_id, scope) BEFORE the delete wipes managed_mcp.
+    let affected = db.list_clients_managing_server(server_name).await?;
 
-    let trimmed_for_commit: Vec<CascadeTrim> = report
-        .ides_trimmed
-        .iter()
-        .filter_map(|t| {
-            ide_kind_from_db_name(&t.ide_name).map(|kind| CascadeTrim {
-                ide_kind: kind.as_db_kind().to_string(),
-                remaining: t.remaining.clone(),
-            })
-        })
-        .collect();
+    // Single DB transaction: delete managed_mcp rows, cancel approvals,
+    // optionally delete audit, delete the server (mcp_tool cascades).
     let cancelled = db
-        .commit_cascade_delete(server_name, trimmed_for_commit, delete_audit_history)
+        .commit_cascade_delete(server_name, delete_audit_history)
         .await?;
     for id in &cancelled {
         bus.publish(Event::ApprovalResolved {
@@ -65,104 +42,55 @@ pub async fn delete_server_with_cascade(
             status: ApprovalStatus::Cancelled,
         });
     }
-    report.cancelled_approvals = cancelled;
+
     if let Err(e) = secrets::delete_oauth_tokens(server_name) {
         tracing::warn!(server = %server_name, error = %e, "cascade: failed to delete OAuth tokens");
     }
-    Ok(report)
-}
 
-async fn apply_targets_parallel(plan: &[TargetIde], server_name: &str, port: u16) -> CascadeReport {
-    let mut joinset = spawn_purge_tasks(plan, server_name, port).await;
-    let mut report = CascadeReport::default();
-    while let Some(joined) = joinset.join_next().await {
-        collect_purge_result(joined, &mut report);
-    }
-    report
-}
-
-fn collect_purge_result(
-    joined: Result<PurgeResult, tokio::task::JoinError>,
-    report: &mut CascadeReport,
-) {
-    match joined {
-        Ok((target, Ok(()))) => report.ides_trimmed.push(target),
-        Ok((target, Err(e))) => {
-            let reason = describe(&e);
-            tracing::warn!(
-                ide = %target.ide_name,
-                key = %target.ide_key,
-                error = %reason,
-                "cascade: skipping IDE",
-            );
-            report.ides_skipped.push((target, reason));
-        }
-        Err(e) => tracing::warn!(error = %e, "cascade apply join failed"),
-    }
-}
-
-type PurgeResult = (TargetIde, Result<(), ClientError>);
-
-async fn spawn_purge_tasks(
-    plan: &[TargetIde],
-    server_name: &str,
-    port: u16,
-) -> JoinSet<PurgeResult> {
-    let mut joinset = JoinSet::new();
-    let sem = std::sync::Arc::new(Semaphore::new(APPLY_PARALLELISM));
-    for target in plan {
-        let permit = match sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_closed) => break,
-        };
-        let Some(ide) = ide_kind_from_db_name(&target.ide_name) else {
-            tracing::warn!(ide = %target.ide_name, "cascade: unknown IDE in plan; skipping");
+    // Re-derive each affected (client, scope) from its SURVIVING managed servers.
+    // De-dup on the (client, scope) PAIR — NOT the client id — so a server
+    // managed at both global and a repo re-derives both files (§6). The renderer
+    // rewrites each file without the deleted entry (and removes an emptied repo
+    // file).
+    let mut rewritten = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (client_id, scope) in affected {
+        if !seen.insert((client_id.clone(), scope.clone())) {
             continue;
-        };
-        let path = target.config_path.clone();
-        let ide_key = target.ide_key.clone();
-        let server = server_name.to_string();
-        let target_clone = target.clone();
-        joinset.spawn_blocking(move || {
-            let _permit = permit;
-            let result = clients::purge_one_server_for_ide(ide, &path, port, &ide_key, &server);
-            (target_clone, result)
-        });
+        }
+        if let Err(e) = rewrite_client_scope(db, &client_id, &scope, port).await {
+            tracing::warn!(client_id = %client_id, scope = %scope, error = %e, "cascade: config re-derive failed");
+            continue;
+        }
+        if !rewritten.contains(&client_id) {
+            rewritten.push(client_id);
+        }
     }
-    joinset
+
+    Ok(CascadeReport {
+        cancelled_approvals: cancelled,
+        rewritten_clients: rewritten,
+    })
 }
 
-async fn plan_targets(db: &Db, server_name: &str) -> Result<Vec<TargetIde>, DbError> {
-    let configs: Vec<ManagedIdeConfig> = db.list_all_ide_configs().await?;
-    let plan = configs
-        .into_iter()
-        .filter(|c| c.managed_entries.iter().any(|n| n == server_name))
-        .map(|c| {
-            let remaining: Vec<String> = c
-                .managed_entries
-                .iter()
-                .filter(|n| n.as_str() != server_name)
-                .cloned()
-                .collect();
-            TargetIde {
-                ide_name: c.ide_name,
-                ide_key: c.ide_key,
-                config_path: c.config_path,
-                remaining,
-            }
-        })
-        .collect();
-    Ok(plan)
-}
-
-fn describe(err: &ClientError) -> String {
-    match err {
-        ClientError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            "config file no longer exists".to_string()
-        }
-        ClientError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            "permission denied".to_string()
-        }
-        other => other.to_string(),
+/// Rewrite one `(client, scope)`'s MCP config file from its remaining managed
+/// servers. Custom clients are user-authored, so their files are left alone.
+async fn rewrite_client_scope(
+    db: &Db,
+    client_id: &str,
+    scope: &str,
+    port: u16,
+) -> Result<(), DbError> {
+    let Some(client) = resolve_client(db, client_id).await? else {
+        return Ok(());
+    };
+    if !client.is_builtin {
+        return Ok(());
     }
+    let remaining = db.list_managed_servers(client_id, scope).await?;
+    let scope = Scope::from_db(scope);
+    tokio::task::spawn_blocking(move || render_scope(&client, &scope, &remaining, port))
+        .await
+        .map_err(|e| DbError::Encoding(format!("join: {e}")))?
+        .map_err(|e| DbError::Encoding(format!("render: {e}")))
 }

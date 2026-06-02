@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use conduit::daemon::config_watcher;
+use conduit::daemon::config::watcher;
 use conduit::daemon::events::{Bus, Event};
 use tokio_util::sync::CancellationToken;
 
@@ -27,8 +27,7 @@ async fn watcher_publishes_config_reloaded_after_debounce() {
     let mut rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let _watcher =
-        config_watcher::spawn(&path, bus.clone(), cancel.clone()).expect("spawn watcher");
+    let _watcher = watcher::spawn(&path, bus.clone(), cancel.clone()).expect("spawn watcher");
 
     // Give the inotify (or platform equivalent) watch a moment to register.
     tokio::time::sleep(Duration::from_millis(250)).await;

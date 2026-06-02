@@ -1,0 +1,359 @@
+// Reusable leaf widgets used across the tabs: TabButton, StatusDot,
+// DecisionBadge, PillButton, PolicySelector, Icon, IconToggle, Chip,
+// DecisionChip, EmptyState, SettingLine, LabeledInput, LabeledTextArea.
+// Pure markup, no data structs. Imported by main.slint and most tabs/.
+
+import { Theme } from "../theme.slint";
+
+// Floating-nav tab item: active item is mint-colored (no underline dot).
+export component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    in property <int> badge;
+    callback clicked <=> ta.clicked;
+
+    background: transparent;
+    height: 40px;
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.active ? Theme.accent
+                 : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-body;
+            font-weight: root.active ? 600 : 500;
+            vertical-alignment: center;
+        }
+        if root.badge > 0 : Rectangle {
+            background: Theme.accent;
+            border-radius: Theme.radius-pill;
+            min-width: 18px;
+            height: 18px;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: root.badge;
+                    color: Theme.on-accent;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+
+    ta := TouchArea {}
+}
+
+
+export component StatusDot inherits Rectangle {
+    in property <color> tint;
+    background: root.tint;
+    border-radius: 999px;
+    width: 8px;
+    height: 8px;
+}
+
+
+// Single source of truth for decision → semantic color (dot form).
+// "allow"/"ask_approved" → success, "deny"/"ask_denied"/"error" → danger, else → warning.
+export component DecisionBadge inherits StatusDot {
+    in property <string> decision;
+    tint: (root.decision == "allow" || root.decision == "ask_approved" || root.decision == "ask-approved")
+        ? Theme.success
+        : (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied"
+           || root.decision == "error")
+        ? Theme.danger
+        : Theme.warning;
+}
+
+
+// Pill-shaped action button. Defaults to a secondary (outlined) look; callers
+// pass bg-color/fg-color for primary (mint) or destructive variants.
+export component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <color> bg-color: Theme.surface-3;
+    in property <color> fg-color: Theme.text-primary;
+    in property <bool> outline: false;
+    in property <bool> enabled: true;
+    callback clicked <=> ta.clicked;
+    background: root.bg-color;
+    border-radius: Theme.radius-pill;
+    border-width: root.outline ? 1px : 0px;
+    border-color: Theme.accent;
+    opacity: !root.enabled ? 0.5 : (ta.has-hover ? 0.88 : 1.0);
+    height: 30px;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.fg-color;
+            font-size: Theme.font-body-sm;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { enabled: root.enabled; }
+}
+
+
+// Allow/Ask/Deny toggle group: highlights the active choice with semantic color.
+// Used wherever a policy decision can be changed interactively.
+export component PolicySelector inherits HorizontalLayout {
+    in property <string> decision;
+    callback change-decision(string);
+    spacing: 4px;
+    alignment: center;
+    PillButton {
+        label: "Allow";
+        bg-color: root.decision == "allow" ? Theme.accent : Theme.surface-3;
+        fg-color: root.decision == "allow" ? Theme.bg : Theme.text-secondary;
+        clicked => { root.change-decision("allow"); }
+    }
+    PillButton {
+        label: "Ask";
+        bg-color: root.decision == "ask" ? Theme.warning : Theme.surface-3;
+        fg-color: root.decision == "ask" ? Theme.bg : Theme.text-secondary;
+        clicked => { root.change-decision("ask"); }
+    }
+    PillButton {
+        label: "Deny";
+        bg-color: root.decision == "deny" ? Theme.danger : Theme.surface-3;
+        // deny active uses text-primary (not bg) — red bg needs dark text for contrast
+        fg-color: root.decision == "deny" ? Theme.text-primary : Theme.text-secondary;
+        clicked => { root.change-decision("deny"); }
+    }
+}
+
+
+// Monochrome SVG icon tinted via colorize. Callers pass the source as a literal
+// @image-url (paths resolve relative to the calling .slint file).
+export component Icon inherits Rectangle {
+    in property <image> source;
+    in property <color> tint: Theme.text-secondary;
+    in property <length> size: 18px;
+    in property <bool> no-colorize: false;
+    width: root.size;
+    height: root.size;
+    Image {
+        source: root.source;
+        colorize: root.no-colorize ? transparent : root.tint;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+}
+
+
+// Icon-based toggle button: white icon when inactive, original SVG colors when
+// active with a visible background. `label` (the IDE name) surfaces as a
+// hover tooltip floating above the icon. Used for per-IDE toggles in the
+// Servers detail + Skills tabs.
+export component IconToggle inherits Rectangle {
+    in property <image> source;
+    in property <bool> active;
+    in property <string> label;
+    callback toggle();
+    width: 36px;
+    height: 36px;
+    border-radius: Theme.radius-md;
+    background: root.active ? Theme.surface-3 : transparent;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : transparent;
+    Icon {
+        source: root.source;
+        no-colorize: root.active;
+        tint: white;
+        size: 20px;
+    }
+    ta := TouchArea { clicked => { root.toggle(); } }
+    // Hover tooltip. Explicit x/y/size: a non-layout Rectangle would otherwise
+    // inherit the 36px parent width and clip the name. Floats above the icon,
+    // so it never overlaps the TouchArea below it.
+    if ta.has-hover && root.label != "" : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: -self.height - 6px;
+        width: tip-text.preferred-width + 16px;
+        height: tip-text.preferred-height + 8px;
+        background: Theme.surface-3;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        tip-text := Text {
+            x: 8px;
+            y: 4px;
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            font-weight: 600;
+        }
+    }
+}
+
+
+// Small status pill (e.g. "ALLOWED", "12 DENIED", "SYNCED").
+export component Chip inherits Rectangle {
+    in property <string> label;
+    in property <color> fg: Theme.accent;
+    in property <color> bg: Theme.accent-tint;
+    in property <bool> dot: false;
+    background: root.bg;
+    border-radius: Theme.radius-pill;
+    height: 22px;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 5px;
+        alignment: center;
+        if root.dot : VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: Theme.radius-pill;
+                background: root.fg;
+            }
+        }
+        Text {
+            text: root.label;
+            color: root.fg;
+            font-size: Theme.font-eyebrow;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+
+// Single source of truth for decision → label + semantic color (pill/chip form).
+// Inherits Chip; callers only need to set `decision`.
+// Accepts both hyphenated DB values ("ask-approved") and underscore variants.
+export component DecisionChip inherits Chip {
+    in property <string> decision;
+    label: (root.decision == "allow" || root.decision == "ask_approved" || root.decision == "ask-approved") ? "ALLOWED"
+         : (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied") ? "DENIED"
+         : (root.decision == "ask_timeout" || root.decision == "ask-timeout") ? "TIMEOUT"
+         : root.decision == "error" ? "ERROR"
+         : root.decision == "cancelled" ? "CANCELLED"
+         : root.decision;
+    fg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied" || root.decision == "error")
+        ? Theme.danger
+        : (root.decision == "ask_timeout" || root.decision == "ask-timeout") ? Theme.warning
+        : Theme.accent;
+    bg: (root.decision == "deny" || root.decision == "ask_denied" || root.decision == "ask-denied" || root.decision == "error")
+        ? Theme.danger-tint
+        : Theme.accent-tint;
+}
+
+
+// Clickable filter chip: a `Chip` wrapped in a `TouchArea`. `selected` drives
+// a border highlight; unselected chips are dimmed to signal interactivity.
+export component FilterChip inherits Chip {
+    in property <bool> selected: false;
+    callback clicked();
+    border-width: root.selected ? 1.5px : 0px;
+    border-color: root.fg;
+    opacity: root.selected ? 1.0 : 0.55;
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+
+export component EmptyState inherits Rectangle {
+    in property <string> text;
+    background: transparent;
+    VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.text;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-body;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+
+export component SettingLine inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    height: 28px;
+    HorizontalLayout {
+        spacing: Theme.gap-md;
+        alignment: space-between;
+        Text {
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component LabeledInput inherits VerticalLayout {
+    in property <string> label;
+    in property <string> text;
+    in property <bool> read-only: false;
+    callback edited(string);
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    input := TextInput {
+        text: root.text;
+        color: root.read-only ? Theme.text-tertiary : Theme.text-primary;
+        font-size: Theme.font-body;
+        single-line: true;
+        height: 32px;
+        read-only: root.read-only;
+        edited => { root.edited(self.text); }
+    }
+    Rectangle { background: Theme.border; height: 1px; }
+}
+
+
+export component LabeledTextArea inherits VerticalLayout {
+    in property <string> label;
+    in property <string> text;
+    callback edited(string);
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    Rectangle {
+        background: Theme.surface-2;
+        border-radius: Theme.radius-sm;
+        height: 120px;
+        input := TextInput {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            single-line: false;
+            wrap: word-wrap;
+            width: parent.width - 24px;
+            height: parent.height - 16px;
+            x: 12px;
+            y: 8px;
+            edited => { root.edited(self.text); }
+        }
+    }
+}

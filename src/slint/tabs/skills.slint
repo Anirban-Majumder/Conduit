@@ -1,0 +1,347 @@
+// Skills tab: discovery-source (repo) management plus the installable skill list
+// with per-IDE icon toggles. Instantiated by main.slint when the Skills tab is active.
+
+import { Theme } from "../theme.slint";
+import { EmptyState, PillButton, IconToggle } from "../components/primitives.slint";
+import { SkillRepoRow, SkillRow } from "../structs.slint";
+import { TargetToggle } from "../tabs/servers.slint";
+
+export component SkillsTab inherits Rectangle {
+    in property <[SkillRow]> rows;
+    in property <[SkillRepoRow]> repos;
+    in property <string> status-message;
+    in property <bool> busy;
+    in-out property <string> repo-add-owner;
+    in-out property <string> repo-add-name;
+    in-out property <string> repo-add-branch: "main";
+    in-out property <string> search-query;
+    callback search-changed(string);
+    callback refresh-clicked();
+    callback open-folder-clicked();
+    callback install-clicked(string, string, string, string, string, string);
+    callback uninstall-clicked(string);
+    callback toggle-target(string, string, bool);
+    callback open-scope(string, string);   // directory, ide_kind
+    callback add-repo-clicked(string, string, string);
+    callback remove-repo-clicked(string, string);
+    callback toggle-repo-clicked(string, string, bool);
+
+    Flickable {
+        viewport-width: self.width;
+        viewport-height: outer-vbox.preferred-height;
+        outer-vbox := VerticalLayout {
+            spacing: Theme.gap-md;
+
+            HorizontalLayout {
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "Agent skills";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-lg;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: root.status-message != "" ? root.status-message
+                            : (rows.length > 0
+                                ? rows.length + " skills · " + repos.length + " sources"
+                                : repos.length + " sources configured");
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: end;
+                    PillButton {
+                        label: "Open folder";
+                        bg-color: Theme.surface-3;
+                        fg-color: Theme.text-primary;
+                        clicked => { root.open-folder-clicked(); }
+                    }
+                    PillButton {
+                        label: root.busy ? "Refreshing…" : "Refresh";
+                        bg-color: Theme.surface-3;
+                        fg-color: Theme.text-primary;
+                        clicked => {
+                            if (!root.busy) { root.refresh-clicked(); }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border;
+                VerticalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-sm;
+                    Text {
+                        text: "Discovery sources";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap-sm;
+                        Rectangle {
+                            background: Theme.bg;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+                            horizontal-stretch: 1;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                owner-input := TextInput {
+                                    text <=> root.repo-add-owner;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            background: Theme.bg;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+                            horizontal-stretch: 1;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                name-input := TextInput {
+                                    text <=> root.repo-add-name;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            background: Theme.bg;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            height: 32px;
+                            width: 90px;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                branch-input := TextInput {
+                                    text <=> root.repo-add-branch;
+                                    color: Theme.text-primary;
+                                    font-size: Theme.font-body-sm;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                }
+                            }
+                        }
+                        PillButton {
+                            label: "+ Add";
+                            bg-color: Theme.accent;
+                            fg-color: Theme.bg;
+                            clicked => {
+                                if (root.repo-add-owner != "" && root.repo-add-name != "") {
+                                    root.add-repo-clicked(
+                                        root.repo-add-owner,
+                                        root.repo-add-name,
+                                        root.repo-add-branch == "" ? "main" : root.repo-add-branch,
+                                    );
+                                    root.repo-add-owner = "";
+                                    root.repo-add-name = "";
+                                    root.repo-add-branch = "main";
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "owner / repo / branch — e.g. anthropics / skills / main";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                    }
+                    for repo in repos : Rectangle {
+                        background: Theme.bg;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        height: 36px;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: Theme.gap-sm;
+                            Text {
+                                text: repo.owner + "/" + repo.name + " @ " + repo.branch;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body-sm;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: end;
+                                TargetToggle {
+                                    label: repo.enabled ? "Enabled" : "Disabled";
+                                    active: repo.enabled;
+                                    toggle => {
+                                        root.toggle-repo-clicked(repo.owner, repo.name, !repo.enabled);
+                                    }
+                                }
+                                PillButton {
+                                    label: "Remove";
+                                    clicked => {
+                                        root.remove-repo-clicked(repo.owner, repo.name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                Text {
+                    text: rows.length == 0 ? "No skills" : "Skills (" + rows.length + ")";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-eyebrow;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Rectangle {
+                    background: Theme.bg;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    height: 32px;
+                    width: 240px;
+                    clip: true;
+                    if root.search-query == "" : Text {
+                        x: 10px;
+                        height: parent.height;
+                        text: "Search skills…";
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                    TextInput {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        text <=> root.search-query;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => { root.search-changed(self.text); }
+                    }
+                }
+            }
+            if rows.length == 0 : EmptyState {
+                text: root.search-query != ""
+                    ? "No skills match \"" + root.search-query + "\"."
+                    : "Add a discovery source above (e.g. anthropics/skills) and hit Refresh, or drop a skill folder into Open folder.";
+                height: 160px;
+            }
+            for row in rows : Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: row.installed ? Theme.accent : Theme.border;
+                min-height: 84px;
+                HorizontalLayout {
+                    padding: Theme.gap-md;
+                    spacing: Theme.gap-md;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        HorizontalLayout {
+                            spacing: Theme.gap-sm;
+                            alignment: start;
+                            Text {
+                                text: row.name;
+                                color: Theme.text-primary;
+                                font-size: Theme.font-body;
+                            }
+                            if row.installed : Rectangle {
+                                background: Theme.accent;
+                                border-radius: 999px;
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    Text {
+                                        text: "Installed";
+                                        color: Theme.bg;
+                                        font-size: Theme.font-eyebrow;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: row.description;
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-body-sm;
+                            wrap: word-wrap;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.repo_label;
+                            color: Theme.text-tertiary;
+                            font-size: Theme.font-eyebrow;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        if row.installed : HorizontalLayout {
+                            spacing: 4px;
+                            alignment: end;
+                            for t in row.targets : IconToggle {
+                                source: t.icon;
+                                active: t.active;
+                                label: t.ide-kind;
+                                toggle => {
+                                    root.open-scope(row.directory, t.ide-kind);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.gap-sm;
+                            alignment: end;
+                            if row.installed : PillButton {
+                                label: "Uninstall";
+                                clicked => { root.uninstall-clicked(row.directory); }
+                            }
+                            if !row.installed : PillButton {
+                                label: "Install";
+                                bg-color: Theme.accent;
+                                fg-color: Theme.bg;
+                                clicked => {
+                                    root.install-clicked(
+                                        row.repo_owner,
+                                        row.repo_name,
+                                        row.repo_branch,
+                                        row.source_directory,
+                                        row.readme_url,
+                                        row.name,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

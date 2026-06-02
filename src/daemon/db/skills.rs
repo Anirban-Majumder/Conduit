@@ -1,8 +1,8 @@
 //! `skill_repos` and `skills` table storage.
 //!
 //! `Db` methods and their handlers for source-repo rows and installed-skill
-//! rows (with per-skill IDE targets). The `SkillManager` calls these; mutations
-//! are surfaced to the GUI via `Event::SkillsChanged` upstream.
+//! rows (with per-skill client targets via `managed_skill`). The `SkillManager`
+//! calls these; mutations are surfaced to the GUI via `Event::SkillsChanged`.
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -62,12 +62,16 @@ pub(super) fn query_set_skill_repo_enabled(
     Ok(())
 }
 
-pub(super) fn query_upsert_skill_with_targets(
-    conn: &Connection,
-    skill: &Skill,
-) -> Result<(), DbError> {
-    let tx = conn.unchecked_transaction()?;
-    tx.prepare_cached(
+/// Upsert skill *metadata only* — never touches `managed_skill`.
+///
+/// The write path is deliberately split: a metadata re-sync (install refresh,
+/// `register_local_skills`) must NOT wipe user-set client targets. Targets are
+/// mutated only through `query_set_skill_targets` / `query_add_skill_target` /
+/// `query_remove_skill_target`. (The old combined fn delete-then-reinserted
+/// `managed_skill` here, so any refresh with a stale `targets` vec destroyed
+/// user intent under `ON DELETE CASCADE`.)
+pub(super) fn query_upsert_skill_metadata(conn: &Connection, skill: &Skill) -> Result<(), DbError> {
+    conn.prepare_cached(
         "INSERT INTO skills
              (directory, repo_owner, repo_name, repo_branch, source_directory,
               skill_name, description, readme_url, installed_at)
@@ -93,35 +97,79 @@ pub(super) fn query_upsert_skill_with_targets(
         &skill.readme_url,
         skill.installed_at,
     ])?;
+    Ok(())
+}
 
-    tx.prepare_cached("DELETE FROM skill_targets WHERE directory = ?1")?
-        .execute(params![&skill.directory])?;
-    for ide in &skill.targets {
+pub(super) fn query_add_skill_target(
+    conn: &Connection,
+    directory: &str,
+    client_id: &str,
+    scope: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, ?2, ?3)",
+    )?
+    .execute(params![client_id, scope, directory])?;
+    Ok(())
+}
+
+pub(super) fn query_remove_skill_target(
+    conn: &Connection,
+    directory: &str,
+    client_id: &str,
+    scope: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached(
+        "DELETE FROM managed_skill WHERE skill_dir = ?1 AND client_id = ?2 AND scope = ?3",
+    )?
+    .execute(params![directory, client_id, scope])?;
+    Ok(())
+}
+
+/// Remove a skill from every scope of one client ("Remove from all").
+pub(super) fn query_remove_skill_all_scopes(
+    conn: &Connection,
+    directory: &str,
+    client_id: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached("DELETE FROM managed_skill WHERE skill_dir = ?1 AND client_id = ?2")?
+        .execute(params![directory, client_id])?;
+    Ok(())
+}
+
+/// Replace the set of client targets for one `(skill, scope)`.
+pub(super) fn query_set_skill_targets(
+    conn: &Connection,
+    directory: &str,
+    scope: &str,
+    targets: &[String],
+) -> Result<(), DbError> {
+    let tx = conn.unchecked_transaction()?;
+    tx.prepare_cached("DELETE FROM managed_skill WHERE skill_dir = ?1 AND scope = ?2")?
+        .execute(params![directory, scope])?;
+    for client_id in targets {
         tx.prepare_cached(
-            "INSERT OR IGNORE INTO skill_targets (directory, ide_name) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, ?2, ?3)",
         )?
-        .execute(params![&skill.directory, ide])?;
+        .execute(params![client_id, scope, directory])?;
     }
     tx.commit()?;
     Ok(())
 }
 
-pub(super) fn query_set_skill_targets(
+/// Every `(client_id, scope)` a skill is mirrored into — the skill analogue of
+/// `query_list_clients_managing_server`, driving scope-aware sync (Phase 4).
+pub(super) fn query_list_skill_targets_scoped(
     conn: &Connection,
     directory: &str,
-    targets: &[String],
-) -> Result<(), DbError> {
-    let tx = conn.unchecked_transaction()?;
-    tx.prepare_cached("DELETE FROM skill_targets WHERE directory = ?1")?
-        .execute(params![directory])?;
-    for ide in targets {
-        tx.prepare_cached(
-            "INSERT OR IGNORE INTO skill_targets (directory, ide_name) VALUES (?1, ?2)",
-        )?
-        .execute(params![directory, ide])?;
-    }
-    tx.commit()?;
-    Ok(())
+) -> Result<Vec<(String, String)>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT client_id, scope FROM managed_skill WHERE skill_dir = ?1 ORDER BY client_id, scope",
+    )?;
+    let rows = stmt.query_map(params![directory], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_delete_skill(conn: &Connection, directory: &str) -> Result<(), DbError> {
@@ -130,9 +178,13 @@ pub(super) fn query_delete_skill(conn: &Connection, directory: &str) -> Result<(
     Ok(())
 }
 
+/// Clients this skill is bound to in ANY scope (global or a repo) — drives the
+/// Skills-tab per-editor icon's active state, which lights up if the skill is
+/// synced anywhere for that editor. `DISTINCT` collapses a client present in
+/// both global and a repo to one entry.
 fn read_skill_targets(conn: &Connection, directory: &str) -> Result<Vec<String>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT ide_name FROM skill_targets WHERE directory = ?1 ORDER BY ide_name",
+        "SELECT DISTINCT client_id FROM managed_skill WHERE skill_dir = ?1 ORDER BY client_id",
     )?;
     let rows = stmt.query_map(params![directory], |row| row.get::<_, String>(0))?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -180,12 +232,27 @@ pub(super) fn query_list_skills(conn: &Connection) -> Result<Vec<Skill>, DbError
                 skill_name, description, readme_url, installed_at
          FROM skills ORDER BY skill_name",
     )?;
-    let rows = stmt.query_map([], decode_skill_row)?;
-    let mut out = Vec::new();
+    let mut out: Vec<Skill> = stmt
+        .query_map([], decode_skill_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Bucket all (skill_dir -> clients) in one query instead of one per skill.
+    // DISTINCT collapses a client present in both global and a repo to one entry,
+    // matching `read_skill_targets`; ORDER keeps the per-skill client order stable.
+    let mut targets: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT skill_dir, client_id FROM managed_skill ORDER BY skill_dir, client_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     for r in rows {
-        let mut s = r?;
-        s.targets = read_skill_targets(conn, &s.directory)?;
-        out.push(s);
+        let (dir, client) = r?;
+        targets.entry(dir).or_default().push(client);
+    }
+    for s in &mut out {
+        s.targets = targets.remove(&s.directory).unwrap_or_default();
     }
     Ok(out)
 }
@@ -196,7 +263,8 @@ impl Db {
     }
 
     pub async fn upsert_skill_repo(&self, repo: SkillRepo) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertSkillRepo { repo, reply }).await
+        self.send_cmd(|reply| DbCmd::UpsertSkillRepo { repo, reply })
+            .await
     }
 
     pub async fn delete_skill_repo(&self, owner: &str, name: &str) -> Result<(), DbError> {
@@ -223,29 +291,95 @@ impl Db {
         .await
     }
 
-    pub async fn upsert_skill_with_targets(&self, skill: Skill) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::UpsertSkillWithTargets { skill, reply }).await
+    /// Upsert skill metadata only — does not touch the client targets.
+    pub async fn upsert_skill_metadata(&self, skill: Skill) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::UpsertSkillMetadata { skill, reply })
+            .await
+    }
+
+    pub async fn add_skill_target(
+        &self,
+        directory: &str,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::AddSkillTarget {
+            directory: directory.to_string(),
+            client_id: client_id.to_string(),
+            scope: scope.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn remove_skill_target(
+        &self,
+        directory: &str,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::RemoveSkillTarget {
+            directory: directory.to_string(),
+            client_id: client_id.to_string(),
+            scope: scope.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn remove_skill_all_scopes(
+        &self,
+        directory: &str,
+        client_id: &str,
+    ) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::RemoveSkillAllScopes {
+            directory: directory.to_string(),
+            client_id: client_id.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn set_skill_targets(
         &self,
         directory: &str,
+        scope: &str,
         targets: Vec<String>,
     ) -> Result<(), DbError> {
         self.send_cmd(|reply| DbCmd::SetSkillTargets {
             directory: directory.to_string(),
+            scope: scope.to_string(),
             targets,
             reply,
         })
         .await
     }
 
+    pub async fn list_skill_targets_scoped(
+        &self,
+        directory: &str,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        self.send_cmd(|reply| DbCmd::ListSkillTargetsScoped {
+            directory: directory.to_string(),
+            reply,
+        })
+        .await
+    }
+
     pub async fn delete_skill(&self, directory: &str) -> Result<(), DbError> {
-        self.send_cmd(|reply| DbCmd::DeleteSkill { directory: directory.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::DeleteSkill {
+            directory: directory.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn get_skill(&self, directory: &str) -> Result<Option<Skill>, DbError> {
-        self.send_cmd(|reply| DbCmd::GetSkill { directory: directory.to_string(), reply }).await
+        self.send_cmd(|reply| DbCmd::GetSkill {
+            directory: directory.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn list_skills(&self) -> Result<Vec<Skill>, DbError> {

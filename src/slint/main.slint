@@ -1,0 +1,579 @@
+// MainWindow root: header, tab strip, content area, and modal overlays.
+// Owns all the in/in-out properties and callbacks the Rust GUI glue binds to,
+// and dispatches each tab to its component in tabs/. Re-exports the data
+// structs from structs.slint so the generated Rust bindings expose them.
+// This is the file build.rs compiles; nothing imports it.
+
+import "../../assets/fonts/HankenGrotesk-Regular.ttf";
+import "../../assets/fonts/HankenGrotesk-Medium.ttf";
+import "../../assets/fonts/HankenGrotesk-SemiBold.ttf";
+import "../../assets/fonts/HankenGrotesk-Bold.ttf";
+
+import { Theme } from "theme.slint";
+import { ModalShell } from "components/modal.slint";
+import { PillButton, StatusDot, TabButton, Icon } from "components/primitives.slint";
+import { ApprovalsPopup } from "components/approvals_popup.slint";
+import { ApprovalDetailModal } from "components/approval_modal.slint";
+import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeTarget, PolicyRow, ScopeOption, ScopeRow, ServerDetail, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
+import { AddServerDialog } from "tabs/add_server_dialog.slint";
+import { DashboardTab } from "tabs/dashboard.slint";
+import { EditorsTab } from "tabs/editors.slint";
+import { HelpTab } from "tabs/help.slint";
+import { LogTab } from "tabs/log.slint";
+import { ScopePopover } from "components/scope_popover.slint";
+import { ServersTab } from "tabs/servers.slint";
+import { SettingsTab } from "tabs/settings.slint";
+import { SkillsTab } from "tabs/skills.slint";
+export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, IdeTarget, ScopeOption, ScopeRow, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
+
+export component MainWindow inherits Window {
+    title: "MCP Router";
+    preferred-width: 1200px;
+    preferred-height: 760px;
+    min-width: 720px;
+    min-height: 480px;
+    background: Theme.bg;
+    default-font-family: "Hanken Grotesk";
+    default-font-size: Theme.font-body;
+
+    in property <[ApprovalRow]> approvals;
+    in property <DashboardStats> dashboard-stats;
+    in property <[SkillRow]> dashboard-skills;
+    in property <[ServerRow]> servers;
+    in property <[IdeRow]> ides;
+    in property <[PolicyRow]> policies;
+    in property <[AuditRow]> audit;
+    in property <SettingsRow> settings;
+    in property <string> status-message: "ready";
+    in property <bool> daemon-healthy: true;
+
+    in property <[SkillRow]> skills;
+    in-out property <[SkillRow]> skills-all;
+    in-out property <string> skills-search-query;
+    in property <[SkillRepoRow]> skill-repos;
+    in-out property <string> skills-status-message;
+    in-out property <bool> skills-busy;
+    in-out property <string> skills-repo-add-owner;
+    in-out property <string> skills-repo-add-name;
+    in-out property <string> skills-repo-add-branch: "main";
+
+    // Log tab filter + search state
+    in-out property <string> audit-search-query;
+    in-out property <string> audit-decision-filter;
+
+    in-out property <int> active-tab: 0;
+    in-out property <string> focused-approval: "";
+    in-out property <bool> show-approval-detail: false;
+    in-out property <ApprovalRow> selected-approval;
+    in-out property <bool> show-add-server-dialog: false;
+    in-out property <bool> show-delete-server-confirm: false;
+    in-out property <string> pending-delete-server: "";
+    in-out property <bool> ides-refreshing: false;
+
+    // Servers tab master-detail state
+    in-out property <string> selected-server: "";
+    in property <ServerDetail> selected-server-detail;
+    in property <[ToolPolicyRow]> selected-server-tools;
+    in property <[IdeTarget]> selected-server-targets;
+
+    // Add Server wizard state — 1=connection form, 2=probing, 3=per-tool policy
+    in-out property <int> wizard-step: 1;
+    in-out property <string> wizard-phase-status;
+    in property <[ToolPolicyRow]> wizard-tools;
+
+    in-out property <string> add-server-status;
+    in-out property <bool> add-server-status-is-error: false;
+    in-out property <bool> add-server-busy: false;
+    in-out property <string> add-server-name;
+    in-out property <string> add-server-command;
+    in-out property <string> add-server-args;
+    in-out property <string> add-server-url;
+    in-out property <string> add-server-transport: "http";
+    in-out property <string> add-server-paste;
+    in-out property <string> add-server-headers;
+    in-out property <string> add-server-lifecycle-mode: "persistent";
+    in-out property <string> add-server-lifecycle-custom: "300";
+    in-out property <[EnvVarRow]> add-server-env-rows;
+    in-out property <bool> wizard-edit-mode: false;
+    in-out property <string> wizard-oauth-url;
+
+    in-out property <bool> open-window-at-startup;
+    in-out property <string> default-unknown-tool-policy: "ask";
+
+    in-out property <string> selected-editor: "";
+    in-out property <string> selected-editor-display: "";
+    in-out property <string> selected-editor-status-label: "active";
+    in-out property <string> selected-editor-text: "";
+    in-out property <string> selected-editor-config-name: "";
+    in-out property <string> selected-editor-status: "";
+    in-out property <bool> selected-editor-status-is-error: false;
+    in-out property <bool> selected-editor-dirty: false;
+
+    callback approve-clicked(string);
+    callback deny-clicked(string);
+    callback approve-always-clicked(string, string, string);
+    callback remove-server-clicked(string);
+    callback remove-ide-clicked(string);
+    callback retrack-ide-clicked(string);
+    callback refresh-ides-clicked();
+    callback change-policy(string, string, string);
+    callback refresh-clicked();
+    callback start-probe();
+    callback wizard-save();
+    callback wizard-back-to-form();
+    callback wizard-change-tool-policy(string, string);
+    callback select-server(string);
+    callback retest-clicked(string);
+    callback edit-server-clicked(string);
+    callback change-tool-policy(string, string, string);
+    callback toggle-server-target(string, string, bool);  // server, ide_kind, enable
+    callback parse-paste();
+    callback env-add();
+    callback env-remove(int);
+    callback env-set-key(int, string);
+    callback env-set-value(int, string);
+    callback reset-add-server-env();
+    callback populate-env-from-string(string);
+    callback toggle-open-window-at-startup(bool);
+    callback set-default-unknown-tool-policy(string);
+    callback copy-error-clicked(string);
+
+    callback select-ide(string);
+    callback reveal-ide-config(string);
+    callback edit-ide-config(string);
+    callback save-ide-config();
+    callback reload-ide-config();
+
+    // Editors-tab scope selector (§8b): which scope's config file the raw editor
+    // reads/writes. Empty list = global only.
+    in property <[ScopeOption]> selected-editor-scopes;
+    in-out property <string> selected-editor-scope: "global";
+    in-out property <string> selected-editor-format: "json";   // "json" | "toml"
+    callback select-editor-scope(string);   // scope-key
+
+    // Scope popover (§8a) — shared by Server + Skill detail. Rust populates the
+    // model on open, then re-populates after each mutation.
+    in-out property <bool> scope-popover-open: false;
+    in property <string> scope-popover-editor-label;
+    in property <string> scope-popover-item-label;
+    in-out property <string> scope-popover-item;         // server name | skill directory
+    in-out property <string> scope-popover-item-kind;    // "server" | "skill"
+    in-out property <string> scope-popover-editor;       // client id
+    in property <[ScopeRow]> scope-popover-scopes;
+    in-out property <string> scope-popover-add-path;
+    in property <string> scope-popover-add-error;
+    callback open-scope-popover(string, string, string);  // item, item_kind, editor_id
+    callback close-scope-popover();
+    callback toggle-scope(string, string, string, bool);  // item, editor_id, scope_key, on
+    callback add-repo-scope(string, string, string);      // item, editor_id, path
+    callback remove-scope(string, string, string);        // item, editor_id, scope_key
+    callback remove-all-scopes(string, string);           // item, editor_id
+    callback edit-scope-add-path(string);
+
+    callback skills-refresh-clicked();
+    callback skills-open-folder-clicked();
+    callback skills-install-clicked(string, string, string, string, string, string);
+    callback skills-uninstall-clicked(string);
+    callback skills-toggle-target(string, string, bool);
+    callback skills-add-repo(string, string, string);
+    callback skills-remove-repo(string, string);
+    callback skills-toggle-repo(string, string, bool);
+    callback skills-search-changed(string);
+
+    // Log tab callbacks
+    callback audit-search-changed(string);
+    callback audit-decision-filter-changed(string);
+    callback copy-audit-args(string);
+
+    public function show-add-server() {
+        root.show-add-server-dialog = true;
+        root.wizard-edit-mode = false;
+        root.wizard-step = 1;
+        root.add-server-transport = "http";
+        root.add-server-name = "";
+        root.add-server-command = "";
+        root.add-server-args = "";
+        root.add-server-url = "";
+        root.add-server-headers = "";
+        root.add-server-paste = "";
+        root.add-server-status = "";
+        root.add-server-status-is-error = false;
+        root.add-server-busy = false;
+        root.add-server-lifecycle-mode = "persistent";
+        root.add-server-lifecycle-custom = "300";
+        root.wizard-phase-status = "";
+        root.wizard-oauth-url = "";
+        root.reset-add-server-env();
+    }
+
+    VerticalLayout {
+        width: root.width;
+        height: root.height;
+        padding: 0px;
+        spacing: 0px;
+
+        Rectangle {
+            height: 76px;
+            Rectangle {
+                width: min(1200px, root.width - 2 * Theme.gap-lg);
+                height: 56px;
+                x: (parent.width - self.width) / 2;
+                y: Theme.gap-md;
+                background: Theme.surface;
+                border-radius: Theme.radius-pill;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 28px;
+                drop-shadow-color: #00000066;
+                drop-shadow-offset-y: 6px;
+                HorizontalLayout {
+                    padding-left: Theme.gap-lg;
+                    padding-right: Theme.gap-lg;
+                    spacing: Theme.gap-md;
+                    logo-ta := TouchArea {
+                        width: logo-text.preferred-width;
+                        clicked => {
+                            root.active-tab = 0;
+                            root.focused-approval = "";
+                        }
+                        logo-text := Text {
+                            text: "Conduit";
+                            color: Theme.text-primary;
+                            font-size: Theme.font-body-lg;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 2px;
+                        alignment: center;
+                        for label[i] in ["Dashboard", "Servers", "Editors", "Skills", "Log", "Settings"] : TabButton {
+                            label: label;
+                            active: root.active-tab == i;
+                            clicked => {
+                                root.active-tab = i;
+                                root.focused-approval = "";
+                            }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    help-ta := TouchArea {
+                        width: 22px;
+                        height: 22px;
+                        clicked => {
+                            root.active-tab = 6;
+                            root.focused-approval = "";
+                        }
+                        Icon {
+                            source: @image-url("../../assets/icons/circle-help.svg");
+                            tint: root.active-tab == 6 ? Theme.accent
+                                : help-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            size: 20px;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            background: Theme.bg;
+            vertical-stretch: 1;
+            clip: true;
+            VerticalLayout {
+                padding: Theme.gap-lg;
+                if root.active-tab == 0 : DashboardTab {
+                    vertical-stretch: 1;
+                    stats: root.dashboard-stats;
+                    servers: root.servers;
+                    skills: root.dashboard-skills;
+                    audit: root.audit;
+                    open-tab(i) => {
+                        root.active-tab = i;
+                        root.focused-approval = "";
+                    }
+                    open-server(name) => {
+                        root.active-tab = 1;
+                        root.selected-server = name;
+                        root.select-server(name);
+                    }
+                    add-server => { root.show-add-server(); }
+                }
+                if root.active-tab == 1 : ServersTab {
+                    vertical-stretch: 1;
+                    rows: root.servers;
+                    selected: root.selected-server;
+                    detail: root.selected-server-detail;
+                    tools: root.selected-server-tools;
+                    targets: root.selected-server-targets;
+                    select-server(name) => { root.select-server(name); }
+                    delete-clicked(name) => {
+                        root.pending-delete-server = name;
+                        root.show-delete-server-confirm = true;
+                    }
+                    retest-clicked(name) => { root.retest-clicked(name); }
+                    edit-clicked(name) => { root.edit-server-clicked(name); }
+                    change-tool-policy(server, tool, decision) => {
+                        root.change-tool-policy(server, tool, decision);
+                    }
+                    toggle-target(server, ide-kind, enable) => {
+                        root.toggle-server-target(server, ide-kind, enable);
+                    }
+                    open-scope(server, ide-kind) => {
+                        root.open-scope-popover(server, "server", ide-kind);
+                    }
+                    copy-error-clicked(text) => { root.copy-error-clicked(text); }
+                    add-clicked => { root.show-add-server(); }
+                }
+                if root.active-tab == 2 : EditorsTab {
+                    vertical-stretch: 1;
+                    rows: root.ides;
+                    selected: root.selected-editor;
+                    selected-display: root.selected-editor-display;
+                    selected-status: root.selected-editor-status-label;
+                    selected-config-text: root.selected-editor-text;
+                    selected-config-name: root.selected-editor-config-name;
+                    selected-config-status: root.selected-editor-status;
+                    selected-config-status-is-error: root.selected-editor-status-is-error;
+                    selected-config-dirty: root.selected-editor-dirty;
+                    refreshing: root.ides-refreshing;
+                    scopes: root.selected-editor-scopes;
+                    selected-scope: root.selected-editor-scope;
+                    config-format: root.selected-editor-format;
+                    remove-clicked(kind) => { root.remove-ide-clicked(kind); }
+                    retrack-clicked(kind) => { root.retrack-ide-clicked(kind); }
+                    refresh-clicked => { root.refresh-ides-clicked(); }
+                    reveal-clicked(kind) => { root.reveal-ide-config(kind); }
+                    select(kind) => { root.select-ide(kind); }
+                    select-scope(key) => { root.select-editor-scope(key); }
+                    edit-text(t) => { root.edit-ide-config(t); }
+                    save => { root.save-ide-config(); }
+                    reload => { root.reload-ide-config(); }
+                }
+                if root.active-tab == 3 : SkillsTab {
+                    vertical-stretch: 1;
+                    rows: root.skills;
+                    repos: root.skill-repos;
+                    status-message: root.skills-status-message;
+                    busy: root.skills-busy;
+                    repo-add-owner <=> root.skills-repo-add-owner;
+                    repo-add-name <=> root.skills-repo-add-name;
+                    repo-add-branch <=> root.skills-repo-add-branch;
+                    search-query <=> root.skills-search-query;
+                    search-changed(query) => { root.skills-search-changed(query); }
+                    refresh-clicked => { root.skills-refresh-clicked(); }
+                    open-folder-clicked => { root.skills-open-folder-clicked(); }
+                    install-clicked(owner, name, branch, dir, readme, candidate-name) => {
+                        root.skills-install-clicked(owner, name, branch, dir, readme, candidate-name);
+                    }
+                    uninstall-clicked(directory) => { root.skills-uninstall-clicked(directory); }
+                    toggle-target(directory, ide, enable) => {
+                        root.skills-toggle-target(directory, ide, enable);
+                    }
+                    open-scope(directory, ide) => {
+                        root.open-scope-popover(directory, "skill", ide);
+                    }
+                    add-repo-clicked(owner, name, branch) => {
+                        root.skills-add-repo(owner, name, branch);
+                    }
+                    remove-repo-clicked(owner, name) => { root.skills-remove-repo(owner, name); }
+                    toggle-repo-clicked(owner, name, enabled) => {
+                        root.skills-toggle-repo(owner, name, enabled);
+                    }
+                }
+                if root.active-tab == 4 : LogTab {
+                    vertical-stretch: 1;
+                    rows: root.audit;
+                    search-query <=> root.audit-search-query;
+                    decision-filter <=> root.audit-decision-filter;
+                    search-changed(q) => { root.audit-search-changed(q); }
+                    decision-filter-changed(d) => { root.audit-decision-filter-changed(d); }
+                    copy-args(text) => { root.copy-audit-args(text); }
+                }
+                if root.active-tab == 5 : SettingsTab {
+                    data: root.settings;
+                    open-window-at-startup: root.open-window-at-startup;
+                    default-unknown-tool-policy: root.default-unknown-tool-policy;
+                    toggle-open-window(v) => { root.toggle-open-window-at-startup(v); }
+                    set-default-policy(p) => { root.set-default-unknown-tool-policy(p); }
+                }
+                if root.active-tab == 6 : HelpTab {}
+            }
+        }
+
+        // Blended status strip — daemon health + version, no heavy chrome.
+        Rectangle {
+            height: 30px;
+            HorizontalLayout {
+                padding-left: Theme.gap-lg + Theme.gap-md;
+                padding-right: Theme.gap-lg + Theme.gap-md;
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: Theme.gap-sm;
+                    alignment: start;
+                    VerticalLayout {
+                        alignment: center;
+                        StatusDot { tint: root.daemon-healthy ? Theme.success : Theme.warning; }
+                    }
+                    Text {
+                        text: root.status-message;
+                        color: Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        vertical-alignment: center;
+                    }
+                }
+                docs-ta := TouchArea {
+                    width: 180px;
+                    clicked => { root.active-tab = 6; }
+                    Text {
+                        text: "Conduit · Documentation";
+                        color: docs-ta.has-hover ? Theme.text-secondary : Theme.text-tertiary;
+                        font-size: Theme.font-body-sm;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    // Scope popover — shared by Server + Skill detail (§8a).
+    if root.scope-popover-open : ScopePopover {
+        width: root.width;
+        height: root.height;
+        editor-label: root.scope-popover-editor-label;
+        item-label: root.scope-popover-item-label;
+        scopes: root.scope-popover-scopes;
+        add-path: root.scope-popover-add-path;
+        add-error: root.scope-popover-add-error;
+        dismiss => { root.close-scope-popover(); }
+        toggle-scope(key, on) => {
+            root.toggle-scope(root.scope-popover-item, root.scope-popover-editor, key, on);
+        }
+        add-repo(path) => {
+            root.add-repo-scope(root.scope-popover-item, root.scope-popover-editor, path);
+        }
+        remove-scope(key) => {
+            root.remove-scope(root.scope-popover-item, root.scope-popover-editor, key);
+        }
+        remove-all => {
+            root.remove-all-scopes(root.scope-popover-item, root.scope-popover-editor);
+            root.scope-popover-open = false;
+        }
+        edit-add-path(t) => { root.edit-scope-add-path(t); }
+    }
+
+    // Modal dialog overlays — sit on top of everything when shown.
+    if root.show-add-server-dialog : AddServerDialog {
+        width: root.width;
+        height: root.height;
+        name <=> root.add-server-name;
+        command <=> root.add-server-command;
+        args <=> root.add-server-args;
+        url <=> root.add-server-url;
+        transport <=> root.add-server-transport;
+        status <=> root.add-server-status;
+        status-is-error <=> root.add-server-status-is-error;
+        busy <=> root.add-server-busy;
+        lifecycle-mode <=> root.add-server-lifecycle-mode;
+        lifecycle-custom <=> root.add-server-lifecycle-custom;
+        env-rows: root.add-server-env-rows;
+        edit-mode: root.wizard-edit-mode;
+        step: root.wizard-step;
+        phase-status: root.wizard-phase-status;
+        oauth-url: root.wizard-oauth-url;
+        tools: root.wizard-tools;
+        start-probe => { root.start-probe(); }
+        wizard-save => { root.wizard-save(); }
+        wizard-back => { root.wizard-back-to-form(); }
+        change-tool-policy(tool, decision) => {
+            root.wizard-change-tool-policy(tool, decision);
+        }
+        copy-oauth-url => { root.copy-error-clicked(root.wizard-oauth-url); }
+        dismiss => {
+            root.show-add-server-dialog = false;
+            root.wizard-edit-mode = false;
+            root.add-server-status = "";
+            root.wizard-step = 1;
+        }
+        parse => { root.parse-paste(); }
+        env-add => { root.env-add(); }
+        env-remove(i) => { root.env-remove(i); }
+        env-set-key(i, k) => { root.env-set-key(i, k); }
+        env-set-value(i, v) => { root.env-set-value(i, v); }
+    }
+    if root.show-delete-server-confirm : ModalShell {
+        title: "Remove server?";
+        dismiss => {
+            root.show-delete-server-confirm = false;
+            root.pending-delete-server = "";
+        }
+        VerticalLayout {
+            spacing: Theme.gap-md;
+            Text {
+                text: "Removing \"" + root.pending-delete-server + "\" also strips its entries from every IDE config we wrote.";
+                color: Theme.text-secondary;
+                font-size: Theme.font-body-sm;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Theme.gap-sm;
+                alignment: end;
+                PillButton {
+                    label: "Cancel";
+                    clicked => {
+                        root.show-delete-server-confirm = false;
+                        root.pending-delete-server = "";
+                    }
+                }
+                PillButton {
+                    label: "Remove";
+                    bg-color: Theme.danger;
+                    fg-color: Theme.bg;
+                    clicked => {
+                        root.remove-server-clicked(root.pending-delete-server);
+                        root.show-delete-server-confirm = false;
+                        root.pending-delete-server = "";
+                    }
+                }
+            }
+        }
+    }
+
+    // Bottom-right approvals popup — only present while requests are pending.
+    if root.approvals.length > 0 : popup := ApprovalsPopup {
+        x: root.width - self.width - Theme.gap-md;
+        y: root.height - self.height - Theme.gap-md;
+        rows: root.approvals;
+        focused-id: root.focused-approval;
+        approve(id) => { root.approve-clicked(id); }
+        deny(id) => { root.deny-clicked(id); }
+        approve-always(id, server, tool) => {
+            root.approve-always-clicked(id, server, tool);
+        }
+        open-details(r) => {
+            root.selected-approval = r;
+            root.show-approval-detail = true;
+        }
+    }
+
+    if root.show-approval-detail : ApprovalDetailModal {
+        width: root.width;
+        height: root.height;
+        data: root.selected-approval;
+        approve(id) => {
+            root.approve-clicked(id);
+            root.show-approval-detail = false;
+        }
+        deny(id) => {
+            root.deny-clicked(id);
+            root.show-approval-detail = false;
+        }
+        approve-always(id, server, tool) => {
+            root.approve-always-clicked(id, server, tool);
+            root.show-approval-detail = false;
+        }
+        dismiss => { root.show-approval-detail = false; }
+    }
+}
+

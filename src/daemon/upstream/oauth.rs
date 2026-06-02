@@ -3,7 +3,7 @@
 //! Binds a localhost listener, captures the browser redirect, and returns
 //! `(code, state)`. The protocol itself (discovery, DCR, PKCE, token exchange
 //! and refresh) lives in rmcp's `transport::auth`; this module only owns the
-//! local HTTP redirect catch and draft-token cleanup.
+//! local HTTP redirect catch.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -117,19 +117,6 @@ fn url_decode(s: &str) -> String {
         }
     }
     out
-}
-
-/// Drop draft-session keyring entries left over from abandoned wizards.
-pub fn purge_draft_oauth_tokens(known_drafts: &[String]) -> usize {
-    let mut count = 0;
-    for d in known_drafts {
-        if uuid::Uuid::parse_str(d).is_ok()
-            && crate::daemon::secrets::delete_oauth_tokens(d).is_ok()
-        {
-            count += 1;
-        }
-    }
-    count
 }
 
 #[cfg(test)]

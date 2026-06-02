@@ -9,12 +9,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use conduit::daemon::approval::ApprovalCenter;
 use conduit::daemon::db::Db;
+use conduit::daemon::downstream::approval::ApprovalCenter;
+use conduit::daemon::downstream::http_server::{serve, AppState};
 use conduit::daemon::events::Bus;
-use conduit::daemon::http_server::{serve, AppState};
+use conduit::daemon::paths::Paths;
 use conduit::daemon::upstream::manager::UpstreamManager;
-use conduit::paths::Paths;
 use tokio_util::sync::CancellationToken;
 
 fn pick_free_port() -> u16 {

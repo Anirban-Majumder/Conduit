@@ -2,9 +2,9 @@
 //!
 //! Env secrets live at `conduit/server/<server>/env/<uuid>`; the UUID is what gets
 //! persisted in `servers.env_json`. OAuth credentials are one JSON `StoredCredentials`
-//! blob at `conduit-oauth/<account>:cred`, written under a draft account during the
-//! wizard and promoted (store-before-delete) to the canonical server name on Save.
-//! Deletes are idempotent and also purge the pre-migration 4-entry legacy layout.
+//! blob at `conduit-oauth/<server>:cred`, written once on Save (the wizard holds
+//! freshly-minted tokens in memory until then). Deletes are idempotent and also
+//! purge the pre-migration 4-entry legacy layout.
 
 use keyring_core::{Entry, Error as KeyringError};
 use rmcp::transport::auth::StoredCredentials;
@@ -55,9 +55,9 @@ pub fn delete(server: &str, uuid: &str) -> Result<(), SecretsError> {
 
 // ── OAuth credential storage ───────────────────────────────────────────────
 // One JSON blob per account under service "conduit-oauth", account
-// "<id>:cred", holding rmcp's `StoredCredentials` (client_id + token_response +
-// granted scopes). During the wizard the blob is written under a draft UUID; on
-// Save it is promoted to the canonical server name and the draft entry deleted.
+// "<server>:cred", holding rmcp's `StoredCredentials` (client_id + token_response +
+// granted scopes). The wizard holds freshly-minted tokens in memory and writes
+// this blob once, under the canonical server name, on Save.
 
 const OAUTH_SERVICE: &str = "conduit-oauth";
 
@@ -89,30 +89,8 @@ pub fn delete_oauth_cred(account: &str) -> Result<(), SecretsError> {
     delete_entry(&cred_account(account))
 }
 
-/// Copy the credential blob from a draft account to the canonical server name,
-/// then delete the draft. Store-before-delete so a crash mid-flight leaves the
-/// canonical entry valid.
-pub fn promote_oauth_tokens(draft: &str, server: &str) -> Result<(), SecretsError> {
-    match fetch_oauth_cred(draft) {
-        Ok(cred) => store_oauth_cred(server, &cred)?,
-        // Reaching here with no draft blob means login persisted creds but they
-        // vanished before Save (e.g. crash + restart between the two). The save
-        // proceeds without OAuth and the server re-prompts via NeedsAuth — but
-        // it's an anomaly, so surface it rather than swallowing silently.
-        Err(SecretsError::NotFound) => {
-            tracing::warn!(
-                draft = %draft,
-                server = %server,
-                "promote_oauth_tokens: draft credentials missing — server will require re-auth",
-            );
-        }
-        Err(e) => return Err(e),
-    }
-    delete_oauth_cred(draft)
-}
-
 /// Delete every OAuth keyring entry for an account: the credential blob plus any
-/// stale pre-migration entries. Used on server removal and draft purge.
+/// stale pre-migration entries. Used on server removal.
 pub fn delete_oauth_tokens(account: &str) -> Result<(), SecretsError> {
     delete_oauth_cred(account)?;
     delete_legacy_oauth_entries(account)

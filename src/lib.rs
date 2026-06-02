@@ -2,8 +2,9 @@
 //! types, consumed by the `conduit` binary.
 //!
 //! `daemon` holds the HTTP server, MCP routing, policy, audit, DB actor, and
-//! upstream lifecycle; `gui` the tray/notifications/hotkey; `installer` the
-//! first-run service setup. `paths` and `runtime` are the cross-cutting basics.
+//! upstream lifecycle; `os` the tray/notifications/hotkey; `installer` the
+//! first-run service setup; `client` the built-in IDE catalog. `runtime` is
+//! the cross-cutting tokio worker.
 
 #![cfg_attr(
     test,
@@ -11,8 +12,8 @@
 )]
 
 pub mod atomic_io;
+pub mod client;
 pub mod daemon;
-pub mod gui;
 pub mod installer;
-pub mod paths;
+pub mod os;
 pub mod runtime;

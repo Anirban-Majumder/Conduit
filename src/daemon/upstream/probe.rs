@@ -8,12 +8,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmcp::transport::auth::{
+    CredentialStore, InMemoryCredentialStore, OAuthState, StoredCredentials,
+};
 use serde_json::Value;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
-use crate::daemon::secrets;
 use crate::daemon::upstream::http;
 use crate::daemon::upstream::oauth;
 use crate::daemon::upstream::stdio;
@@ -21,13 +23,30 @@ use crate::daemon::upstream::stdio;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const TOOLS_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ProbeResult {
     pub server_name: String,
     pub server_version: String,
     pub tools: Vec<ToolMeta>,
-    /// Set when the probe ran OAuth — draft session UUID for keyring promotion on Save.
-    pub oauth_session: Option<String>,
+    /// Set when the probe ran OAuth — minted credentials to persist on Save.
+    pub oauth_credentials: Option<StoredCredentials>,
+}
+
+// Manual Debug to redact the OAuth credentials. rmcp's `StoredCredentials`
+// redacts the token in its own Debug today, but we pin `rmcp = "~1.7"` (patches
+// float), so don't depend on that holding — redact the whole field here.
+impl std::fmt::Debug for ProbeResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeResult")
+            .field("server_name", &self.server_name)
+            .field("server_version", &self.server_version)
+            .field("tools", &self.tools)
+            .field(
+                "oauth_credentials",
+                &self.oauth_credentials.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +79,6 @@ pub struct DraftServerConfig {
     pub name: String,
     pub transport: DraftTransport,
     pub lifecycle_seconds: i32,
-    pub draft_session: String,
 }
 
 #[derive(Debug)]
@@ -120,7 +138,7 @@ pub async fn probe_with_progress(
         }
     };
 
-    let mut oauth_session: Option<String> = None;
+    let mut oauth_credentials: Option<StoredCredentials> = None;
 
     let client = match &cfg.transport {
         DraftTransport::Stdio { command, args, env } => {
@@ -152,16 +170,20 @@ pub async fn probe_with_progress(
                     emit(ProbeEvent::Phase(
                         "Sign in required — starting OAuth...".into(),
                     ));
-                    let draft = cfg.draft_session.clone();
-                    run_oauth_login(url, &draft, cancel.clone(), &emit).await?;
-                    oauth_session = Some(draft.clone());
+                    let store = run_oauth_login(url, cancel.clone(), &emit).await?;
                     // Retry via the runtime AuthClient path against the freshly
-                    // stored draft credentials — same code path as a saved server.
+                    // minted credentials — same code path as a saved server, only
+                    // the store is in-memory instead of the keyring.
                     emit(ProbeEvent::Phase(
                         "Re-initializing with OAuth token...".into(),
                     ));
-                    match http::connect_oauth(url, &draft, cancel.clone())
-                        .await?
+                    let client = match http::connect_with_store(
+                        url,
+                        store.clone(),
+                        &cfg.name,
+                        cancel.clone(),
+                    )
+                    .await?
                     {
                         Some(c) => spawn_done(c, cancel.clone()).await?,
                         None => {
@@ -169,7 +191,10 @@ pub async fn probe_with_progress(
                                 "credentials were not persisted after login".into(),
                             ))
                         }
-                    }
+                    };
+                    // Capture the (possibly refreshed) tokens to persist on Save.
+                    oauth_credentials = store.load().await.ok().flatten();
+                    client
                 }
             }
         }
@@ -225,7 +250,7 @@ pub async fn probe_with_progress(
         server_name,
         server_version,
         tools,
-        oauth_session,
+        oauth_credentials,
     })
 }
 
@@ -284,12 +309,9 @@ fn looks_like_auth_failure(e: &crate::daemon::upstream::manager::UpstreamError) 
 
 async fn run_oauth_login(
     url: &str,
-    draft: &str,
     cancel: CancellationToken,
     emit: &(dyn Fn(ProbeEvent) + Send + Sync),
-) -> Result<(), ProbeError> {
-    use rmcp::transport::auth::{OAuthState, StoredCredentials};
-
+) -> Result<InMemoryCredentialStore, ProbeError> {
     let (listener, _port, redirect_uri) = oauth::bind_callback_listener()
         .await
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
@@ -318,9 +340,7 @@ async fn run_oauth_login(
         .await
         .map_err(|e| ProbeError::OauthFlow(e.to_string()))?;
     emit(ProbeEvent::Phase("Exchanging code for tokens...".into()));
-    state
-        .handle_callback(&code, &csrf)
-        .await?;
+    state.handle_callback(&code, &csrf).await?;
 
     let (client_id, token_response) = state.get_credentials().await?;
     if token_response.is_none() {
@@ -337,12 +357,15 @@ async fn run_oauth_login(
         Vec::new(),
         Some(now_epoch_secs()),
     );
-    let draft = draft.to_string();
-    tokio::task::spawn_blocking(move || secrets::store_oauth_cred(&draft, &stored))
+    // Hold the freshly-minted tokens in memory for the life of the wizard; they
+    // reach the keyring only if the user clicks Save (see the wizard save path).
+    // An abandoned wizard drops them with the process — no keyring orphan to purge.
+    let store = InMemoryCredentialStore::new();
+    store
+        .save(stored)
         .await
-        .map_err(|e| ProbeError::OauthFlow(e.to_string()))?
-        .map_err(|e| ProbeError::OauthFlow(format!("store credentials: {e}")))?;
-    Ok(())
+        .map_err(|e| ProbeError::OauthFlow(format!("seed credentials: {e}")))?;
+    Ok(store)
 }
 
 impl From<rmcp::transport::auth::AuthError> for ProbeError {

@@ -21,7 +21,6 @@ fn stdio_cfg(name: &str, command: &str, args: Vec<String>) -> DraftServerConfig 
             env: vec![],
         },
         lifecycle_seconds: 300,
-        draft_session: "test-session".to_string(),
     }
 }
 
@@ -97,7 +96,6 @@ async fn http_probe_against_unreachable_url_returns_connect_or_rejected() {
             headers: vec![],
         },
         lifecycle_seconds: 300,
-        draft_session: "test".to_string(),
     };
     let err = probe(&cfg, CancellationToken::new())
         .await

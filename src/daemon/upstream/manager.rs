@@ -21,10 +21,10 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::events::{Bus, Event};
+use crate::daemon::paths::Paths;
 use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
 use crate::daemon::upstream::{http, stdio};
-use crate::paths::Paths;
 
 const ERROR_RING_CAP: usize = 5;
 
@@ -416,7 +416,6 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
     drop(guard);
     out
 }
-
 
 fn is_expired(entry: &Entry, now: Instant) -> bool {
     if entry.client.is_closed() {

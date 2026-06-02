@@ -1,6 +1,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
-use conduit::daemon::config_toml::Settings;
+use conduit::daemon::config::toml::{Settings, SyncMode};
+
+#[test]
+fn skills_sync_mode_defaults_to_symlink() {
+    // Absent [skills] section → default symlink (an existing config.toml stays valid).
+    let s = Settings::parse("").expect("parse empty toml");
+    assert_eq!(s.skills.sync_mode, SyncMode::Symlink);
+}
+
+#[test]
+fn skills_sync_mode_copy_parses() {
+    let s = Settings::parse("[skills]\nsync_mode = \"copy\"\n").expect("parse [skills]");
+    assert_eq!(s.skills.sync_mode, SyncMode::Copy);
+}
 
 #[test]
 fn empty_toml_parses_to_spec_defaults() {
