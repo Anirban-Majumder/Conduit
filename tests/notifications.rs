@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use conduit::daemon::db::types::{ApprovalStatus, McpServer, PendingApproval};
 use conduit::daemon::db::Db;
-use conduit::daemon::downstream::approval::{ApprovalCenter, ApprovalRequest};
+use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::events::{Bus, Event};
 use conduit::os::notification_router::{dispatch_action, NotificationAction};
 
@@ -163,6 +163,4 @@ async fn stale_action_is_a_noop() {
         ApprovalStatus::Approved,
         "stale deny must not overwrite Approved"
     );
-    // Helper so unused-import lint doesn't fire on ApprovalRequest:
-    let _ = std::marker::PhantomData::<ApprovalRequest>;
 }
