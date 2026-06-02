@@ -235,6 +235,10 @@ pub struct ClientRow {
     pub mcp_config_path: String,
     pub skills_dir: Option<String>,
     pub schema_json: String,
+    /// Repo-root-relative MCP config path (Phase 5b). NULL = no repo MCP support.
+    pub project_config_rel: Option<String>,
+    /// Repo-root-relative skills dir (Phase 5b). NULL = no repo skills support.
+    pub project_skills_rel: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

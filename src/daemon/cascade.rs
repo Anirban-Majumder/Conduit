@@ -7,7 +7,7 @@
 //! entry disappears from every editor that was managing it — no denormalized
 //! blob, no per-IDE branching: `resolve_client` + the one renderer.
 
-use crate::daemon::client_config::{render_mcp, resolve_client};
+use crate::daemon::client_config::{render_scope, resolve_client, Scope};
 use crate::daemon::db::types::ApprovalStatus;
 use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;
@@ -47,20 +47,24 @@ pub async fn delete_server_with_cascade(
         tracing::warn!(server = %server_name, error = %e, "cascade: failed to delete OAuth tokens");
     }
 
-    // Re-derive each affected client's config from its SURVIVING managed servers.
-    // De-dup client ids (a client may appear once per scope; global scope only
-    // for now). The renderer rewrites the file without the deleted entry.
+    // Re-derive each affected (client, scope) from its SURVIVING managed servers.
+    // De-dup on the (client, scope) PAIR — NOT the client id — so a server
+    // managed at both global and a repo re-derives both files (§6). The renderer
+    // rewrites each file without the deleted entry (and removes an emptied repo
+    // file).
     let mut rewritten = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (client_id, _scope) in affected {
-        if !seen.insert(client_id.clone()) {
+    for (client_id, scope) in affected {
+        if !seen.insert((client_id.clone(), scope.clone())) {
             continue;
         }
-        if let Err(e) = rewrite_client_config(db, &client_id, port).await {
-            tracing::warn!(client_id = %client_id, error = %e, "cascade: config re-derive failed");
+        if let Err(e) = rewrite_client_scope(db, &client_id, &scope, port).await {
+            tracing::warn!(client_id = %client_id, scope = %scope, error = %e, "cascade: config re-derive failed");
             continue;
         }
-        rewritten.push(client_id);
+        if !rewritten.contains(&client_id) {
+            rewritten.push(client_id);
+        }
     }
 
     Ok(CascadeReport {
@@ -69,17 +73,23 @@ pub async fn delete_server_with_cascade(
     })
 }
 
-/// Rewrite one client's MCP config file from its remaining managed servers.
-async fn rewrite_client_config(db: &Db, client_id: &str, port: u16) -> Result<(), DbError> {
+/// Rewrite one `(client, scope)`'s MCP config file from its remaining managed
+/// servers. Custom clients are user-authored, so their files are left alone.
+async fn rewrite_client_scope(
+    db: &Db,
+    client_id: &str,
+    scope: &str,
+    port: u16,
+) -> Result<(), DbError> {
     let Some(client) = resolve_client(db, client_id).await? else {
         return Ok(());
     };
     if !client.is_builtin {
-        // Custom clients are user-authored; leave their files alone for now.
         return Ok(());
     }
-    let remaining = db.list_managed_servers(client_id).await?;
-    tokio::task::spawn_blocking(move || render_mcp(&client, &remaining, port))
+    let remaining = db.list_managed_servers(client_id, scope).await?;
+    let scope = Scope::from_db(scope);
+    tokio::task::spawn_blocking(move || render_scope(&client, &scope, &remaining, port))
         .await
         .map_err(|e| DbError::Encoding(format!("join: {e}")))?
         .map_err(|e| DbError::Encoding(format!("render: {e}")))

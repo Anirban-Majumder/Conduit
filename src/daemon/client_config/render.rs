@@ -15,8 +15,8 @@ use std::path::Path;
 use serde_json::{Map, Value};
 
 use super::io::{atomic_write_json, atomic_write_toml};
-use super::types::ResolvedClient;
 use super::types::{ConfigFormat, ConfigSchema};
+use super::types::{ResolvedClient, Scope};
 use super::ClientError;
 
 fn url_for(port: u16, key: &str, server: &str) -> String {
@@ -104,14 +104,39 @@ pub fn render_mcp(
     servers: &[String],
     port: u16,
 ) -> Result<(), ClientError> {
-    purge_mcp(&client.schema, &client.config_path, &client.mcp_key, port)?;
-    render_servers(
-        &client.schema,
-        &client.config_path,
-        &client.mcp_key,
-        servers,
-        port,
-    )
+    render_scope(client, &Scope::Global, servers, port)
+}
+
+/// Make one `(client, scope)`'s MCP config file hold exactly our `servers` set.
+///
+/// Global writes the user config in place. A repo scope writes
+/// `scope_dir/project_config_rel`; when the last entry is removed and the file
+/// is left holding no managed entries and no user content, the ours-created file
+/// (and any dirs we made up to the repo root) are deleted so an empty repo isn't
+/// littered (§5). A client with no repo config path for this scope is skipped.
+pub fn render_scope(
+    client: &ResolvedClient,
+    scope: &Scope,
+    servers: &[String],
+    port: u16,
+) -> Result<(), ClientError> {
+    let Some(path) = client.config_target(scope) else {
+        // Global always resolves; None means a repo scope on a client lacking a
+        // project_config_rel — a bug for a built-in, expected for custom rows.
+        debug_assert!(
+            !client.is_builtin,
+            "built-in {} has no repo config path for {scope:?}",
+            client.id
+        );
+        tracing::trace!(client = %client.id, "render_scope: no config target; skipping");
+        return Ok(());
+    };
+    purge_mcp(&client.schema, &path, &client.mcp_key, port)?;
+    render_servers(&client.schema, &path, &client.mcp_key, servers, port)?;
+    if let Scope::Repo(repo_dir) = scope {
+        cleanup_empty_repo_file(&client.schema, &path, repo_dir)?;
+    }
+    Ok(())
 }
 
 /// Core writer: merge `servers` into the file under `key_path`, preserving
@@ -171,6 +196,86 @@ pub fn purge_one(
     purge_where(schema, path, &|entry| {
         entry_targets_server(entry, port, key, server)
     })
+}
+
+// ── Empty-repo cleanup (repo scope only) ─────────────────────────────────────
+
+/// After a repo-scope render, delete the file if it holds only our (now-empty)
+/// scaffold, then prune empty ancestor dirs up to (not incl.) the repo dir.
+fn cleanup_empty_repo_file(
+    schema: &ConfigSchema,
+    path: &Path,
+    repo_dir: &Path,
+) -> Result<(), ClientError> {
+    if !path.exists() || !file_is_scaffold_only(schema, path)? {
+        return Ok(());
+    }
+    fs::remove_file(path)?;
+    prune_empty_dirs(path.parent(), repo_dir);
+    Ok(())
+}
+
+/// True when the file contains nothing but our `key_path` scaffold with an empty
+/// leaf — no managed entries, no user keys at any level. Blank/missing = empty.
+fn file_is_scaffold_only(schema: &ConfigSchema, path: &Path) -> Result<bool, ClientError> {
+    match schema.format {
+        ConfigFormat::Toml => Ok(read_toml(path)?
+            .as_ref()
+            .is_none_or(|root| table_is_scaffold_only(root, &schema.key_path))),
+        ConfigFormat::Json | ConfigFormat::Jsonc => Ok(read_json(path, schema.format)?
+            .as_ref()
+            .is_none_or(|root| map_is_scaffold_only(root, &schema.key_path))),
+    }
+}
+
+fn map_is_scaffold_only(root: &Map<String, Value>, key_path: &[String]) -> bool {
+    let mut cur = root;
+    for seg in key_path {
+        if cur.is_empty() {
+            return true;
+        }
+        if cur.len() > 1 {
+            return false;
+        }
+        match cur.get(seg).and_then(Value::as_object) {
+            Some(next) => cur = next,
+            None => return false,
+        }
+    }
+    cur.is_empty()
+}
+
+fn table_is_scaffold_only(root: &toml::value::Table, key_path: &[String]) -> bool {
+    let mut cur = root;
+    for seg in key_path {
+        if cur.is_empty() {
+            return true;
+        }
+        if cur.len() > 1 {
+            return false;
+        }
+        match cur.get(seg).and_then(toml::Value::as_table) {
+            Some(next) => cur = next,
+            None => return false,
+        }
+    }
+    cur.is_empty()
+}
+
+/// Remove empty ancestor dirs from `start` upward, stopping before `repo_dir`
+/// (never deletes the repo itself). Stops at the first non-empty/undeletable dir.
+fn prune_empty_dirs(start: Option<&Path>, repo_dir: &Path) {
+    let mut cur = start;
+    while let Some(dir) = cur {
+        if dir == repo_dir {
+            break;
+        }
+        let is_empty = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
+        if !is_empty || fs::remove_dir(dir).is_err() {
+            break;
+        }
+        cur = dir.parent();
+    }
 }
 
 // ── JSON / JSONC ────────────────────────────────────────────────────────────

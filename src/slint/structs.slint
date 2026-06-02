@@ -55,6 +55,7 @@ export struct PolicyRow {
 export struct ToolPolicyRow {
     name: string,
     description: string,
+    summary: string,            // first line of description, shown when collapsed
     decision: string,           // "allow" | "ask" | "deny"
 }
 
@@ -76,7 +77,7 @@ export struct ServerDetail {
     transport: string,              // "stdio" | "http"
     command_or_url: string,
     lifecycle_label: string,
-    health_state: string,           // "live" | "idle" | "down" | "unprobed" | "needsauth" | "paused"
+    health_state: string,           // "live" | "idle" | "down" | "unprobed" | "needsauth" | "paused" | "probing"
     last_probe_label: string,       // "2m ago" or "never"
     last_error: string,             // empty if no error
     tool_count_label: string,       // "12 tools"
@@ -110,6 +111,7 @@ export struct SettingsRow {
     theme: string,
     autostart_at_login: string,
     notifications_enabled: string,
+    skills_sync_mode: string,
 }
 
 export struct SkillRow {
@@ -132,4 +134,20 @@ export struct SkillRepoRow {
     name: string,
     branch: string,
     enabled: bool,
+}
+
+// One row in the scope popover (shared by Server + Skill detail): whether this
+// item is in this scope for the selected editor. `removable` is false for Global
+// (no ✕). `scope-key` is "global" or the canonical repo path the Rust glue keys on.
+export struct ScopeRow {
+    label: string,        // "Global" or home-relative "~/work/foo"
+    scope-key: string,    // "global" | canonical absolute repo dir
+    active: bool,
+    removable: bool,
+}
+
+// One choice in the Editors-tab scope selector (which scope's config file to view).
+export struct ScopeOption {
+    label: string,        // "Global" or "~/work/foo"
+    scope-key: string,    // "global" | canonical absolute repo dir
 }

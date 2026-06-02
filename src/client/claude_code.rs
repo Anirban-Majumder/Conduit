@@ -14,6 +14,8 @@ pub static DEF: ClientDef = ClientDef {
     icon_svg: include_bytes!("../../assets/client/claude-code.svg"),
     config: PathSpec::Home(".claude.json"),
     skills: Some(PathSpec::Home(".claude/skills")),
+    project_config_rel: Some(".mcp.json"),
+    project_skills_rel: Some(".claude/skills"),
     config_spec: ConfigSpec {
         format: ConfigFormat::Json,
         key_path: &["mcpServers"],

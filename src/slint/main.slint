@@ -14,16 +14,17 @@ import { ModalShell } from "components/modal.slint";
 import { PillButton, StatusDot, TabButton, Icon } from "components/primitives.slint";
 import { ApprovalsPopup } from "components/approvals_popup.slint";
 import { ApprovalDetailModal } from "components/approval_modal.slint";
-import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeTarget, PolicyRow, ServerDetail, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
+import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeTarget, PolicyRow, ScopeOption, ScopeRow, ServerDetail, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
 import { AddServerDialog } from "tabs/add_server_dialog.slint";
 import { DashboardTab } from "tabs/dashboard.slint";
 import { EditorsTab } from "tabs/editors.slint";
 import { HelpTab } from "tabs/help.slint";
 import { LogTab } from "tabs/log.slint";
+import { ScopePopover } from "components/scope_popover.slint";
 import { ServersTab } from "tabs/servers.slint";
 import { SettingsTab } from "tabs/settings.slint";
 import { SkillsTab } from "tabs/skills.slint";
-export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, IdeTarget, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
+export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, IdeTarget, ScopeOption, ScopeRow, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
 
 export component MainWindow inherits Window {
     title: "MCP Router";
@@ -142,6 +143,32 @@ export component MainWindow inherits Window {
     callback edit-ide-config(string);
     callback save-ide-config();
     callback reload-ide-config();
+
+    // Editors-tab scope selector (§8b): which scope's config file the raw editor
+    // reads/writes. Empty list = global only.
+    in property <[ScopeOption]> selected-editor-scopes;
+    in-out property <string> selected-editor-scope: "global";
+    in-out property <string> selected-editor-format: "json";   // "json" | "toml"
+    callback select-editor-scope(string);   // scope-key
+
+    // Scope popover (§8a) — shared by Server + Skill detail. Rust populates the
+    // model on open, then re-populates after each mutation.
+    in-out property <bool> scope-popover-open: false;
+    in property <string> scope-popover-editor-label;
+    in property <string> scope-popover-item-label;
+    in-out property <string> scope-popover-item;         // server name | skill directory
+    in-out property <string> scope-popover-item-kind;    // "server" | "skill"
+    in-out property <string> scope-popover-editor;       // client id
+    in property <[ScopeRow]> scope-popover-scopes;
+    in-out property <string> scope-popover-add-path;
+    in property <string> scope-popover-add-error;
+    callback open-scope-popover(string, string, string);  // item, item_kind, editor_id
+    callback close-scope-popover();
+    callback toggle-scope(string, string, string, bool);  // item, editor_id, scope_key, on
+    callback add-repo-scope(string, string, string);      // item, editor_id, path
+    callback remove-scope(string, string, string);        // item, editor_id, scope_key
+    callback remove-all-scopes(string, string);           // item, editor_id
+    callback edit-scope-add-path(string);
 
     callback skills-refresh-clicked();
     callback skills-open-folder-clicked();
@@ -292,6 +319,9 @@ export component MainWindow inherits Window {
                     toggle-target(server, ide-kind, enable) => {
                         root.toggle-server-target(server, ide-kind, enable);
                     }
+                    open-scope(server, ide-kind) => {
+                        root.open-scope-popover(server, "server", ide-kind);
+                    }
                     copy-error-clicked(text) => { root.copy-error-clicked(text); }
                     add-clicked => { root.show-add-server(); }
                 }
@@ -307,11 +337,15 @@ export component MainWindow inherits Window {
                     selected-config-status-is-error: root.selected-editor-status-is-error;
                     selected-config-dirty: root.selected-editor-dirty;
                     refreshing: root.ides-refreshing;
+                    scopes: root.selected-editor-scopes;
+                    selected-scope: root.selected-editor-scope;
+                    config-format: root.selected-editor-format;
                     remove-clicked(kind) => { root.remove-ide-clicked(kind); }
                     retrack-clicked(kind) => { root.retrack-ide-clicked(kind); }
                     refresh-clicked => { root.refresh-ides-clicked(); }
                     reveal-clicked(kind) => { root.reveal-ide-config(kind); }
                     select(kind) => { root.select-ide(kind); }
+                    select-scope(key) => { root.select-editor-scope(key); }
                     edit-text(t) => { root.edit-ide-config(t); }
                     save => { root.save-ide-config(); }
                     reload => { root.reload-ide-config(); }
@@ -335,6 +369,9 @@ export component MainWindow inherits Window {
                     uninstall-clicked(directory) => { root.skills-uninstall-clicked(directory); }
                     toggle-target(directory, ide, enable) => {
                         root.skills-toggle-target(directory, ide, enable);
+                    }
+                    open-scope(directory, ide) => {
+                        root.open-scope-popover(directory, "skill", ide);
                     }
                     add-repo-clicked(owner, name, branch) => {
                         root.skills-add-repo(owner, name, branch);
@@ -398,6 +435,32 @@ export component MainWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Scope popover — shared by Server + Skill detail (§8a).
+    if root.scope-popover-open : ScopePopover {
+        width: root.width;
+        height: root.height;
+        editor-label: root.scope-popover-editor-label;
+        item-label: root.scope-popover-item-label;
+        scopes: root.scope-popover-scopes;
+        add-path: root.scope-popover-add-path;
+        add-error: root.scope-popover-add-error;
+        dismiss => { root.close-scope-popover(); }
+        toggle-scope(key, on) => {
+            root.toggle-scope(root.scope-popover-item, root.scope-popover-editor, key, on);
+        }
+        add-repo(path) => {
+            root.add-repo-scope(root.scope-popover-item, root.scope-popover-editor, path);
+        }
+        remove-scope(key) => {
+            root.remove-scope(root.scope-popover-item, root.scope-popover-editor, key);
+        }
+        remove-all => {
+            root.remove-all-scopes(root.scope-popover-item, root.scope-popover-editor);
+            root.scope-popover-open = false;
+        }
+        edit-add-path(t) => { root.edit-scope-add-path(t); }
     }
 
     // Modal dialog overlays — sit on top of everything when shown.

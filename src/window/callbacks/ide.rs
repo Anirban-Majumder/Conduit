@@ -5,26 +5,58 @@
 //! work to the tokio worker and repaint via `crate::window::refresh`; UI mutation
 //! only happens through `upgrade_in_event_loop`.
 
-use slint::{ComponentHandle, SharedString};
+use std::path::PathBuf;
 
-use conduit::daemon::client_config;
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+
+use conduit::daemon::client_config::{self, ConfigFormat, Scope};
 use conduit::daemon::db::Db;
 
 use crate::window::refresh::{refresh_ides, refresh_server_targets};
 use crate::window::skills::refresh_skills;
 use crate::window::util::{
-    current_selected_server, remove_ide, resolve_ide_config_path, reveal_in_file_manager,
-    run_ide_detection,
+    current_selected_server, display_scope, remove_ide, resolve_ide_config_path,
+    reveal_in_file_manager, run_ide_detection,
 };
-use crate::window::view::MainWindow;
+use crate::window::view::{MainWindow, ScopeOption as ScopeOptionUi};
 use crate::window::CallbackContext;
 
-/// Repaint the right-hand detail pane for `kind_str` from the DB + disk.
-/// Shared by selection, retrack, and remove so the pane never goes stale
-/// when an action mutates the selected IDE's status under it.
-async fn refresh_selected_editor(weak: &slint::Weak<MainWindow>, db: &Db, kind_str: String) {
+const fn format_str(format: ConfigFormat) -> &'static str {
+    match format {
+        ConfigFormat::Toml => "toml",
+        ConfigFormat::Json | ConfigFormat::Jsonc => "json",
+    }
+}
+
+fn format_from_str(s: &str) -> ConfigFormat {
+    if s == "toml" {
+        ConfigFormat::Toml
+    } else {
+        ConfigFormat::Json
+    }
+}
+
+/// Resolve the absolute config file + format for one editor at one scope.
+/// `None` = no config path for that (editor, scope).
+async fn editor_scope_target(db: &Db, kind: &str, scope: &str) -> Option<(PathBuf, ConfigFormat)> {
+    let client = client_config::resolve_client(db, kind)
+        .await
+        .ok()
+        .flatten()?;
+    let path = client.config_target(&Scope::from_db(scope))?;
+    Some((path, client.schema.format))
+}
+
+/// Repaint the right-hand detail pane for `kind_str` at `scope` from the DB +
+/// disk. Shared by selection, scope-switch, retrack, and remove so the pane
+/// never goes stale when an action mutates the selected IDE under it.
+async fn refresh_selected_editor(
+    weak: &slint::Weak<MainWindow>,
+    db: &Db,
+    kind_str: String,
+    scope: String,
+) {
     let record = db.get_client(&kind_str).await.ok().flatten();
-    let path = resolve_ide_config_path(record.as_ref());
     let status = record.as_ref().map_or_else(
         || "active".to_string(),
         |r| {
@@ -38,6 +70,12 @@ async fn refresh_selected_editor(weak: &slint::Weak<MainWindow>, db: &Db, kind_s
     let display = record
         .as_ref()
         .map_or_else(|| kind_str.clone(), |r| r.name.clone());
+
+    // Resolve the file for the chosen scope (global → config_path; repo → join).
+    let (path, format) = match editor_scope_target(db, &kind_str, &scope).await {
+        Some((p, f)) => (Some(p), f),
+        None => (resolve_ide_config_path(record.as_ref()), ConfigFormat::Json),
+    };
     let text = match path.as_deref().map(client_config::read_raw) {
         Some(Ok(Some(s))) => s,
         Some(Ok(None)) | None => String::new(),
@@ -49,12 +87,35 @@ async fn refresh_selected_editor(weak: &slint::Weak<MainWindow>, db: &Db, kind_s
         .and_then(|n| n.to_str())
         .unwrap_or_default()
         .to_string();
+
+    // Scope options: Global always, plus every repo this client manages anything in.
+    let mut scope_opts: Vec<ScopeOptionUi> = vec![ScopeOptionUi {
+        label: SharedString::from("Global"),
+        scope_key: SharedString::from("global"),
+    }];
+    for s in db
+        .list_scopes_for_client(&kind_str)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s != "global")
+    {
+        scope_opts.push(ScopeOptionUi {
+            label: SharedString::from(display_scope(&s)),
+            scope_key: SharedString::from(s),
+        });
+    }
+    let format_label = format_str(format).to_string();
+
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
         ui.set_selected_editor(SharedString::from(kind_str));
         ui.set_selected_editor_display(SharedString::from(display));
         ui.set_selected_editor_status_label(SharedString::from(status));
         ui.set_selected_editor_text(SharedString::from(text));
         ui.set_selected_editor_config_name(SharedString::from(config_name));
+        ui.set_selected_editor_scopes(ModelRc::new(VecModel::from(scope_opts)));
+        ui.set_selected_editor_scope(SharedString::from(scope));
+        ui.set_selected_editor_format(SharedString::from(format_label));
         ui.set_selected_editor_status(SharedString::default());
         ui.set_selected_editor_status_is_error(false);
         ui.set_selected_editor_dirty(false);
@@ -77,7 +138,29 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
             let weak = weak.clone();
             let kind_str = kind_str.to_string();
             rt.spawn(async move {
-                refresh_selected_editor(&weak, &db, kind_str).await;
+                refresh_selected_editor(&weak, &db, kind_str, "global".to_string()).await;
+            });
+        });
+    }
+
+    {
+        let db = db.clone();
+        let rt = rt.clone();
+        let weak = window.as_weak();
+        window.on_select_editor_scope(move |scope| {
+            let db = db.clone();
+            let weak = weak.clone();
+            let scope = scope.to_string();
+            rt.spawn(async move {
+                let kind = crate::window::util::read_ui_state(&weak, |ui| {
+                    ui.get_selected_editor().to_string()
+                })
+                .await
+                .unwrap_or_default();
+                if kind.is_empty() {
+                    return;
+                }
+                refresh_selected_editor(&weak, &db, kind, scope).await;
             });
         });
     }
@@ -88,12 +171,18 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let validation = client_config::validate_json(text.as_str());
+            let format = format_from_str(ui.get_selected_editor_format().as_str());
+            let validation = client_config::validate_config(text.as_str(), format);
             ui.set_selected_editor_text(text);
             ui.set_selected_editor_dirty(true);
             match validation {
                 Ok(()) => {
-                    ui.set_selected_editor_status(SharedString::from("valid JSON"));
+                    let ok = if format == ConfigFormat::Toml {
+                        "valid TOML"
+                    } else {
+                        "valid JSON"
+                    };
+                    ui.set_selected_editor_status(SharedString::from(ok));
                     ui.set_selected_editor_status_is_error(false);
                 }
                 Err(e) => {
@@ -113,6 +202,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
                 return;
             };
             let kind_str = ui.get_selected_editor().to_string();
+            let scope = ui.get_selected_editor_scope().to_string();
             let text = ui.get_selected_editor_text().to_string();
             if kind_str.is_empty() {
                 return;
@@ -120,15 +210,14 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
             let db = db.clone();
             let weak = weak.clone();
             rt.spawn(async move {
-                let record = db.get_client(&kind_str).await.ok().flatten();
-                let Some(path) = resolve_ide_config_path(record.as_ref()) else {
+                let Some((path, format)) = editor_scope_target(&db, &kind_str, &scope).await else {
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_selected_editor_status(SharedString::from("no config path"));
                         ui.set_selected_editor_status_is_error(true);
                     });
                     return;
                 };
-                let result = client_config::write_raw(&path, &text);
+                let result = client_config::write_raw_format(&path, &text, format);
                 let _ignored = weak.upgrade_in_event_loop(move |ui| match result {
                     Ok(()) => {
                         ui.set_selected_editor_status(SharedString::from("saved"));
@@ -153,14 +242,16 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
                 return;
             };
             let kind_str = ui.get_selected_editor().to_string();
+            let scope = ui.get_selected_editor_scope().to_string();
             if kind_str.is_empty() {
                 return;
             }
             let db = db.clone();
             let weak = weak.clone();
             rt.spawn(async move {
-                let record = db.get_client(&kind_str).await.ok().flatten();
-                let path = resolve_ide_config_path(record.as_ref());
+                let path = editor_scope_target(&db, &kind_str, &scope)
+                    .await
+                    .map(|(p, _)| p);
                 let text = match path.as_deref().map(client_config::read_raw) {
                     Some(Ok(Some(s))) => s,
                     Some(Ok(None)) | None => String::new(),
@@ -204,7 +295,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
         rt_for_remove_ide.spawn(async move {
             remove_ide(&db, port_for_remove_ide, &kind_str).await;
             refresh_ides(&weak, &db).await;
-            refresh_selected_editor(&weak, &db, kind_str).await;
+            refresh_selected_editor(&weak, &db, kind_str, "global".to_string()).await;
             // Repaint skills: their per-skill toggle set tracks detected IDEs.
             refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
@@ -228,7 +319,7 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
                 return;
             }
             refresh_ides(&weak, &db).await;
-            refresh_selected_editor(&weak, &db, kind_str).await;
+            refresh_selected_editor(&weak, &db, kind_str, "global".to_string()).await;
             refresh_skills(&weak, &skills).await;
             if let Some(server) = current_selected_server(&weak).await {
                 refresh_server_targets(&weak, &db, &server).await;

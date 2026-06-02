@@ -20,8 +20,11 @@ pub mod types;
 
 mod io;
 
-pub use render::{purge_mcp, purge_one, render_mcp, render_servers};
-pub use types::{resolve_client, ConfigFormat, ConfigSchema, ConfigSpec, ResolvedClient};
+pub use render::{purge_mcp, purge_one, render_mcp, render_scope, render_servers};
+pub use types::{
+    normalize_scope_path, resolve_client, ConfigFormat, ConfigSchema, ConfigSpec, ResolvedClient,
+    Scope,
+};
 
 /// The full static definition of a built-in client.
 ///
@@ -37,6 +40,12 @@ pub struct ClientDef {
     pub config: paths::PathSpec,
     /// `None` = no skills support (VS Code Copilot).
     pub skills: Option<paths::PathSpec>,
+    /// Repo-root-relative MCP config path for directory-scope writes (Phase 5b).
+    /// `None` = no repo-local MCP support. Same schema as the global config.
+    pub project_config_rel: Option<&'static str>,
+    /// Repo-root-relative skills dir for directory-scope sync (Phase 5b).
+    /// `None` = no repo-local skills support (VS Code Copilot).
+    pub project_skills_rel: Option<&'static str>,
     // MCP config writing spec.
     pub config_spec: ConfigSpec,
     // Detection.
@@ -94,4 +103,28 @@ pub fn validate_json(text: &str) -> Result<(), ClientError> {
         )));
     };
     Ok(())
+}
+
+/// Format-aware live-validate for the Editors-tab raw editor: TOML for Codex,
+/// JSON otherwise (JSONC is validated as JSON — comments are not re-emitted).
+pub fn validate_config(text: &str, format: ConfigFormat) -> Result<(), ClientError> {
+    match format {
+        ConfigFormat::Toml => {
+            toml::from_str::<toml::Value>(text)?;
+            Ok(())
+        }
+        ConfigFormat::Json | ConfigFormat::Jsonc => validate_json(text),
+    }
+}
+
+/// Format-aware atomic write for the Editors-tab raw editor. Refuses to clobber
+/// the file on a parse error (same contract as [`write_raw`]).
+pub fn write_raw_format(path: &Path, text: &str, format: ConfigFormat) -> Result<(), ClientError> {
+    match format {
+        ConfigFormat::Toml => {
+            let value: toml::Value = toml::from_str(text)?;
+            io::atomic_write_toml(path, &value)
+        }
+        ConfigFormat::Json | ConfigFormat::Jsonc => write_raw(path, text),
+    }
 }

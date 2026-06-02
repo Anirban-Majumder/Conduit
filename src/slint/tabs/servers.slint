@@ -92,6 +92,7 @@ component HealthCard inherits Rectangle {
                     tint: detail.health-state == "live" ? Theme.success
                          : detail.health-state == "needsauth" ? Theme.warning
                          : detail.health-state == "down" ? Theme.danger
+                         : detail.health-state == "probing" ? Theme.accent
                          : Theme.text-tertiary;
                 }
             }
@@ -103,6 +104,7 @@ component HealthCard inherits Rectangle {
                          : detail.health-state == "needsauth" ? "Needs sign-in"
                          : detail.health-state == "down" ? "Down"
                          : detail.health-state == "unprobed" ? "Unprobed"
+                         : detail.health-state == "probing" ? "Re-testing…"
                          : detail.health-state;
                     color: Theme.text-primary;
                     font-size: Theme.font-body-lg;
@@ -147,6 +149,7 @@ export component ServersTab inherits Rectangle {
     callback edit-clicked(string);
     callback change-tool-policy(string, string, string);
     callback toggle-target(string, string, bool);
+    callback open-scope(string, string);   // server, ide_kind
     callback add-clicked();
     callback copy-error-clicked(string);
 
@@ -297,7 +300,8 @@ export component ServersTab inherits Rectangle {
                             spacing: Theme.gap-sm;
                             alignment: center;
                             PillButton {
-                                label: "Re-test";
+                                label: root.detail.health-state == "probing" ? "Re-testing…" : "Re-test";
+                                enabled: root.detail.health-state != "probing";
                                 outline: true;
                                 bg-color: transparent;
                                 fg-color: Theme.accent;
@@ -352,7 +356,7 @@ export component ServersTab inherits Rectangle {
                                         active: t.active;
                                         label: t.ide-kind;
                                         toggle => {
-                                            root.toggle-target(root.selected, t.ide-kind, !t.active);
+                                            root.open-scope(root.selected, t.ide-kind);
                                         }
                                     }
                                 }

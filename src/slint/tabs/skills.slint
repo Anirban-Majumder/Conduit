@@ -21,6 +21,7 @@ export component SkillsTab inherits Rectangle {
     callback install-clicked(string, string, string, string, string, string);
     callback uninstall-clicked(string);
     callback toggle-target(string, string, bool);
+    callback open-scope(string, string);   // directory, ide_kind
     callback add-repo-clicked(string, string, string);
     callback remove-repo-clicked(string, string);
     callback toggle-repo-clicked(string, string, bool);
@@ -310,7 +311,7 @@ export component SkillsTab inherits Rectangle {
                                 active: t.active;
                                 label: t.ide-kind;
                                 toggle => {
-                                    root.toggle-target(row.directory, t.ide-kind, !t.active);
+                                    root.open-scope(row.directory, t.ide-kind);
                                 }
                             }
                         }

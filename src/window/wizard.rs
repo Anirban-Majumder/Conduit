@@ -242,12 +242,16 @@ pub(crate) fn install_wizard_callbacks(
                         .unwrap_or(Decision::Ask);
                     let tool_rows: Vec<ToolPolicyUiRow> = tools
                         .iter()
-                        .map(|t| ToolPolicyUiRow {
-                            name: SharedString::from(t.name.clone()),
-                            description: SharedString::from(
-                                t.description.clone().unwrap_or_default(),
-                            ),
-                            decision: SharedString::from(default_decision.as_db_str()),
+                        .map(|t| {
+                            let description = t.description.clone().unwrap_or_default();
+                            let summary =
+                                description.lines().next().unwrap_or_default().to_string();
+                            ToolPolicyUiRow {
+                                name: SharedString::from(t.name.clone()),
+                                description: SharedString::from(description),
+                                summary: SharedString::from(summary),
+                                decision: SharedString::from(default_decision.as_db_str()),
+                            }
                         })
                         .collect();
                     let mut updated_server = server_row;

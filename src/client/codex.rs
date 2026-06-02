@@ -22,6 +22,8 @@ pub static DEF: ClientDef = ClientDef {
         suffix: "skills",
         fallback: ".codex/skills",
     }),
+    project_config_rel: Some(".codex/config.toml"),
+    project_skills_rel: Some(".codex/skills"),
     config_spec: ConfigSpec {
         format: ConfigFormat::Toml,
         key_path: &["mcp_servers"],

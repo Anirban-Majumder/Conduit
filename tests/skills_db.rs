@@ -30,9 +30,17 @@ fn fresh_skill(directory: &str) -> Skill {
 
 /// Register a built-in client so `managed_skill` FK inserts succeed.
 async fn seed_client(db: &Db, id: &str) {
-    db.project_builtin(id, id, "/tmp/cfg.json", Some("/tmp/skills"), "{}")
-        .await
-        .unwrap();
+    db.project_builtin(
+        id,
+        id,
+        "/tmp/cfg.json",
+        Some("/tmp/skills"),
+        "{}",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -92,13 +100,15 @@ async fn skill_set_targets_replaces_set_atomically() {
     seed_client(&db, "OpenClaude").await;
     db.upsert_skill_metadata(fresh_skill("foo")).await.unwrap();
 
-    db.set_skill_targets("foo", vec!["OpenClaude".to_string()])
+    db.set_skill_targets("foo", "global", vec!["OpenClaude".to_string()])
         .await
         .unwrap();
     let row = db.get_skill("foo").await.unwrap().unwrap();
     assert_eq!(row.targets, vec!["OpenClaude".to_string()]);
 
-    db.set_skill_targets("foo", Vec::new()).await.unwrap();
+    db.set_skill_targets("foo", "global", Vec::new())
+        .await
+        .unwrap();
     let row = db.get_skill("foo").await.unwrap().unwrap();
     assert!(row.targets.is_empty());
 }
@@ -110,10 +120,16 @@ async fn skill_add_and_remove_single_target() {
     seed_client(&db, "OpenCode").await;
     db.upsert_skill_metadata(fresh_skill("bar")).await.unwrap();
 
-    db.add_skill_target("bar", "ClaudeCode").await.unwrap();
-    db.add_skill_target("bar", "OpenCode").await.unwrap();
+    db.add_skill_target("bar", "ClaudeCode", "global")
+        .await
+        .unwrap();
+    db.add_skill_target("bar", "OpenCode", "global")
+        .await
+        .unwrap();
     // Idempotent add.
-    db.add_skill_target("bar", "OpenCode").await.unwrap();
+    db.add_skill_target("bar", "OpenCode", "global")
+        .await
+        .unwrap();
     let mut targets = db.get_skill("bar").await.unwrap().unwrap().targets;
     targets.sort();
     assert_eq!(
@@ -121,7 +137,9 @@ async fn skill_add_and_remove_single_target() {
         vec!["ClaudeCode".to_string(), "OpenCode".to_string()]
     );
 
-    db.remove_skill_target("bar", "ClaudeCode").await.unwrap();
+    db.remove_skill_target("bar", "ClaudeCode", "global")
+        .await
+        .unwrap();
     let targets = db.get_skill("bar").await.unwrap().unwrap().targets;
     assert_eq!(targets, vec!["OpenCode".to_string()]);
 }
@@ -145,6 +163,7 @@ async fn metadata_resync_preserves_user_targets() {
         .unwrap();
     db.set_skill_targets(
         "research",
+        "global",
         vec!["ClaudeCode".to_string(), "OpenCode".to_string()],
     )
     .await
@@ -174,7 +193,7 @@ async fn skill_delete_cascades_targets() {
     db.upsert_skill_metadata(fresh_skill("disposable"))
         .await
         .unwrap();
-    db.add_skill_target("disposable", "ClaudeCode")
+    db.add_skill_target("disposable", "ClaudeCode", "global")
         .await
         .unwrap();
 

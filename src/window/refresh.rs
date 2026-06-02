@@ -12,20 +12,20 @@ use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::client_config;
 use conduit::daemon::config::toml::Settings;
-use conduit::daemon::db::types::{AuditDecision, AuditFilter, ClientRow, TRANSPORT_STDIO};
+use conduit::daemon::db::types::{AuditDecision, AuditFilter, TRANSPORT_STDIO};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::Event;
 use conduit::daemon::skills::SkillManager;
 
 use crate::window::view::{
-    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, PolicyRow, ServerDetail,
-    ServerRow, ToolPolicyRow as ToolPolicyUiRow,
+    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, PolicyRow, ScopeRow,
+    ServerDetail, ServerRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 use crate::window::skills::{installed_skills_to_rows, refresh_skills};
 use crate::window::util::{
-    clock_full, fire_auth_failure_notification, lifecycle_label, read_ui_state, relative_time,
-    run_ide_detection, settings_to_row, unix_now,
+    clock_full, display_scope, fire_auth_failure_notification, lifecycle_label, read_ui_state,
+    relative_time, run_ide_detection, settings_to_row, unix_now,
 };
 
 /// Decode an IDE's embedded brand SVG into a `slint::Image`. Falls back to an
@@ -250,9 +250,12 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         let decision = t
             .decision
             .map_or_else(|| "ask".to_string(), |d| d.as_db_str().to_string());
+        let description = t.description.clone().unwrap_or_default();
+        let summary = description.lines().next().unwrap_or_default().to_string();
         tool_rows.push(ToolPolicyUiRow {
             name: SharedString::from(t.name.clone()),
-            description: SharedString::from(t.description.clone().unwrap_or_default()),
+            description: SharedString::from(description),
+            summary: SharedString::from(summary),
             decision: SharedString::from(decision),
         });
     }
@@ -312,31 +315,96 @@ pub(crate) async fn refresh_server_targets(
     server_name: &str,
 ) {
     let actives = db.list_tracked_clients().await.unwrap_or_default();
-    let server_name = server_name.to_string();
 
-    // For each tracked client, look up its managed servers to decide the toggle state.
-    let mut client_managed: Vec<(ClientRow, Vec<String>)> = Vec::new();
-    for client in actives {
-        let managed = db
-            .list_managed_servers(&client.id)
-            .await
-            .unwrap_or_default();
-        client_managed.push((client, managed));
-    }
+    // Clients that manage this server in ANY scope (global or a repo): the icon
+    // lights up if the server is bound anywhere for that editor, not just global.
+    let managing: std::collections::HashSet<String> = db
+        .list_clients_managing_server(server_name)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(client_id, _scope)| client_id)
+        .collect();
 
     // Build `IdeTarget`s (incl. brand-icon `Image`s) on the UI thread — `Image`
     // is !Send.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        let rows: Vec<IdeTarget> = client_managed
+        let rows: Vec<IdeTarget> = actives
             .iter()
-            .map(|(client, managed)| IdeTarget {
+            .map(|client| IdeTarget {
                 ide_kind: SharedString::from(client.id.clone()),
                 label: SharedString::from(client.name.clone()),
                 icon: ide_icon(&client.id),
-                active: managed.iter().any(|n| n == &server_name),
+                active: managing.contains(&client.id),
             })
             .collect();
         ui.set_selected_server_targets(ModelRc::new(VecModel::from(rows)));
+    });
+}
+
+/// Populate the scope popover for `(item, kind, editor)` and open it. Called on
+/// open and re-called after each mutation so the toggle states stay live.
+pub(crate) async fn refresh_scope_popover(
+    weak: &slint::Weak<MainWindow>,
+    db: &Db,
+    item: &str,
+    kind: &str,
+    editor: &str,
+) {
+    let editor_label = db
+        .get_client(editor)
+        .await
+        .ok()
+        .flatten()
+        .map_or_else(|| editor.to_string(), |c| c.name);
+
+    // Scopes `item` is currently in for `editor`.
+    let member: std::collections::HashSet<String> = if kind == "skill" {
+        db.list_skill_targets_scoped(item).await.unwrap_or_default()
+    } else {
+        db.list_clients_managing_server(item)
+            .await
+            .unwrap_or_default()
+    }
+    .into_iter()
+    .filter(|(c, _)| c == editor)
+    .map(|(_, s)| s)
+    .collect();
+
+    // For skills, only an editor with a repo skills dir can host repo scopes.
+    let editor_supports_repo = kind != "skill"
+        || client_config::resolve_client(db, editor)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.project_skills_rel.is_some());
+
+    let mut rows: Vec<ScopeRow> = vec![ScopeRow {
+        label: SharedString::from("Global"),
+        scope_key: SharedString::from("global"),
+        active: member.contains("global"),
+        removable: false,
+    }];
+    if editor_supports_repo {
+        for repo in db.list_known_repos().await.unwrap_or_default() {
+            rows.push(ScopeRow {
+                label: SharedString::from(display_scope(&repo)),
+                active: member.contains(&repo),
+                scope_key: SharedString::from(repo),
+                removable: true,
+            });
+        }
+    }
+
+    let (item, kind, editor) = (item.to_string(), kind.to_string(), editor.to_string());
+    let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        ui.set_scope_popover_editor(SharedString::from(editor));
+        ui.set_scope_popover_editor_label(SharedString::from(editor_label));
+        ui.set_scope_popover_item(SharedString::from(item.clone()));
+        ui.set_scope_popover_item_label(SharedString::from(item));
+        ui.set_scope_popover_item_kind(SharedString::from(kind));
+        ui.set_scope_popover_scopes(ModelRc::new(VecModel::from(rows)));
+        ui.set_scope_popover_open(true);
     });
 }
 
@@ -362,7 +430,10 @@ pub(crate) async fn toggle_server_for_ide(
         return;
     }
 
-    let mut entries = db.list_managed_servers(client_id).await.unwrap_or_default();
+    let mut entries = db
+        .list_managed_servers(client_id, "global")
+        .await
+        .unwrap_or_default();
     let present = entries.iter().any(|n| n == server_name);
     if enable && !present {
         entries.push(server_name.to_string());
@@ -370,7 +441,10 @@ pub(crate) async fn toggle_server_for_ide(
         entries.retain(|n| n != server_name);
     }
 
-    if let Err(e) = db.set_managed_servers(client_id, entries.clone()).await {
+    if let Err(e) = db
+        .set_managed_servers(client_id, "global", entries.clone())
+        .await
+    {
         tracing::warn!(error = %e, "set_managed_servers failed");
         return;
     }

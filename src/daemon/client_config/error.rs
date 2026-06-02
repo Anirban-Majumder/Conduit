@@ -26,6 +26,9 @@ pub enum ClientError {
     #[error("config path is not valid UTF-8")]
     NonUtf8Path,
 
+    #[error("path is not an existing directory: {0}")]
+    NotADirectory(std::path::PathBuf),
+
     #[error("config schema has an empty key_path — refusing to write at the file root")]
     EmptyKeyPath,
 

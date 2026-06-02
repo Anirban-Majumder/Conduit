@@ -43,6 +43,8 @@ pub async fn project_builtins(db: &Db, detected: &[DetectedClient]) -> Result<()
                 &config_path,
                 skills_dir.as_deref(),
                 &schema_json,
+                def.project_config_rel,
+                def.project_skills_rel,
             )
             .await?;
         } else {

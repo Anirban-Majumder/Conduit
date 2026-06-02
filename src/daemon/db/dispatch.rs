@@ -18,9 +18,11 @@ use super::audit::{
     query_insert_audit_entry, query_purge_old_audit_entries, query_query_audit_log,
 };
 use super::clients::{
-    query_get_client, query_list_clients, query_list_clients_managing_server,
-    query_list_managed_servers, query_list_tracked_clients, query_lookup_client_key,
-    query_project_builtin, query_set_client_tracked, query_set_managed_servers, query_touch_client,
+    query_add_managed_server, query_get_client, query_list_clients,
+    query_list_clients_managing_server, query_list_known_repos, query_list_managed_servers,
+    query_list_scopes_for_client, query_list_tracked_clients, query_lookup_client_key,
+    query_project_builtin, query_remove_managed_server, query_remove_server_all_scopes,
+    query_set_client_tracked, query_set_managed_servers, query_touch_client,
 };
 use super::migrations::{query_list_columns, query_list_tables, query_schema_version};
 use super::servers::{
@@ -32,9 +34,9 @@ use super::servers::{
 use super::settings::{query_get_settings_kv, query_set_settings_kv};
 use super::skills::{
     query_add_skill_target, query_delete_skill, query_delete_skill_repo, query_get_skill,
-    query_list_skill_repos, query_list_skills, query_remove_skill_target,
-    query_set_skill_repo_enabled, query_set_skill_targets, query_upsert_skill_metadata,
-    query_upsert_skill_repo,
+    query_list_skill_repos, query_list_skill_targets_scoped, query_list_skills,
+    query_remove_skill_all_scopes, query_remove_skill_target, query_set_skill_repo_enabled,
+    query_set_skill_targets, query_upsert_skill_metadata, query_upsert_skill_repo,
 };
 
 #[expect(clippy::too_many_lines, reason = "thin match over many DbCmd variants")]
@@ -147,6 +149,8 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
             mcp_config_path,
             skills_dir,
             schema_json,
+            project_config_rel,
+            project_skills_rel,
             reply,
         } => {
             reply
@@ -157,6 +161,8 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
                     &mcp_config_path,
                     skills_dir.as_deref(),
                     &schema_json,
+                    project_config_rel.as_deref(),
+                    project_skills_rel.as_deref(),
                 ))
                 .ok();
         }
@@ -180,23 +186,84 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
                 .send(query_set_client_tracked(conn, &id, tracked))
                 .ok();
         }
-        DbCmd::ListManagedServers { client_id, reply } => {
+        DbCmd::ListManagedServers {
+            client_id,
+            scope,
+            reply,
+        } => {
             reply
-                .send(query_list_managed_servers(conn, &client_id))
+                .send(query_list_managed_servers(conn, &client_id, &scope))
                 .ok();
         }
         DbCmd::SetManagedServers {
             client_id,
+            scope,
             server_names,
             reply,
         } => {
             reply
-                .send(query_set_managed_servers(conn, &client_id, &server_names))
+                .send(query_set_managed_servers(
+                    conn,
+                    &client_id,
+                    &scope,
+                    &server_names,
+                ))
+                .ok();
+        }
+        DbCmd::AddManagedServer {
+            client_id,
+            scope,
+            server_name,
+            reply,
+        } => {
+            reply
+                .send(query_add_managed_server(
+                    conn,
+                    &client_id,
+                    &scope,
+                    &server_name,
+                ))
+                .ok();
+        }
+        DbCmd::RemoveManagedServer {
+            client_id,
+            scope,
+            server_name,
+            reply,
+        } => {
+            reply
+                .send(query_remove_managed_server(
+                    conn,
+                    &client_id,
+                    &scope,
+                    &server_name,
+                ))
+                .ok();
+        }
+        DbCmd::RemoveServerAllScopes {
+            client_id,
+            server_name,
+            reply,
+        } => {
+            reply
+                .send(query_remove_server_all_scopes(
+                    conn,
+                    &client_id,
+                    &server_name,
+                ))
                 .ok();
         }
         DbCmd::ListClientsManagingServer { server_name, reply } => {
             reply
                 .send(query_list_clients_managing_server(conn, &server_name))
+                .ok();
+        }
+        DbCmd::ListKnownRepos { reply } => {
+            reply.send(query_list_known_repos(conn)).ok();
+        }
+        DbCmd::ListScopesForClient { client_id, reply } => {
+            reply
+                .send(query_list_scopes_for_client(conn, &client_id))
                 .ok();
         }
 
@@ -281,29 +348,48 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
         }
         DbCmd::SetSkillTargets {
             directory,
+            scope,
             targets,
             reply,
         } => {
             reply
-                .send(query_set_skill_targets(conn, &directory, &targets))
+                .send(query_set_skill_targets(conn, &directory, &scope, &targets))
                 .ok();
         }
         DbCmd::AddSkillTarget {
             directory,
             client_id,
+            scope,
             reply,
         } => {
             reply
-                .send(query_add_skill_target(conn, &directory, &client_id))
+                .send(query_add_skill_target(conn, &directory, &client_id, &scope))
                 .ok();
         }
         DbCmd::RemoveSkillTarget {
             directory,
             client_id,
+            scope,
             reply,
         } => {
             reply
-                .send(query_remove_skill_target(conn, &directory, &client_id))
+                .send(query_remove_skill_target(
+                    conn, &directory, &client_id, &scope,
+                ))
+                .ok();
+        }
+        DbCmd::RemoveSkillAllScopes {
+            directory,
+            client_id,
+            reply,
+        } => {
+            reply
+                .send(query_remove_skill_all_scopes(conn, &directory, &client_id))
+                .ok();
+        }
+        DbCmd::ListSkillTargetsScoped { directory, reply } => {
+            reply
+                .send(query_list_skill_targets_scoped(conn, &directory))
                 .ok();
         }
         DbCmd::DeleteSkill { directory, reply } => {

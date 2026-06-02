@@ -146,6 +146,23 @@ pub(crate) async fn run_ide_detection(db: &Db) {
     }
 }
 
+/// Home-relative display label for a scope string: "Global" or `~`-collapsed path.
+pub(crate) fn display_scope(scope: &str) -> String {
+    if scope == "global" {
+        return "Global".to_string();
+    }
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = std::path::Path::new(scope).strip_prefix(&home) {
+            return if rel.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rel.display())
+            };
+        }
+    }
+    scope.to_string()
+}
+
 pub(crate) fn lifecycle_label(secs: i32) -> String {
     match secs {
         -1 => "persistent".to_string(),
@@ -163,6 +180,10 @@ pub(crate) fn settings_to_row(s: &Settings) -> SettingsRow {
         theme: SharedString::from(s.gui.theme.clone()),
         autostart_at_login: SharedString::from(s.daemon.autostart_at_login.to_string()),
         notifications_enabled: SharedString::from(s.notifications.enabled.to_string()),
+        skills_sync_mode: SharedString::from(match s.skills.sync_mode {
+            conduit::daemon::config::toml::SyncMode::Symlink => "symlink",
+            conduit::daemon::config::toml::SyncMode::Copy => "copy",
+        }),
     }
 }
 

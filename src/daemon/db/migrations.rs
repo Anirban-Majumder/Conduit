@@ -16,10 +16,13 @@ use super::DbCmd;
 /// `INSERT OR IGNORE` make it safe to re-run on an existing database.
 const INIT_SQL: &str = include_str!("migrations/0001_init.sql");
 
+/// Phase 5b: adds `client.project_config_rel` / `project_skills_rel`.
+const V0002_SQL: &str = include_str!("migrations/0002_repo_scope.sql");
+
 /// The ordered migration ledger. Each entry is `(version, sql)`; apply in order,
 /// skipping any whose version is already recorded in `schema_version`. Append the
-/// next change as `(2, V0002_SQL)` — never edit a released entry.
-const MIGRATIONS: &[(i64, &str)] = &[(1, INIT_SQL)];
+/// next change as `(3, V0003_SQL)` — never edit a released entry.
+const MIGRATIONS: &[(i64, &str)] = &[(1, INIT_SQL), (2, V0002_SQL)];
 
 #[cfg(all(unix, not(debug_assertions)))]
 pub(super) fn restrict_db_perms(path: &std::path::Path) {

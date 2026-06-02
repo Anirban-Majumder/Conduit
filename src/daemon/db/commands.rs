@@ -100,6 +100,8 @@ pub enum DbCmd {
         mcp_config_path: String,
         skills_dir: Option<String>,
         schema_json: String,
+        project_config_rel: Option<String>,
+        project_skills_rel: Option<String>,
         reply: oneshot::Sender<Result<ClientRow, DbError>>,
     },
     TouchClient {
@@ -127,16 +129,42 @@ pub enum DbCmd {
     },
     ListManagedServers {
         client_id: String,
+        scope: String,
         reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
     SetManagedServers {
         client_id: String,
+        scope: String,
         server_names: Vec<String>,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    AddManagedServer {
+        client_id: String,
+        scope: String,
+        server_name: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    RemoveManagedServer {
+        client_id: String,
+        scope: String,
+        server_name: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    RemoveServerAllScopes {
+        client_id: String,
+        server_name: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     ListClientsManagingServer {
         server_name: String,
         reply: oneshot::Sender<Result<Vec<(String, String)>, DbError>>,
+    },
+    ListKnownRepos {
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
+    },
+    ListScopesForClient {
+        client_id: String,
+        reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
 
     // ── Approvals ──────────────────────────────────────────────────────
@@ -211,18 +239,30 @@ pub enum DbCmd {
     },
     SetSkillTargets {
         directory: String,
+        scope: String,
         targets: Vec<String>,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     AddSkillTarget {
         directory: String,
         client_id: String,
+        scope: String,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     RemoveSkillTarget {
         directory: String,
         client_id: String,
+        scope: String,
         reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    RemoveSkillAllScopes {
+        directory: String,
+        client_id: String,
+        reply: oneshot::Sender<Result<(), DbError>>,
+    },
+    ListSkillTargetsScoped {
+        directory: String,
+        reply: oneshot::Sender<Result<Vec<(String, String)>, DbError>>,
     },
     DeleteSkill {
         directory: String,

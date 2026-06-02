@@ -36,7 +36,7 @@ fn sample_server(name: &str) -> McpServer {
 
 /// Register a built-in client row so `managed_mcp` inserts satisfy the FK.
 async fn seed_client(db: &Db, id: &str) {
-    db.project_builtin(id, id, "/tmp/cfg.json", None, "{}")
+    db.project_builtin(id, id, "/tmp/cfg.json", None, "{}", None, None)
         .await
         .unwrap();
 }
@@ -198,7 +198,7 @@ async fn rename_server_cascades_to_managed_mcp_and_tool_decisions() {
     )
     .await
     .unwrap();
-    db.set_managed_servers("Cursor", vec!["github".to_string()])
+    db.set_managed_servers("Cursor", "global", vec!["github".to_string()])
         .await
         .unwrap();
 

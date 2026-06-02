@@ -59,11 +59,13 @@ async fn seed_cursor(db: &Db, cfg_path: &std::path::Path, servers: &[&str]) -> S
             &cfg_path.display().to_string(),
             None,
             &schema_json,
+            None,
+            None,
         )
         .await
         .unwrap();
     let names: Vec<String> = servers.iter().map(|s| (*s).to_string()).collect();
-    db.set_managed_servers("Cursor", names.clone())
+    db.set_managed_servers("Cursor", "global", names.clone())
         .await
         .unwrap();
     render_servers(&cursor_schema(), cfg_path, &row.mcp_key, &names, 9876).unwrap();
@@ -118,11 +120,97 @@ async fn cascade_re_derives_client_config_and_deletes_server_row() {
 
     // managed_mcp reflects the survivor only.
     assert_eq!(
-        db.list_managed_servers("Cursor").await.unwrap(),
+        db.list_managed_servers("Cursor", "global").await.unwrap(),
         vec!["github".to_string()]
     );
 
     let _ignored = std::fs::remove_dir_all(&dir);
+}
+
+/// Red-first (§6): a server managed at BOTH global and a repo scope must have
+/// EVERY affected file re-derived on delete. The old cascade de-duped affected
+/// clients by `client_id` and re-rendered only the global file, so the repo
+/// file's stale entry survived — this fails against that behavior.
+#[tokio::test]
+async fn cascade_re_derives_global_and_repo_scopes() {
+    let db = Db::spawn_in_memory().unwrap();
+    let bus = Bus::new();
+    let global_dir = unique_dir("g");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    let repo_dir = unique_dir("repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let global_cfg = global_dir.join("mcp.json");
+
+    db.upsert_server_with_tools(server("gmail"), vec![])
+        .await
+        .unwrap();
+    db.upsert_server_with_tools(server("github"), vec![])
+        .await
+        .unwrap();
+
+    let schema_json = serde_json::to_string(&cursor_schema()).unwrap();
+    let row = db
+        .project_builtin(
+            "Cursor",
+            "Cursor",
+            &global_cfg.display().to_string(),
+            None,
+            &schema_json,
+            Some(".cursor/mcp.json"),
+            Some(".cursor/skills"),
+        )
+        .await
+        .unwrap();
+
+    // gmail+github managed globally; gmail is the repo's only managed server.
+    db.set_managed_servers("Cursor", "global", vec!["gmail".into(), "github".into()])
+        .await
+        .unwrap();
+    let repo_scope = repo_dir.display().to_string();
+    db.add_managed_server("Cursor", &repo_scope, "gmail")
+        .await
+        .unwrap();
+
+    // Render both files to match the managed sets.
+    render_servers(
+        &cursor_schema(),
+        &global_cfg,
+        &row.mcp_key,
+        &["gmail".to_string(), "github".to_string()],
+        9876,
+    )
+    .unwrap();
+    let repo_cfg = repo_dir.join(".cursor/mcp.json");
+    render_servers(
+        &cursor_schema(),
+        &repo_cfg,
+        &row.mcp_key,
+        &["gmail".to_string()],
+        9876,
+    )
+    .unwrap();
+
+    delete_server_with_cascade(&db, &bus, "gmail", 9876, false)
+        .await
+        .unwrap();
+
+    // Global file: gmail purged, github survivor kept.
+    let g: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&global_cfg).unwrap()).unwrap();
+    assert!(g["mcpServers"]["gmail"].is_null(), "global gmail purged");
+    assert!(
+        g["mcpServers"]["github"]["url"].is_string(),
+        "global github kept"
+    );
+
+    // Repo file: gmail was its only managed server → file removed (empty cleanup).
+    assert!(
+        !repo_cfg.exists(),
+        "repo file re-derived to empty and removed"
+    );
+
+    let _ignored = std::fs::remove_dir_all(&global_dir);
+    let _ignored = std::fs::remove_dir_all(&repo_dir);
 }
 
 #[tokio::test]
@@ -184,10 +272,12 @@ async fn cascade_tolerates_missing_client_config_file() {
         &missing.display().to_string(),
         None,
         &schema_json,
+        None,
+        None,
     )
     .await
     .unwrap();
-    db.set_managed_servers("Cursor", vec!["gmail".to_string()])
+    db.set_managed_servers("Cursor", "global", vec!["gmail".to_string()])
         .await
         .unwrap();
 

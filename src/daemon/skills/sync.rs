@@ -1,38 +1,38 @@
-//! Mirror a managed-skill directory into each agentic IDE's skills folder.
+//! Mirror a managed-skill directory into an editor's skills folder.
 //!
-//! Prefer a directory symlink (cheap, edits propagate); fall back to recursive
-//! copy when symlinks aren't available (sandboxed Windows accounts, etc.).
-//! Writes go through a sibling staging path then atomic rename. Synchronous
-//! `std::fs` by design — callers invoke these from `spawn_blocking`.
+//! Pure path operations (D5): the caller resolves the absolute destination dir
+//! (`ResolvedClient::skills_target(scope)`) and the `sync_mode`; this module
+//! never reaches into the IDE catalog. `Symlink` mode tries a directory symlink
+//! (cheap, edits propagate) and falls back to copy; `Copy` always copies. Writes
+//! go through a sibling staging path then atomic rename. Synchronous `std::fs`
+//! by design — callers invoke these from `spawn_blocking`.
 
 use std::fs;
 use std::path::Path;
 
-use crate::daemon::client_config::{self, paths};
+use crate::daemon::config::toml::SyncMode;
 use crate::daemon::errors::SkillError;
 
-pub fn sync_to_target(source: &Path, client_id: &str) -> Result<(), SkillError> {
-    let def = client_config::builtin_by_id(client_id)
-        .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
-    let skills_spec = def
-        .skills
-        .as_ref()
-        .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
-    let base = paths::resolve(skills_spec)
-        .ok_or_else(|| SkillError::UnknownTarget(client_id.to_string()))?;
-    let install_name = source
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| SkillError::InvalidPath(source.display().to_string()))?;
-    fs::create_dir_all(&base)?;
-    let dest = base.join(install_name);
+/// Mirror `source` into `dest_dir/install_name` using `mode`. `dest_dir` is the
+/// editor's skills base for this scope (already resolved by the caller).
+pub fn sync_to_target(
+    source: &Path,
+    dest_dir: &Path,
+    install_name: &str,
+    mode: SyncMode,
+) -> Result<(), SkillError> {
+    fs::create_dir_all(dest_dir)?;
+    let dest = dest_dir.join(install_name);
     // Atomic swap: write the new link/dir under a sibling tmp name, then
     // rename over `dest`. Avoids the race window where another process could
     // create something at `dest` between our remove and re-create.
-    let staging = base.join(format!(".{install_name}.staging-{}", staging_nonce()));
+    let staging = dest_dir.join(format!(".{install_name}.staging-{}", staging_nonce()));
     remove_path(&staging);
-    let needs_copy = try_symlink_dir(source, &staging).is_err();
-    if needs_copy {
+    let use_copy = match mode {
+        SyncMode::Copy => true,
+        SyncMode::Symlink => try_symlink_dir(source, &staging).is_err(),
+    };
+    if use_copy {
         if let Err(e) = copy_dir_all(source, &staging) {
             remove_path(&staging);
             return Err(SkillError::from(e));
@@ -54,18 +54,9 @@ fn staging_nonce() -> u128 {
         .unwrap_or(0)
 }
 
-pub fn remove_from_target(install_name: &str, client_id: &str) {
-    let Some(def) = client_config::builtin_by_id(client_id) else {
-        return;
-    };
-    let Some(skills_spec) = def.skills.as_ref() else {
-        return;
-    };
-    let Some(base) = paths::resolve(skills_spec) else {
-        return;
-    };
-    let dest = base.join(install_name);
-    remove_path(&dest);
+/// Remove a mirrored skill at `dest_dir/install_name`. Missing path is a no-op.
+pub fn remove_from_target(dest_dir: &Path, install_name: &str) {
+    remove_path(&dest_dir.join(install_name));
 }
 
 #[cfg(unix)]

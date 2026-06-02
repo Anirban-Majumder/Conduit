@@ -13,8 +13,8 @@
 
 use std::path::PathBuf;
 
-use conduit::daemon::client_config::render::{purge_mcp, purge_one, render_servers};
-use conduit::daemon::client_config::types::ConfigSchema;
+use conduit::daemon::client_config::render::{purge_mcp, purge_one, render_scope, render_servers};
+use conduit::daemon::client_config::types::{ConfigSchema, ResolvedClient, Scope};
 use conduit::daemon::client_config::{builtin_by_id, read_raw, validate_json, write_raw};
 use serde_json::json;
 
@@ -309,6 +309,118 @@ fn cursor_emits_url_only_no_type_field() {
     assert_eq!(v["mcpServers"]["gmail"]["type"], serde_json::Value::Null);
     assert!(v["mcpServers"]["gmail"]["url"].is_string());
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ── Directory-scope (repo-local) writes + empty-repo cleanup (§5) ────────────
+
+/// A built-in `ResolvedClient` pointed at a throwaway global path; repo-relative
+/// paths come straight from the DEF so `config_target(Repo)` resolves correctly.
+fn resolved(id: &str) -> ResolvedClient {
+    let def = builtin_by_id(id).expect("known built-in");
+    ResolvedClient {
+        id: id.to_string(),
+        display_name: id.to_string(),
+        is_builtin: true,
+        mcp_key: "key12345".to_string(),
+        config_path: fresh_tmp("unused-global").join("global.json"),
+        skills_dir: None,
+        schema: ConfigSchema::from(&def.config_spec),
+        project_config_rel: def.project_config_rel.map(PathBuf::from),
+        project_skills_rel: def.project_skills_rel.map(PathBuf::from),
+    }
+}
+
+#[test]
+fn render_scope_writes_repo_file_at_project_relative_path() {
+    let repo = fresh_tmp("repo-write");
+    std::fs::create_dir_all(&repo).unwrap();
+    let client = resolved("Cursor");
+
+    render_scope(
+        &client,
+        &Scope::Repo(repo.clone()),
+        &["gmail".to_string()],
+        9876,
+    )
+    .unwrap();
+
+    let path = repo.join(".cursor/mcp.json");
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        v["mcpServers"]["gmail"]["url"],
+        "http://127.0.0.1:9876/key12345/gmail/mcp"
+    );
+    std::fs::remove_dir_all(&repo).ok();
+}
+
+#[test]
+fn render_scope_last_removal_deletes_ours_created_file_and_dir() {
+    let repo = fresh_tmp("repo-clean");
+    std::fs::create_dir_all(&repo).unwrap();
+    let client = resolved("Cursor");
+    let scope = Scope::Repo(repo.clone());
+
+    render_scope(&client, &scope, &["gmail".to_string()], 9876).unwrap();
+    assert!(repo.join(".cursor/mcp.json").exists());
+
+    // Removing the last managed server must delete the file AND the dir we made.
+    render_scope(&client, &scope, &[], 9876).unwrap();
+    assert!(
+        !repo.join(".cursor/mcp.json").exists(),
+        "scaffold file deleted"
+    );
+    assert!(!repo.join(".cursor").exists(), "ours-created dir pruned");
+    assert!(repo.exists(), "repo dir itself untouched");
+    std::fs::remove_dir_all(&repo).ok();
+}
+
+#[test]
+fn render_scope_cleanup_keeps_file_holding_user_content() {
+    let repo = fresh_tmp("repo-keepuser");
+    std::fs::create_dir_all(repo.join(".cursor")).unwrap();
+    let path = repo.join(".cursor/mcp.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&json!({
+            "someSetting": 1,
+            "mcpServers": { "user-srv": { "command": "x" } }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let client = resolved("Cursor");
+    let scope = Scope::Repo(repo.clone());
+
+    render_scope(&client, &scope, &["gmail".to_string()], 9876).unwrap();
+    render_scope(&client, &scope, &[], 9876).unwrap();
+
+    assert!(path.exists(), "file with user content must be kept");
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(v["someSetting"], 1);
+    assert_eq!(v["mcpServers"]["user-srv"]["command"], "x");
+    assert!(v["mcpServers"]["gmail"].is_null());
+    std::fs::remove_dir_all(&repo).ok();
+}
+
+#[test]
+fn render_scope_codex_toml_repo_write_and_cleanup() {
+    let repo = fresh_tmp("repo-codex");
+    std::fs::create_dir_all(&repo).unwrap();
+    let client = resolved("Codex");
+    let scope = Scope::Repo(repo.clone());
+
+    render_scope(&client, &scope, &["gmail".to_string()], 9876).unwrap();
+    let path = repo.join(".codex/config.toml");
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        v["mcp_servers"]["gmail"]["url"].as_str().unwrap(),
+        "http://127.0.0.1:9876/key12345/gmail/mcp"
+    );
+
+    render_scope(&client, &scope, &[], 9876).unwrap();
+    assert!(!path.exists(), "toml scaffold deleted on last removal");
+    assert!(!repo.join(".codex").exists(), "dir pruned");
+    std::fs::remove_dir_all(&repo).ok();
 }
 
 #[test]

@@ -104,11 +104,12 @@ pub(super) fn query_add_skill_target(
     conn: &Connection,
     directory: &str,
     client_id: &str,
+    scope: &str,
 ) -> Result<(), DbError> {
     conn.prepare_cached(
-        "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, 'global', ?2)",
+        "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, ?2, ?3)",
     )?
-    .execute(params![client_id, directory])?;
+    .execute(params![client_id, scope, directory])?;
     Ok(())
 }
 
@@ -116,30 +117,59 @@ pub(super) fn query_remove_skill_target(
     conn: &Connection,
     directory: &str,
     client_id: &str,
+    scope: &str,
 ) -> Result<(), DbError> {
     conn.prepare_cached(
-        "DELETE FROM managed_skill WHERE skill_dir = ?1 AND client_id = ?2 AND scope = 'global'",
+        "DELETE FROM managed_skill WHERE skill_dir = ?1 AND client_id = ?2 AND scope = ?3",
     )?
-    .execute(params![directory, client_id])?;
+    .execute(params![directory, client_id, scope])?;
     Ok(())
 }
 
+/// Remove a skill from every scope of one client ("Remove from all").
+pub(super) fn query_remove_skill_all_scopes(
+    conn: &Connection,
+    directory: &str,
+    client_id: &str,
+) -> Result<(), DbError> {
+    conn.prepare_cached("DELETE FROM managed_skill WHERE skill_dir = ?1 AND client_id = ?2")?
+        .execute(params![directory, client_id])?;
+    Ok(())
+}
+
+/// Replace the set of client targets for one `(skill, scope)`.
 pub(super) fn query_set_skill_targets(
     conn: &Connection,
     directory: &str,
+    scope: &str,
     targets: &[String],
 ) -> Result<(), DbError> {
     let tx = conn.unchecked_transaction()?;
-    tx.prepare_cached("DELETE FROM managed_skill WHERE skill_dir = ?1 AND scope = 'global'")?
-        .execute(params![directory])?;
+    tx.prepare_cached("DELETE FROM managed_skill WHERE skill_dir = ?1 AND scope = ?2")?
+        .execute(params![directory, scope])?;
     for client_id in targets {
         tx.prepare_cached(
-            "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, 'global', ?2)",
+            "INSERT OR IGNORE INTO managed_skill (client_id, scope, skill_dir) VALUES (?1, ?2, ?3)",
         )?
-        .execute(params![client_id, directory])?;
+        .execute(params![client_id, scope, directory])?;
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Every `(client_id, scope)` a skill is mirrored into — the skill analogue of
+/// `query_list_clients_managing_server`, driving scope-aware sync (Phase 4).
+pub(super) fn query_list_skill_targets_scoped(
+    conn: &Connection,
+    directory: &str,
+) -> Result<Vec<(String, String)>, DbError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT client_id, scope FROM managed_skill WHERE skill_dir = ?1 ORDER BY client_id, scope",
+    )?;
+    let rows = stmt.query_map(params![directory], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub(super) fn query_delete_skill(conn: &Connection, directory: &str) -> Result<(), DbError> {
@@ -148,9 +178,13 @@ pub(super) fn query_delete_skill(conn: &Connection, directory: &str) -> Result<(
     Ok(())
 }
 
+/// Clients this skill is bound to in ANY scope (global or a repo) — drives the
+/// Skills-tab per-editor icon's active state, which lights up if the skill is
+/// synced anywhere for that editor. `DISTINCT` collapses a client present in
+/// both global and a repo to one entry.
 fn read_skill_targets(conn: &Connection, directory: &str) -> Result<Vec<String>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT client_id FROM managed_skill WHERE skill_dir = ?1 AND scope = 'global' ORDER BY client_id",
+        "SELECT DISTINCT client_id FROM managed_skill WHERE skill_dir = ?1 ORDER BY client_id",
     )?;
     let rows = stmt.query_map(params![directory], |row| row.get::<_, String>(0))?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -248,10 +282,16 @@ impl Db {
             .await
     }
 
-    pub async fn add_skill_target(&self, directory: &str, client_id: &str) -> Result<(), DbError> {
+    pub async fn add_skill_target(
+        &self,
+        directory: &str,
+        client_id: &str,
+        scope: &str,
+    ) -> Result<(), DbError> {
         self.send_cmd(|reply| DbCmd::AddSkillTarget {
             directory: directory.to_string(),
             client_id: client_id.to_string(),
+            scope: scope.to_string(),
             reply,
         })
         .await
@@ -261,8 +301,23 @@ impl Db {
         &self,
         directory: &str,
         client_id: &str,
+        scope: &str,
     ) -> Result<(), DbError> {
         self.send_cmd(|reply| DbCmd::RemoveSkillTarget {
+            directory: directory.to_string(),
+            client_id: client_id.to_string(),
+            scope: scope.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn remove_skill_all_scopes(
+        &self,
+        directory: &str,
+        client_id: &str,
+    ) -> Result<(), DbError> {
+        self.send_cmd(|reply| DbCmd::RemoveSkillAllScopes {
             directory: directory.to_string(),
             client_id: client_id.to_string(),
             reply,
@@ -273,11 +328,24 @@ impl Db {
     pub async fn set_skill_targets(
         &self,
         directory: &str,
+        scope: &str,
         targets: Vec<String>,
     ) -> Result<(), DbError> {
         self.send_cmd(|reply| DbCmd::SetSkillTargets {
             directory: directory.to_string(),
+            scope: scope.to_string(),
             targets,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn list_skill_targets_scoped(
+        &self,
+        directory: &str,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        self.send_cmd(|reply| DbCmd::ListSkillTargetsScoped {
+            directory: directory.to_string(),
             reply,
         })
         .await

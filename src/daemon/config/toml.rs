@@ -17,6 +17,23 @@ pub struct Settings {
     pub daemon: DaemonSettings,
     pub gui: GuiSettings,
     pub notifications: NotificationSettings,
+    pub skills: SkillsSettings,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SkillsSettings {
+    pub sync_mode: SyncMode,
+}
+
+/// How a managed skill is mirrored into an editor's skills dir (global + repo).
+/// `Symlink` tries a symlink then falls back to copy; `Copy` always copies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMode {
+    #[default]
+    Symlink,
+    Copy,
 }
 
 #[derive(Debug, Clone, Deserialize)]

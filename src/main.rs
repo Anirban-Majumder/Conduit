@@ -222,7 +222,6 @@ fn main() -> Result<()> {
         );
         let approvals_for_router = Arc::clone(&approvals);
         let bus_for_router = bus.clone();
-        let db_for_router = db.clone();
         let cancel_for_router = cancel.clone();
         tokio::spawn(async move {
             loop {
@@ -232,7 +231,6 @@ fn main() -> Result<()> {
                         let Some(action) = msg else { break };
                         os_notification_router::dispatch_action(
                             action,
-                            &db_for_router,
                             &approvals_for_router,
                             &bus_for_router,
                         )

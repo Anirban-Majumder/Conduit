@@ -17,6 +17,8 @@ pub static DEF: ClientDef = ClientDef {
         windows: "Cursor/mcp.json",
     },
     skills: Some(PathSpec::Home(".cursor/skills")),
+    project_config_rel: Some(".cursor/mcp.json"),
+    project_skills_rel: Some(".cursor/skills"),
     config_spec: ConfigSpec {
         format: ConfigFormat::Json,
         key_path: &["mcpServers"],

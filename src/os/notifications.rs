@@ -3,7 +3,7 @@
 //! Listens on the event bus and spawns one blocking `std::thread` per toast
 //! (notify-rust's action wait blocks). User clicks are forwarded as
 //! `NotificationAction`s to `notification_router`. Linux registers Approve /
-//! Deny / Approve-always actions; macOS/Windows fall back to fire-and-forget
+//! Deny actions; macOS/Windows fall back to fire-and-forget
 //! (those backends silently drop unregistered actions).
 
 use std::collections::HashMap;
@@ -31,19 +31,16 @@ const ACTION_APPROVE: &str = "approve";
 #[cfg(target_os = "linux")]
 const ACTION_DENY: &str = "deny";
 #[cfg(target_os = "linux")]
-const ACTION_APPROVE_ALWAYS: &str = "approve_always";
-#[cfg(target_os = "linux")]
 const NOTIFICATION_ACTIONS: &[(&str, &str)] = &[
     (ACTION_DEFAULT, ""),
     (ACTION_APPROVE, "Approve"),
     (ACTION_DENY, "Deny"),
-    (ACTION_APPROVE_ALWAYS, "Approve always"),
 ];
 
 /// Listen to the bus and fire an OS notification for every `ApprovalPending`.
 ///
-/// On Linux registers four actions (body click + Approve / Deny / Approve
-/// always) and forwards user clicks to `action_tx`. On macOS / Windows the
+/// On Linux registers three actions (body click + Approve / Deny) and
+/// forwards user clicks to `action_tx`. On macOS / Windows the
 /// notification is fire-and-forget — those backends drop unregistered
 /// actions silently.
 ///
@@ -191,11 +188,6 @@ fn spawn_notification(
                     ACTION_DEFAULT => Some(NotificationAction::Focus(approval_id.clone())),
                     ACTION_APPROVE => Some(NotificationAction::Approve(approval_id.clone())),
                     ACTION_DENY => Some(NotificationAction::Deny(approval_id.clone())),
-                    ACTION_APPROVE_ALWAYS => Some(NotificationAction::ApproveAlways {
-                        id: approval_id.clone(),
-                        server: server.clone(),
-                        tool: tool.clone(),
-                    }),
                     _ => {
                         tracing::warn!(action_id, "unrecognised notification action; ignoring");
                         None

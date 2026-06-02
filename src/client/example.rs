@@ -20,6 +20,8 @@ pub static DEF: ClientDef = ClientDef {
     icon_svg: include_bytes!("../../assets/client/example.svg"),
     config: PathSpec::Home(".example/config.json"),
     skills: Some(PathSpec::Home(".example/skills")),
+    project_config_rel: Some(".example/mcp.json"),
+    project_skills_rel: Some(".example/skills"),
     config_spec: ConfigSpec {
         format: ConfigFormat::Json,
         key_path: &["mcpServers"],

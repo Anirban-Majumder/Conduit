@@ -81,12 +81,13 @@ export component PillButton inherits Rectangle {
     in property <color> bg-color: Theme.surface-3;
     in property <color> fg-color: Theme.text-primary;
     in property <bool> outline: false;
+    in property <bool> enabled: true;
     callback clicked <=> ta.clicked;
     background: root.bg-color;
     border-radius: Theme.radius-pill;
     border-width: root.outline ? 1px : 0px;
     border-color: Theme.accent;
-    opacity: ta.has-hover ? 0.88 : 1.0;
+    opacity: !root.enabled ? 0.5 : (ta.has-hover ? 0.88 : 1.0);
     height: 30px;
     HorizontalLayout {
         padding-left: 14px;
@@ -100,7 +101,7 @@ export component PillButton inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    ta := TouchArea {}
+    ta := TouchArea { enabled: root.enabled; }
 }
 
 

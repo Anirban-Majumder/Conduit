@@ -20,6 +20,8 @@ pub static DEF: ClientDef = ClientDef {
         unix: ".config/opencode/skills",
         windows: "opencode/skills",
     }),
+    project_config_rel: Some(".opencode/opencode.json"),
+    project_skills_rel: Some(".opencode/skills"),
     config_spec: ConfigSpec {
         format: ConfigFormat::Json,
         key_path: &["mcp"],

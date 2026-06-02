@@ -9,6 +9,7 @@ import { ToolPolicyRow } from "../structs.slint";
 export component ToolPolicyRowItem inherits Rectangle {
     in property <string> name;
     in property <string> description;
+    in property <string> summary;
     in property <string> decision;
     property <bool> expanded: false;
     callback change-decision(string);
@@ -41,12 +42,11 @@ export component ToolPolicyRowItem inherits Rectangle {
             }
         }
         if root.description != "" : Text {
-            text: root.description;
+            text: root.expanded ? root.description : root.summary;
             color: Theme.text-tertiary;
             font-size: Theme.font-body-sm;
-            wrap: word-wrap;
+            wrap: root.expanded ? word-wrap : no-wrap;
             overflow: elide;
-            height: root.expanded ? self.preferred-height : 32px;
         }
         if root.description != "" : Rectangle {
             height: 16px;
@@ -103,6 +103,7 @@ export component ToolPolicyTable inherits Rectangle {
                 for tool in rows : ToolPolicyRowItem {
                     name: tool.name;
                     description: tool.description;
+                    summary: tool.summary;
                     decision: tool.decision;
                     change-decision(d) => { root.change-decision(tool.name, d); }
                 }

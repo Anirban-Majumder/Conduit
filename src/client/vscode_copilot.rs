@@ -14,6 +14,8 @@ pub static DEF: ClientDef = ClientDef {
     icon_svg: include_bytes!("../../assets/client/copilot.svg"),
     config: PathSpec::ConfigDir("Code/User/mcp.json"),
     skills: None,
+    project_config_rel: Some(".vscode/mcp.json"),
+    project_skills_rel: None,
     config_spec: ConfigSpec {
         format: ConfigFormat::Jsonc,
         key_path: &["servers"],

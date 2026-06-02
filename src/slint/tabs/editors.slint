@@ -5,7 +5,7 @@
 
 import { Theme } from "../theme.slint";
 import { EmptyState, PillButton, Icon, StatusDot, Chip } from "../components/primitives.slint";
-import { IdeRow } from "../structs.slint";
+import { IdeRow, ScopeOption } from "../structs.slint";
 
 component GlassPanel inherits Rectangle {
     background: Theme.surface;
@@ -26,11 +26,15 @@ export component EditorsTab inherits Rectangle {
     in property <bool> selected-config-status-is-error;
     in property <bool> selected-config-dirty;
     in property <bool> refreshing;
+    in property <[ScopeOption]> scopes;          // Global + repos for this editor
+    in property <string> selected-scope: "global";
+    in property <string> config-format: "json";  // "json" | "toml"
     callback remove-clicked(string);
     callback retrack-clicked(string);
     callback refresh-clicked();
     callback reveal-clicked(string);
     callback select(string);
+    callback select-scope(string);
     callback edit-text(string);
     callback save();
     callback reload();
@@ -185,7 +189,7 @@ export component EditorsTab inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 Chip {
-                                    label: "JSON";
+                                    label: root.config-format == "toml" ? "TOML" : "JSON";
                                     fg: Theme.accent;
                                     bg: Theme.accent-tint;
                                 }
@@ -212,6 +216,21 @@ export component EditorsTab inherits Rectangle {
                                     vertical-alignment: center;
                                 }
                             }
+                        }
+                    }
+                }
+
+                if root.selected-status == "active" && root.scopes.length > 1 : Flickable {
+                    height: 32px;
+                    viewport-width: scope-row.preferred-width;
+                    scope-row := HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        for opt in root.scopes : PillButton {
+                            label: opt.label;
+                            bg-color: opt.scope-key == root.selected-scope ? Theme.accent : Theme.surface-3;
+                            fg-color: opt.scope-key == root.selected-scope ? Theme.on-accent : Theme.text-secondary;
+                            clicked => { root.select-scope(opt.scope-key); }
                         }
                     }
                 }

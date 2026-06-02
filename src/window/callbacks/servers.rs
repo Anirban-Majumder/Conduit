@@ -131,8 +131,18 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
         let bus = bus_for_retest.clone();
         let weak = weak_for_retest.clone();
         let name = name.to_string();
+
+        // Runs on the UI thread: flip the open detail's badge to "probing" before
+        // the async probe starts. `refresh_server_detail` clears it on completion.
+        if let Some(ui) = weak.upgrade() {
+            let mut detail = ui.get_selected_server_detail();
+            detail.health_state = "probing".into();
+            ui.set_selected_server_detail(detail);
+        }
+
         rt_for_retest.spawn(async move {
-            let Ok(Some(server)) = db.get_server(&name).await else {
+            let Ok(Some(mut server)) = db.get_server(&name).await else {
+                refresh_server_detail(&weak, &db, &name).await;
                 return;
             };
             let draft = build_draft(
@@ -145,9 +155,9 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 server.lifecycle_seconds,
             );
             let cancel = CancellationToken::new();
+            let now = unix_now();
             match probe::probe(&draft, cancel).await {
                 Ok(result) => {
-                    let now = unix_now();
                     let tools: Vec<DbMcpTool> = result
                         .tools
                         .into_iter()
@@ -160,6 +170,8 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                             decision: None,
                         })
                         .collect();
+                    server.last_probed_at = Some(now);
+                    server.last_probe_error = None;
                     if let Err(e) = db.upsert_server_with_tools(server, tools).await {
                         tracing::warn!(error = %e, "re-test upsert failed");
                     }
@@ -173,7 +185,16 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                     refresh_server_detail(&weak, &db, &name).await;
                     refresh_servers(&weak, &db).await;
                 }
-                Err(e) => tracing::warn!(error = %e, server = %name, "re-test probe failed"),
+                Err(e) => {
+                    tracing::warn!(error = %e, server = %name, "re-test probe failed");
+                    server.last_probed_at = Some(now);
+                    server.last_probe_error = Some(e.to_string());
+                    if let Err(e) = db.upsert_server(server).await {
+                        tracing::warn!(error = %e, "re-test error upsert failed");
+                    }
+                    refresh_server_detail(&weak, &db, &name).await;
+                    refresh_servers(&weak, &db).await;
+                }
             }
         });
     });

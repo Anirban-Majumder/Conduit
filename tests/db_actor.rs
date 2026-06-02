@@ -31,9 +31,9 @@ async fn ping_round_trips_through_db_actor() {
 }
 
 #[tokio::test]
-async fn schema_version_is_one() {
+async fn schema_version_is_two() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
-    assert_eq!(db.schema_version().await.expect("schema version"), 1);
+    assert_eq!(db.schema_version().await.expect("schema version"), 2);
 }
 
 #[tokio::test]
@@ -78,7 +78,15 @@ async fn all_v0_tables_created_by_migration() {
 async fn project_builtin_inserts_then_preserves_key_on_reproject() {
     let db = Db::spawn_in_memory().expect("spawn");
     let row = db
-        .project_builtin("Cursor", "Cursor", "/home/u/.cursor/mcp.json", None, "{}")
+        .project_builtin(
+            "Cursor",
+            "Cursor",
+            "/home/u/.cursor/mcp.json",
+            None,
+            "{}",
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(row.id, "Cursor");
@@ -89,7 +97,15 @@ async fn project_builtin_inserts_then_preserves_key_on_reproject() {
 
     // Re-projecting keeps the same mcp_key and tracked flag.
     let again = db
-        .project_builtin("Cursor", "Cursor Renamed", "/new/path.json", None, "{}")
+        .project_builtin(
+            "Cursor",
+            "Cursor Renamed",
+            "/new/path.json",
+            None,
+            "{}",
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -104,7 +120,7 @@ async fn project_builtin_inserts_then_preserves_key_on_reproject() {
 async fn lookup_client_key_skips_not_tracked() {
     let db = Db::spawn_in_memory().expect("spawn");
     let row = db
-        .project_builtin("Cursor", "Cursor", "/x", None, "{}")
+        .project_builtin("Cursor", "Cursor", "/x", None, "{}", None, None)
         .await
         .unwrap();
     assert!(db.lookup_client_key(&row.mcp_key).await.unwrap().is_some());
@@ -121,16 +137,16 @@ async fn managed_servers_round_trip_and_reverse_lookup() {
     let db = Db::spawn_in_memory().expect("spawn");
     db.upsert_server(server_row("gmail")).await.unwrap();
     db.upsert_server(server_row("github")).await.unwrap();
-    db.project_builtin("Cursor", "Cursor", "/x", None, "{}")
+    db.project_builtin("Cursor", "Cursor", "/x", None, "{}", None, None)
         .await
         .unwrap();
 
-    db.set_managed_servers("Cursor", vec!["gmail".into(), "github".into()])
+    db.set_managed_servers("Cursor", "global", vec!["gmail".into(), "github".into()])
         .await
         .unwrap();
     // Returned sorted by server_name.
     assert_eq!(
-        db.list_managed_servers("Cursor").await.unwrap(),
+        db.list_managed_servers("Cursor", "global").await.unwrap(),
         vec!["github".to_string(), "gmail".to_string()]
     );
 
@@ -138,7 +154,7 @@ async fn managed_servers_round_trip_and_reverse_lookup() {
     let managing = db.list_clients_managing_server("gmail").await.unwrap();
     assert_eq!(managing, vec![("Cursor".to_string(), "global".to_string())]);
 
-    db.set_managed_servers("Cursor", vec!["github".into()])
+    db.set_managed_servers("Cursor", "global", vec!["github".into()])
         .await
         .unwrap();
     assert!(db

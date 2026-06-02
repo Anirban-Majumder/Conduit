@@ -1,14 +1,12 @@
 //! Dispatch notification-toast button clicks back into the daemon.
 //!
 //! `notifications.rs` forwards `NotificationAction`s here; this module resolves
-//! the approval via `ApprovalCenter` and (for "Approve always") upgrades the
-//! policy. Dispatch is idempotent — stale ids are no-ops because `resolve`
-//! checks the row's current status.
+//! the approval via `ApprovalCenter`. Dispatch is idempotent — stale ids are
+//! no-ops because `resolve` checks the row's current status.
 
 use std::sync::Arc;
 
-use crate::daemon::db::types::{ApprovalStatus, Decision, DecisionSource};
-use crate::daemon::db::Db;
+use crate::daemon::db::types::ApprovalStatus;
 use crate::daemon::downstream::approval::ApprovalCenter;
 use crate::daemon::events::{Bus, Event};
 
@@ -18,13 +16,6 @@ pub enum NotificationAction {
     Focus(String),
     Approve(String),
     Deny(String),
-    /// Approve THIS call AND upgrade the (server, tool) policy to `allow` so
-    /// future invocations skip the toast.
-    ApproveAlways {
-        id: String,
-        server: String,
-        tool: String,
-    },
 }
 
 /// Dispatch one action. Idempotent: stale ids (already resolved) are no-ops

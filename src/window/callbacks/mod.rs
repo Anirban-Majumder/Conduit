@@ -9,6 +9,7 @@
 mod ide;
 mod log;
 mod misc;
+mod scope;
 mod servers;
 
 use std::rc::Rc;
@@ -26,6 +27,7 @@ use crate::window::view::{EnvVarRow, MainWindow};
 use crate::window::callbacks::ide::install_ide_callbacks;
 use crate::window::callbacks::log::install_log_callbacks;
 use crate::window::callbacks::misc::install_misc_callbacks;
+use crate::window::callbacks::scope::install_scope_callbacks;
 use crate::window::callbacks::servers::install_server_callbacks;
 use crate::window::skills::install_skills_callbacks;
 use crate::window::wizard::install_wizard_callbacks;
@@ -57,6 +59,7 @@ pub(crate) fn install_callbacks(
 
     install_skills_callbacks(window, &ctx);
     install_server_callbacks(window, &ctx);
+    install_scope_callbacks(window, &ctx);
     install_ide_callbacks(window, &ctx);
     install_misc_callbacks(window, &ctx, &env_rows);
     install_wizard_callbacks(window, &ctx, &env_rows);

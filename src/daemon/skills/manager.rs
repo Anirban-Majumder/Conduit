@@ -13,7 +13,8 @@ use tokio::sync::Mutex;
 
 use super::{discover, sync};
 
-use crate::daemon::client_config::{self, ClientDef, BUILTINS};
+use crate::daemon::client_config::{self, ClientDef, ResolvedClient, Scope, BUILTINS};
+use crate::daemon::config::toml::Settings;
 use crate::daemon::db::types::{Skill, SkillRepo};
 use crate::daemon::db::Db;
 use crate::daemon::errors::SkillError;
@@ -306,19 +307,22 @@ impl SkillManager {
         // `targets` IS the intended set, so set them explicitly after metadata.
         self.db.upsert_skill_metadata(skill.clone()).await?;
         self.db
-            .set_skill_targets(&install_name, normalized_targets.clone())
+            .set_skill_targets(&install_name, "global", normalized_targets.clone())
             .await?;
 
-        // First push every requested target; then prune anything we previously
-        // had but were just told to remove. sync_to_target is std::fs heavy
-        // (recursive copy fallback) — wrap in spawn_blocking to keep the tokio
-        // runtime responsive on slow disks.
-        apply_targets_blocking(&dest, &install_name, &normalized_targets).await?;
+        // Mirror to the chosen global targets (removing de-selected ones), then
+        // re-mirror any repo scopes the skill is already in so a re-install
+        // refreshes their content too. File ops run on spawn_blocking inside.
+        self.reconcile_global_targets(&install_name, &normalized_targets)
+            .await?;
+        self.remirror_repo_scopes(&install_name).await?;
 
         self.bus.publish(Event::SkillsChanged);
         Ok(skill)
     }
 
+    /// Replace a skill's GLOBAL editor targets (Skills-tab toggles) and reconcile
+    /// each global skills dir to match. Repo scopes are managed via `set_skill_scope`.
     pub async fn set_targets(
         &self,
         directory: &str,
@@ -329,17 +333,69 @@ impl SkillManager {
         if !tokio::fs::try_exists(&dest).await.unwrap_or(false) {
             return Err(SkillError::InvalidPath(directory.to_string()));
         }
-        apply_targets_blocking(&dest, directory, &normalized).await?;
-        self.db.set_skill_targets(directory, normalized).await?;
+        self.reconcile_global_targets(directory, &normalized)
+            .await?;
+        self.db
+            .set_skill_targets(directory, "global", normalized)
+            .await?;
+        self.bus.publish(Event::SkillsChanged);
+        Ok(())
+    }
+
+    /// Toggle one skill for one `(client, scope)`: mirror or unmirror that scope
+    /// and reflect it in `managed_skill`. A client that can't host skills at the
+    /// scope (e.g. VS Code at a repo) is skipped entirely — no row, no file.
+    pub async fn set_skill_scope(
+        &self,
+        directory: &str,
+        client_id: &str,
+        scope: &str,
+        enabled: bool,
+    ) -> Result<(), SkillError> {
+        let Some(client) = client_config::resolve_client(&self.db, client_id).await? else {
+            return Err(SkillError::UnknownTarget(client_id.to_string()));
+        };
+        let Some(dest_dir) = client.skills_target(&Scope::from_db(scope)) else {
+            return Ok(()); // no skills support at this scope — skip
+        };
+        let source = self.paths.skills_managed_dir().join(directory);
+        let install_name = directory.to_string();
+        let cfg = self.paths.config_toml();
+        if enabled {
+            self.db
+                .add_skill_target(directory, client_id, scope)
+                .await?;
+            tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
+                let mode = Settings::load_or_default(&cfg).skills.sync_mode;
+                sync::sync_to_target(&source, &dest_dir, &install_name, mode)
+            })
+            .await
+            .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))??;
+        } else {
+            self.db
+                .remove_skill_target(directory, client_id, scope)
+                .await?;
+            tokio::task::spawn_blocking(move || sync::remove_from_target(&dest_dir, &install_name))
+                .await
+                .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?;
+        }
         self.bus.publish(Event::SkillsChanged);
         Ok(())
     }
 
     pub async fn uninstall(&self, directory: &str) -> Result<(), SkillError> {
-        let directory_owned = directory.to_string();
+        // Remove the mirror from every (client, scope) it lives in, driven from
+        // the DB (not the IDE catalog), then drop the managed dir + DB row.
+        let dests: Vec<PathBuf> = self
+            .resolve_scope_targets(directory)
+            .await?
+            .into_iter()
+            .filter_map(|(client, scope)| client.skills_target(&scope))
+            .collect();
+        let install_name = directory.to_string();
         tokio::task::spawn_blocking(move || {
-            for def in skill_capable_builtins() {
-                sync::remove_from_target(&directory_owned, def.id);
+            for dest_dir in dests {
+                sync::remove_from_target(&dest_dir, &install_name);
             }
         })
         .await
@@ -422,6 +478,86 @@ impl SkillManager {
         let mut guard = self.discover_cache.lock().await;
         *guard = None;
     }
+
+    /// Resolve every `(client, scope)` this skill targets into `ResolvedClient`
+    /// + `Scope` pairs — the skill analogue of the MCP cascade's affected list.
+    async fn resolve_scope_targets(
+        &self,
+        directory: &str,
+    ) -> Result<Vec<(ResolvedClient, Scope)>, SkillError> {
+        let mut out = Vec::new();
+        for (client_id, scope) in self.db.list_skill_targets_scoped(directory).await? {
+            if let Some(client) = client_config::resolve_client(&self.db, &client_id).await? {
+                out.push((client, Scope::from_db(&scope)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Reconcile every built-in's GLOBAL skills dir to match `new_targets`:
+    /// mirror the chosen ones, remove the rest. Drives off DB `client` rows (not
+    /// the IDE catalog) and reads `sync_mode` fresh on the blocking worker.
+    async fn reconcile_global_targets(
+        &self,
+        directory: &str,
+        new_targets: &[String],
+    ) -> Result<(), SkillError> {
+        let source = self.paths.skills_managed_dir().join(directory);
+        let want: std::collections::HashSet<&str> =
+            new_targets.iter().map(String::as_str).collect();
+        let mut plan: Vec<(PathBuf, bool)> = Vec::new();
+        for row in self.db.list_clients().await? {
+            let client = ResolvedClient::from_row(row);
+            if !client.is_builtin {
+                continue;
+            }
+            if let Some(dir) = client.skills_target(&Scope::Global) {
+                plan.push((dir, want.contains(client.id.as_str())));
+            }
+        }
+        let install_name = directory.to_string();
+        let cfg = self.paths.config_toml();
+        tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
+            let mode = Settings::load_or_default(&cfg).skills.sync_mode;
+            for (dest_dir, want_it) in plan {
+                if want_it {
+                    sync::sync_to_target(&source, &dest_dir, &install_name, mode)?;
+                } else {
+                    sync::remove_from_target(&dest_dir, &install_name);
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?
+    }
+
+    /// Re-mirror the skill into every REPO scope it's already in — a re-install
+    /// refresh propagates updated content to repos (global is handled separately).
+    async fn remirror_repo_scopes(&self, directory: &str) -> Result<(), SkillError> {
+        let source = self.paths.skills_managed_dir().join(directory);
+        let dests: Vec<PathBuf> = self
+            .resolve_scope_targets(directory)
+            .await?
+            .into_iter()
+            .filter(|(_, scope)| matches!(scope, Scope::Repo(_)))
+            .filter_map(|(client, scope)| client.skills_target(&scope))
+            .collect();
+        if dests.is_empty() {
+            return Ok(());
+        }
+        let install_name = directory.to_string();
+        let cfg = self.paths.config_toml();
+        tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
+            let mode = Settings::load_or_default(&cfg).skills.sync_mode;
+            for dest_dir in dests {
+                sync::sync_to_target(&source, &dest_dir, &install_name, mode)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?
+    }
 }
 
 fn validate_repo_input(repo: &SkillRepo) -> Result<(), SkillError> {
@@ -441,28 +577,6 @@ fn validate_repo_input(repo: &SkillRepo) -> Result<(), SkillError> {
         )));
     }
     Ok(())
-}
-
-async fn apply_targets_blocking(
-    dest: &std::path::Path,
-    install_name: &str,
-    targets: &[String],
-) -> Result<(), SkillError> {
-    let dest = dest.to_path_buf();
-    let install_name = install_name.to_string();
-    let targets: Vec<String> = targets.to_vec();
-    tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
-        for def in skill_capable_builtins() {
-            if targets.iter().any(|t| t == def.id) {
-                sync::sync_to_target(&dest, def.id)?;
-            } else {
-                sync::remove_from_target(&install_name, def.id);
-            }
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?
 }
 
 fn normalize_targets(targets: Vec<String>) -> Vec<String> {
