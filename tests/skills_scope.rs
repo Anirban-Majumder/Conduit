@@ -55,7 +55,7 @@ fn sync_to_target_copy_mode_creates_real_directory() {
     let src = seed_source(&root.join("src"), "my-skill");
     let dest_dir = root.join("repo/.cursor/skills");
 
-    sync::sync_to_target(&src, &dest_dir, "my-skill", SyncMode::Copy).unwrap();
+    sync::sync_to_target(&src, &dest_dir, "my-skill", SyncMode::Copy, true).unwrap();
 
     let dest = dest_dir.join("my-skill");
     assert!(dest.join("SKILL.md").is_file());
@@ -76,7 +76,7 @@ fn sync_to_target_symlink_mode_creates_symlink() {
     let src = seed_source(&root.join("src"), "my-skill");
     let dest_dir = root.join("repo/.cursor/skills");
 
-    sync::sync_to_target(&src, &dest_dir, "my-skill", SyncMode::Symlink).unwrap();
+    sync::sync_to_target(&src, &dest_dir, "my-skill", SyncMode::Symlink, true).unwrap();
 
     let dest = dest_dir.join("my-skill");
     assert!(
@@ -98,7 +98,7 @@ fn remove_from_target_removes_mirrored_skill() {
     let root = fresh_tmp("remove");
     let src = seed_source(&root.join("src"), "my-skill");
     let dest_dir = root.join("repo/.cursor/skills");
-    sync::sync_to_target(&src, &dest_dir, "my-skill", SyncMode::Copy).unwrap();
+    sync::sync_to_target(&src, &dest_dir, "my-skill", SyncMode::Copy, true).unwrap();
     assert!(dest_dir.join("my-skill").exists());
 
     sync::remove_from_target(&dest_dir, "my-skill");

@@ -183,7 +183,7 @@ pub enum DbCmd {
     ResolvePendingApproval {
         id: String,
         new_status: ApprovalStatus,
-        reply: oneshot::Sender<Result<(), DbError>>,
+        reply: oneshot::Sender<Result<usize, DbError>>,
     },
     ListPendingApprovals {
         reply: oneshot::Sender<Result<Vec<PendingApproval>, DbError>>,

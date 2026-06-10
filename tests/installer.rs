@@ -24,7 +24,7 @@ mod linux {
     #[test]
     fn render_service_unit_includes_exec_path() {
         let unit = render_service_unit(Path::new("/opt/conduit/bin/conduit"));
-        assert!(unit.contains("ExecStart=/opt/conduit/bin/conduit"));
+        assert!(unit.contains("ExecStart=\"/opt/conduit/bin/conduit\""));
         assert!(unit.contains("[Unit]"));
         assert!(unit.contains("[Service]"));
         assert!(unit.contains("[Install]"));
@@ -39,7 +39,7 @@ mod linux {
         assert!(path.is_file());
         assert!(path.ends_with("conduit.service"));
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("ExecStart=/usr/bin/conduit"));
+        assert!(body.contains("ExecStart=\"/usr/bin/conduit\""));
         std::fs::remove_dir_all(&dir).ok();
     }
 

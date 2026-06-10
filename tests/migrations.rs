@@ -247,3 +247,52 @@ async fn seeds_settings_kv_with_defaults() {
         assert_eq!(got, None, "{key} must not be seeded anymore");
     }
 }
+
+/// DB-1: re-running the migration after a partial seed must not fail.
+///
+/// Simulates the crash-between-seeds scenario: one `skill_repos` row already
+/// exists but `schema_version` has no entry for v1 (migration never committed).
+/// On next startup the migration re-runs; `INSERT OR IGNORE` must absorb the
+/// PK collision on the pre-existing row rather than aborting.
+#[tokio::test]
+async fn seed_insert_or_ignore_survives_partial_run() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "conduit-seed-partial-{}-{n}.db",
+        std::process::id()
+    ));
+    let _ignored = std::fs::remove_file(&path);
+
+    {
+        // Boot once so all tables + seeds exist at v1.
+        let db = Db::spawn_at(&path).expect("first boot");
+        db.ping().await.expect("ping");
+        // Confirm seed rows are present.
+        let repos = db.list_skill_repos().await.unwrap();
+        assert_eq!(repos.len(), 2, "both seed repos present after first boot");
+    }
+
+    // Simulate crash-before-version-record: delete schema_version so migrations
+    // will re-run on next open. The seed rows remain in the DB.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("DELETE FROM schema_version").unwrap();
+    }
+
+    {
+        // Second boot: must not panic or return Err — INSERT OR IGNORE handles
+        // the already-present rows.
+        let db = Db::spawn_at(&path).expect("second boot after partial seed");
+        db.ping().await.expect("ping after re-migration");
+        let repos = db.list_skill_repos().await.unwrap();
+        assert_eq!(repos.len(), 2, "still exactly 2 repos after re-migration");
+        assert_eq!(db.schema_version().await.unwrap(), 1);
+    }
+
+    let _ignored = std::fs::remove_file(&path);
+    let _ignored = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ignored = std::fs::remove_file(path.with_extension("db-shm"));
+}

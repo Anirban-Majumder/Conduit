@@ -442,3 +442,132 @@ fn codex_emits_toml_under_mcp_servers_table() {
     assert_eq!(url, "http://127.0.0.1:9876/cdx12345/gmail/mcp");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ── CC-1: TOML writes are comment/format-preserving (toml_edit) ──────────────
+
+/// Rendering into an existing Codex config that has user comments and extra keys
+/// must preserve those comments and keys exactly — only the managed subtable changes.
+#[test]
+fn toml_render_preserves_user_comments_and_extra_keys() {
+    let dir = fresh_tmp("toml-comments");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.toml");
+
+    // Write a config with user comments and a user key outside our managed section.
+    std::fs::write(
+        &cfg,
+        "# My Codex config\nsome_setting = true\n\n# MCP servers below\n",
+    )
+    .unwrap();
+
+    render_servers(
+        &schema_of("Codex"),
+        &cfg,
+        "cdx12345",
+        &["gmail".to_string()],
+        9876,
+    )
+    .unwrap();
+
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    // User comments must survive.
+    assert!(text.contains("# My Codex config"), "top comment preserved");
+    assert!(
+        text.contains("# MCP servers below"),
+        "inline comment preserved"
+    );
+    // User key outside managed section must survive.
+    assert!(text.contains("some_setting = true"), "user key preserved");
+    // Our entry must be present.
+    let v: toml::Value = toml::from_str(&text).unwrap();
+    assert_eq!(
+        v["mcp_servers"]["gmail"]["url"].as_str().unwrap(),
+        "http://127.0.0.1:9876/cdx12345/gmail/mcp"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Purging a TOML config that has user comments outside our section must preserve
+/// those comments.
+#[test]
+fn toml_purge_preserves_user_comments() {
+    let dir = fresh_tmp("toml-purge-comments");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.toml");
+
+    // First render our entry into a file with user comments.
+    std::fs::write(&cfg, "# keep this comment\nsome_key = 42\n").unwrap();
+    render_servers(
+        &schema_of("Codex"),
+        &cfg,
+        "cdx12345",
+        &["gmail".to_string()],
+        9876,
+    )
+    .unwrap();
+
+    purge_mcp(&schema_of("Codex"), &cfg, "cdx12345", 9876).unwrap();
+
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    assert!(
+        text.contains("# keep this comment"),
+        "comment preserved after purge"
+    );
+    assert!(
+        text.contains("some_key = 42"),
+        "user key preserved after purge"
+    );
+    // Our entry must be gone.
+    let v: toml::Value = toml::from_str(&text).unwrap();
+    assert!(
+        v.get("mcp_servers").and_then(|t| t.get("gmail")).is_none(),
+        "managed entry removed"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ── CC-3: no-op write skip ────────────────────────────────────────────────────
+
+/// When `render_scope` is called with an empty server list on a client whose
+/// config file has never been touched, the file must NOT be created at all.
+#[test]
+fn render_scope_noop_does_not_create_file_when_nothing_to_write() {
+    let repo = fresh_tmp("noop-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let client = resolved("Cursor");
+    let scope = Scope::Repo(repo.clone());
+
+    render_scope(&client, &scope, &[], 9876).unwrap();
+
+    // No file should be created since there are no entries and no existing file.
+    assert!(
+        !repo.join(".cursor/mcp.json").exists(),
+        "no file created for empty noop"
+    );
+    std::fs::remove_dir_all(&repo).ok();
+}
+
+/// When `purge_mcp` is called and there are no matching entries, the file's
+/// modification time must NOT change (or more precisely, the file bytes are
+/// unchanged and we didn't rewrite it).
+#[test]
+fn purge_noop_does_not_rewrite_file() {
+    let dir = fresh_tmp("purge-noop");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+    let content = r#"{"mcpServers":{"user-server":{"command":"x"}}}"#;
+    std::fs::write(&path, content).unwrap();
+    let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    // Purge with a different key — nothing to remove.
+    purge_mcp(&cursor_schema(), &path, "different-key", 9876).unwrap();
+
+    // File must be byte-identical and not touched.
+    assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes());
+    let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+    assert_eq!(
+        mtime_before, mtime_after,
+        "file not rewritten on noop purge"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

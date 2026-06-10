@@ -65,14 +65,21 @@ pub(super) fn query_get_pending_approval(
     Ok(row)
 }
 
+/// Conditionally flips a `pending` row to `new_status`.
+///
+/// Returns 1 if the row existed and was `pending` (this caller wins the race),
+/// 0 if it was already resolved by a concurrent caller or never existed.
 pub(super) fn query_resolve_pending_approval(
     conn: &Connection,
     id: &str,
     new_status: ApprovalStatus,
-) -> Result<(), DbError> {
-    conn.prepare_cached("UPDATE pending_approvals SET status = ?1 WHERE id = ?2")?
+) -> Result<usize, DbError> {
+    let n = conn
+        .prepare_cached(
+            "UPDATE pending_approvals SET status = ?1 WHERE id = ?2 AND status = 'pending'",
+        )?
         .execute(params![new_status.as_db_str(), id])?;
-    Ok(())
+    Ok(n)
 }
 
 pub(super) fn query_list_pending_approvals(
@@ -123,11 +130,12 @@ impl Db {
         .await
     }
 
+    /// Returns 1 if this caller won the race (row was pending), 0 otherwise.
     pub async fn resolve_pending_approval(
         &self,
         id: &str,
         new_status: ApprovalStatus,
-    ) -> Result<(), DbError> {
+    ) -> Result<usize, DbError> {
         self.send_cmd(|reply| DbCmd::ResolvePendingApproval {
             id: id.to_string(),
             new_status,

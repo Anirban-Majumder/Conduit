@@ -366,3 +366,64 @@ async fn sweep_publishes_one_resolved_event_per_swept_id() {
     assert!(got.contains("a"));
     assert!(got.contains("b"));
 }
+
+/// DS-1: concurrent resolvers — exactly one wins.
+///
+/// Two `resolve` calls race on the same approval id; only one should flip the DB
+/// row (changed-row count == 1) and only one `ApprovalResolved` event should fire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_resolve_exactly_one_winner() {
+    let db = Db::spawn_in_memory().unwrap();
+    let bus = Bus::new();
+    let mut rx = bus.subscribe();
+    let center = Arc::new(ApprovalCenter::new(db, bus, settings_with_timeout(30)));
+
+    let req_fut = {
+        let c = Arc::clone(&center);
+        tokio::spawn(async move { c.request(sample_req()).await.unwrap() })
+    };
+
+    // Wait until the row is visible, then fire two concurrent resolvers.
+    for _ in 0..50 {
+        let rows = center.db().list_pending_approvals().await.unwrap();
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let rows = center.db().list_pending_approvals().await.unwrap();
+    let id = rows.first().expect("pending row").id.clone();
+
+    let c1 = Arc::clone(&center);
+    let id1 = id.clone();
+    let c2 = Arc::clone(&center);
+    let id2 = id.clone();
+
+    let (r1, r2) = tokio::join!(
+        tokio::spawn(async move { c1.resolve(&id1, ApprovalStatus::Approved).await }),
+        tokio::spawn(async move { c2.resolve(&id2, ApprovalStatus::Denied).await }),
+    );
+    r1.unwrap().unwrap();
+    r2.unwrap().unwrap();
+
+    // Exactly one ApprovalResolved event should have fired.
+    let mut resolved_count = 0;
+    loop {
+        match wait_for(Duration::from_millis(200), rx.recv()).await {
+            Ok(Ok(Event::ApprovalResolved { .. })) => resolved_count += 1,
+            Ok(Ok(Event::ApprovalPending { .. })) => {}
+            _ => break,
+        }
+    }
+    assert_eq!(resolved_count, 1, "exactly one resolve event expected");
+
+    // The request future should complete (one of Approved/Denied).
+    let outcome = wait_for(Duration::from_secs(2), req_fut)
+        .await
+        .expect("request completed")
+        .unwrap();
+    assert!(
+        matches!(outcome, ApprovalOutcome::Approved | ApprovalOutcome::Denied),
+        "unexpected outcome: {outcome:?}"
+    );
+}

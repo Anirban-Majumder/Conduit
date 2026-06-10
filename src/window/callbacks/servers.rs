@@ -9,14 +9,21 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::cascade;
-use conduit::daemon::db::types::{ApprovalStatus, Decision, DecisionSource, McpTool as DbMcpTool};
+use conduit::daemon::db::types::{
+    ApprovalStatus, Decision, DecisionSource, EnvValue, McpTool as DbMcpTool, TRANSPORT_HTTP,
+    TRANSPORT_STDIO,
+};
 use conduit::daemon::events::Event;
-use conduit::daemon::upstream::probe::{self};
+use conduit::daemon::upstream::http;
+use conduit::daemon::upstream::probe::{
+    self, DraftEnvEntry, DraftServerConfig, DraftTransport, HttpAuth,
+};
+use zeroize::Zeroizing;
 
 use crate::window::refresh::{refresh_server_detail, refresh_servers, toggle_server_for_ide};
 use crate::window::util::unix_now;
 use crate::window::view::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
-use crate::window::wizard::{build_draft, env_field_from_server, picker_from_lifecycle};
+use crate::window::wizard::{bearer_from_headers, env_field_from_server, picker_from_lifecycle};
 use crate::window::CallbackContext;
 
 #[expect(clippy::too_many_lines, reason = "wires every server-tab callback")]
@@ -75,17 +82,26 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
 
     let db_for_remove_server = db.clone();
     let bus_for_remove_server = bus.clone();
+    let upstream_for_remove = ctx.upstream.clone();
     let rt_for_remove_server = rt.clone();
     let weak_for_remove_server = window.as_weak();
     let port_for_remove = port;
     window.on_remove_server_clicked(move |name| {
         let db = db_for_remove_server.clone();
         let bus = bus_for_remove_server.clone();
+        let upstream = upstream_for_remove.clone();
         let weak = weak_for_remove_server.clone();
         let name = name.to_string();
         rt_for_remove_server.spawn(async move {
-            match cascade::delete_server_with_cascade(&db, &bus, &name, port_for_remove, false)
-                .await
+            match cascade::delete_server_with_cascade(
+                &db,
+                &bus,
+                &upstream,
+                &name,
+                port_for_remove,
+                false,
+            )
+            .await
             {
                 Ok(report) => {
                     tracing::info!(
@@ -145,17 +161,142 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 refresh_server_detail(&weak, &db, &name).await;
                 return;
             };
-            let draft = build_draft(
-                &server.name,
-                &server.transport,
-                server.command.as_deref().unwrap_or(""),
-                server.args.clone(),
-                server.url.as_deref().unwrap_or(""),
-                vec![],
-                server.lifecycle_seconds,
-            );
+
+            // Build the probe draft using the stored env/headers, mirroring how
+            // the edit path reconstructs them — so stdio servers probe with their
+            // real API-key env vars and HTTP servers probe with their bearer token.
             let cancel = CancellationToken::new();
             let now = unix_now();
+
+            // For HTTP OAuth servers (env holds no plain bearer token), connect
+            // via the keyring-backed store instead of starting a new OAuth login.
+            // This avoids opening the browser and discarding fresh tokens.
+            let is_oauth_http = server.transport == TRANSPORT_HTTP && {
+                // If there is no plain bearer value, treat as OAuth.
+                let has_bearer = server.env.iter().any(|e| {
+                    e.name == http::BEARER_TOKEN_ENV
+                        && matches!(e.value, EnvValue::Plain(_))
+                });
+                !has_bearer
+            };
+
+            if is_oauth_http {
+                let url = server.url.clone().unwrap_or_default();
+                let probe_result = http::connect_oauth(&url, &name, cancel.clone()).await;
+                match probe_result {
+                    Ok(Some(_client)) => {
+                        // OAuth connection succeeded; record a successful probe
+                        // timestamp (no tools re-enumerated on retest via OAuth to
+                        // keep this path simple — the routing path enumerates tools
+                        // on connect anyway).
+                        server.last_probed_at = Some(now);
+                        server.last_probe_error = None;
+                        if let Err(e) = db.upsert_server(server).await {
+                            tracing::warn!(error = %e, "re-test oauth upsert failed");
+                        }
+                        match db.clear_server_auth_error(&name).await {
+                            Ok(true) => bus.publish(Event::AuthCleared { server: name.clone() }),
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!(error = %e, "clear_server_auth_error after oauth retest failed"),
+                        }
+                    }
+                    Ok(None) => {
+                        // No stored credentials — mark as needing auth.
+                        server.last_probed_at = Some(now);
+                        server.last_probe_error = Some("No OAuth credentials stored; re-add the server to sign in.".to_string());
+                        if let Err(e) = db.upsert_server(server).await {
+                            tracing::warn!(error = %e, "re-test no-oauth upsert failed");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, server = %name, "re-test oauth probe failed");
+                        server.last_probed_at = Some(now);
+                        server.last_probe_error = Some(e.to_string());
+                        if let Err(e) = db.upsert_server(server).await {
+                            tracing::warn!(error = %e, "re-test oauth error upsert failed");
+                        }
+                    }
+                }
+                refresh_server_detail(&weak, &db, &name).await;
+                refresh_servers(&weak, &db).await;
+                return;
+            }
+
+            // Non-OAuth path: reconstruct the env/headers from the stored server row.
+            let env_field = env_field_from_server(&server);
+            let env_pairs: Vec<(String, String)> = env_field
+                .split(',')
+                .filter_map(|chunk| {
+                    let chunk = chunk.trim();
+                    if chunk.is_empty() { return None; }
+                    let (k, v) = chunk.split_once('=')?;
+                    Some((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect();
+
+            // Also resolve any Secret-ref env entries (blocking keyring call on
+            // the worker thread — never on the UI thread).
+            let resolved_env: Vec<DraftEnvEntry> = if server.transport == TRANSPORT_STDIO {
+                let mut entries = Vec::new();
+                for env_entry in &server.env {
+                    let env_key = env_entry.name.clone();
+                    let value = match &env_entry.value {
+                        EnvValue::Plain(v) => Zeroizing::new(v.clone()),
+                        EnvValue::Secret(uuid) => {
+                            let server_name = name.clone();
+                            let uuid_owned = uuid.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                conduit::daemon::secrets::fetch(&server_name, &uuid_owned)
+                            })
+                            .await
+                            {
+                                Ok(Ok(v)) => Zeroizing::new(v),
+                                Ok(Err(e)) => {
+                                    tracing::warn!(error = %e, key = %env_key, "secret fetch failed for retest; skipping");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, key = %env_key, "secret fetch join failed for retest; skipping");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    entries.push(DraftEnvEntry {
+                        name: env_entry.name.clone(),
+                        value,
+                        is_secret: matches!(env_entry.value, EnvValue::Secret(_)),
+                    });
+                }
+                entries
+            } else {
+                Vec::new()
+            };
+
+            let draft = if server.transport == TRANSPORT_HTTP {
+                let bearer = bearer_from_headers(&env_pairs);
+                DraftServerConfig {
+                    name: name.clone(),
+                    transport: DraftTransport::Http {
+                        url: server.url.clone().unwrap_or_default(),
+                        auth: bearer
+                            .map_or(HttpAuth::None, |t| HttpAuth::Bearer(Zeroizing::new(t))),
+                        headers: env_pairs,
+                    },
+                    lifecycle_seconds: server.lifecycle_seconds,
+                }
+            } else {
+                DraftServerConfig {
+                    name: name.clone(),
+                    transport: DraftTransport::Stdio {
+                        command: server.command.clone().unwrap_or_default(),
+                        args: server.args.clone(),
+                        env: resolved_env,
+                    },
+                    lifecycle_seconds: server.lifecycle_seconds,
+                }
+            };
+
             match probe::probe(&draft, cancel).await {
                 Ok(result) => {
                     let tools: Vec<DbMcpTool> = result

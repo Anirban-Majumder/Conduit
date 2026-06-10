@@ -75,7 +75,9 @@ pub(crate) fn spawn_event_bridge(
     cancel: CancellationToken,
 ) {
     let weak = window.as_weak();
+    let rt_for_bridge = rt.clone();
     rt.spawn(async move {
+        let rt = rt_for_bridge;
         // Dirty flag: set when AuditAppended arrives; cleared after the coalesced
         // refresh fires. At most one audit query + UI repaint per ~300ms burst.
         let mut audit_dirty = false;
@@ -120,20 +122,48 @@ pub(crate) fn spawn_event_bridge(
                             .ok();
                         }
                         Ok(Event::SkillsChanged) => {
-                            refresh_skills(&weak, &skills).await;
+                            // Spawn onto the runtime so the bridge loop is not
+                            // blocked while network skill discovery runs (per repo:
+                            // up to 3 tree fetches + N SKILL.md fetches, 20s
+                            // timeouts each). The skills manager has an internal
+                            // overlap guard, so concurrent discoveries are safe.
+                            let weak_sk = weak.clone();
+                            let skills_sk = skills.clone();
+                            rt.spawn(async move {
+                                refresh_skills(&weak_sk, &skills_sk).await;
+                            });
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Ok(Event::AuthFailure { server, message }) => {
                             tracing::warn!(server = %server, message = %message, "auth failure");
                             fire_auth_failure_notification(&server, &message);
                             refresh_servers(&weak, &db).await;
-                            refresh_server_detail(&weak, &db, &server).await;
+                            // Only repaint the detail pane when the event's server
+                            // is the one the user currently has selected — background
+                            // auth failures must not hijack the selection.
+                            let server_for_check = server.clone();
+                            let is_selected = read_ui_state(&weak, move |ui| {
+                                ui.get_selected_server().as_str() == server_for_check
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if is_selected {
+                                refresh_server_detail(&weak, &db, &server).await;
+                            }
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Ok(Event::AuthCleared { server }) => {
                             tracing::info!(server = %server, "auth cleared");
                             refresh_servers(&weak, &db).await;
-                            refresh_server_detail(&weak, &db, &server).await;
+                            let server_for_check2 = server.clone();
+                            let is_selected = read_ui_state(&weak, move |ui| {
+                                ui.get_selected_server().as_str() == server_for_check2
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if is_selected {
+                                refresh_server_detail(&weak, &db, &server).await;
+                            }
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

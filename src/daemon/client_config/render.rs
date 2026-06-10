@@ -13,8 +13,9 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Map, Value};
+use toml_edit::DocumentMut;
 
-use super::io::{atomic_write_json, atomic_write_toml};
+use super::io::{atomic_write_json, atomic_write_toml_str};
 use super::types::{ConfigFormat, ConfigSchema};
 use super::types::{ResolvedClient, Scope};
 use super::ClientError;
@@ -219,9 +220,9 @@ fn cleanup_empty_repo_file(
 /// leaf — no managed entries, no user keys at any level. Blank/missing = empty.
 fn file_is_scaffold_only(schema: &ConfigSchema, path: &Path) -> Result<bool, ClientError> {
     match schema.format {
-        ConfigFormat::Toml => Ok(read_toml(path)?
+        ConfigFormat::Toml => Ok(read_toml_edit(path)?
             .as_ref()
-            .is_none_or(|root| table_is_scaffold_only(root, &schema.key_path))),
+            .is_none_or(|doc| toml_doc_is_scaffold_only(doc, &schema.key_path))),
         ConfigFormat::Json | ConfigFormat::Jsonc => Ok(read_json(path, schema.format)?
             .as_ref()
             .is_none_or(|root| map_is_scaffold_only(root, &schema.key_path))),
@@ -245,8 +246,10 @@ fn map_is_scaffold_only(root: &Map<String, Value>, key_path: &[String]) -> bool 
     cur.is_empty()
 }
 
-fn table_is_scaffold_only(root: &toml::value::Table, key_path: &[String]) -> bool {
-    let mut cur = root;
+fn toml_doc_is_scaffold_only(doc: &DocumentMut, key_path: &[String]) -> bool {
+    // Walk the key_path as nested tables; a missing or multi-key level means
+    // the document has user content outside our scaffold.
+    let mut cur: &dyn toml_edit::TableLike = doc.as_table();
     for seg in key_path {
         if cur.is_empty() {
             return true;
@@ -254,7 +257,7 @@ fn table_is_scaffold_only(root: &toml::value::Table, key_path: &[String]) -> boo
         if cur.len() > 1 {
             return false;
         }
-        match cur.get(seg).and_then(toml::Value::as_table) {
+        match cur.get(seg).and_then(toml_edit::Item::as_table_like) {
             Some(next) => cur = next,
             None => return false,
         }
@@ -286,7 +289,19 @@ fn render_json(
     key_path: &[String],
     entries: &[(String, Value)],
 ) -> Result<(), ClientError> {
-    let mut root = read_json(path, format)?.unwrap_or_default();
+    let existing = read_json(path, format)?;
+    // Skip creating a scaffold for an empty entry set when the file doesn't
+    // already hold our key_path — avoids a no-op rewrite that strips comments.
+    if entries.is_empty() {
+        if let Some(ref root) = existing {
+            if descend_existing_json_ref(root, key_path).is_none() {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    }
+    let mut root = existing.unwrap_or_default();
     {
         let map = descend_create(&mut root, key_path);
         for (name, entry) in entries {
@@ -303,20 +318,31 @@ fn purge_where(
 ) -> Result<(), ClientError> {
     match schema.format {
         ConfigFormat::Toml => {
-            let Some(mut root) = read_toml(path)? else {
+            let Some(mut doc) = read_toml_edit(path)? else {
                 return Ok(());
             };
-            if let Some(map) = descend_existing_toml(&mut root, &schema.key_path) {
-                map.retain(|_n, e| !is_target(&toml_to_json(e)));
+            let removed =
+                descend_existing_toml_edit(&mut doc, &schema.key_path).is_some_and(|table| {
+                    let before = table.len();
+                    table.retain(|_n, item| !is_target(&toml_item_to_json(item)));
+                    table.len() != before
+                });
+            if !removed {
+                return Ok(());
             }
-            atomic_write_toml(path, &toml::Value::Table(root))
+            atomic_write_toml_str(path, &doc.to_string())
         }
         ConfigFormat::Json | ConfigFormat::Jsonc => {
             let Some(mut root) = read_json(path, schema.format)? else {
                 return Ok(());
             };
-            if let Some(map) = descend_existing_json(&mut root, &schema.key_path) {
+            let removed = descend_existing_json(&mut root, &schema.key_path).is_some_and(|map| {
+                let before = map.len();
                 map.retain(|_n, e| !is_target(e));
+                map.len() != before
+            });
+            if !removed {
+                return Ok(());
             }
             atomic_write_json(path, &Value::Object(root))
         }
@@ -359,6 +385,17 @@ fn descend_existing_json<'a>(
     let mut cur = root;
     for seg in key_path {
         cur = cur.get_mut(seg)?.as_object_mut()?;
+    }
+    Some(cur)
+}
+
+fn descend_existing_json_ref<'a>(
+    root: &'a Map<String, Value>,
+    key_path: &[String],
+) -> Option<&'a Map<String, Value>> {
+    let mut cur = root;
+    for seg in key_path {
+        cur = cur.get(seg)?.as_object()?;
     }
     Some(cur)
 }
@@ -476,40 +513,50 @@ fn strip_trailing_commas(src: &str) -> String {
     out
 }
 
-// ── TOML ─────────────────────────────────────────────────────────────────────
+// ── TOML (toml_edit — comment/format-preserving) ─────────────────────────────
 
 fn render_toml(
     path: &Path,
     key_path: &[String],
     entries: &[(String, Value)],
 ) -> Result<(), ClientError> {
-    let mut root = read_toml(path)?.unwrap_or_default();
-    {
-        let map = descend_create_toml(&mut root, key_path);
-        for (name, entry) in entries {
-            map.insert(name.clone(), json_to_toml(entry));
+    let existing = read_toml_edit(path)?;
+    // Skip scaffold creation when there are no entries and the key_path isn't
+    // already present — avoids touching Codex's config.toml on a no-op.
+    if entries.is_empty() {
+        if let Some(ref doc) = existing {
+            if descend_existing_toml_edit_ref(doc.as_table(), key_path).is_none() {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
         }
     }
-    atomic_write_toml(path, &toml::Value::Table(root))
+    let mut doc = existing.unwrap_or_default();
+    {
+        let table = descend_create_toml_edit(&mut doc, key_path);
+        for (name, entry) in entries {
+            table.insert(name, json_to_toml_edit_item(entry));
+        }
+    }
+    atomic_write_toml_str(path, &doc.to_string())
 }
 
 #[expect(
     clippy::expect_used,
-    reason = "the line above guarantees the slot is a table; a conditional \
+    reason = "the entry above guarantees the slot is a table; a conditional \
               reborrow in this loop hits an NLL limitation, so expect is the \
               clean infallible descent"
 )]
-fn descend_create_toml<'a>(
-    root: &'a mut toml::value::Table,
+fn descend_create_toml_edit<'a>(
+    doc: &'a mut DocumentMut,
     key_path: &[String],
-) -> &'a mut toml::value::Table {
-    let mut cur = root;
+) -> &'a mut toml_edit::Table {
+    let mut cur: &mut toml_edit::Table = doc.as_table_mut();
     for seg in key_path {
-        let slot = cur
-            .entry(seg.clone())
-            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        let slot = cur.entry(seg).or_insert_with(toml_edit::table);
         if !slot.is_table() {
-            *slot = toml::Value::Table(toml::value::Table::new());
+            *slot = toml_edit::table();
         }
         cur = slot
             .as_table_mut()
@@ -518,18 +565,29 @@ fn descend_create_toml<'a>(
     cur
 }
 
-fn descend_existing_toml<'a>(
-    root: &'a mut toml::value::Table,
+fn descend_existing_toml_edit<'a>(
+    doc: &'a mut DocumentMut,
     key_path: &[String],
-) -> Option<&'a mut toml::value::Table> {
-    let mut cur = root;
+) -> Option<&'a mut toml_edit::Table> {
+    let mut cur: &mut toml_edit::Table = doc.as_table_mut();
     for seg in key_path {
         cur = cur.get_mut(seg)?.as_table_mut()?;
     }
     Some(cur)
 }
 
-fn read_toml(path: &Path) -> Result<Option<toml::value::Table>, ClientError> {
+fn descend_existing_toml_edit_ref<'a>(
+    table: &'a toml_edit::Table,
+    key_path: &[String],
+) -> Option<&'a toml_edit::Table> {
+    let mut cur = table;
+    for seg in key_path {
+        cur = cur.get(seg)?.as_table()?;
+    }
+    Some(cur)
+}
+
+fn read_toml_edit(path: &Path) -> Result<Option<DocumentMut>, ClientError> {
     let text = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -538,49 +596,74 @@ fn read_toml(path: &Path) -> Result<Option<toml::value::Table>, ClientError> {
     if text.chars().all(char::is_whitespace) {
         return Ok(None);
     }
-    let value: toml::Value = toml::from_str(&text).map_err(|source| ClientError::ParseToml {
-        path: path.to_owned(),
-        source,
-    })?;
-    match value {
-        toml::Value::Table(t) => Ok(Some(t)),
-        _ => Err(ClientError::TomlDe(serde::de::Error::custom(
-            "expected top-level TOML table",
-        ))),
+    let doc: DocumentMut =
+        text.parse()
+            .map_err(|e: toml_edit::TomlError| ClientError::ParseToml {
+                path: path.to_owned(),
+                source: serde::de::Error::custom(e.to_string()),
+            })?;
+    Ok(Some(doc))
+}
+
+/// Convert a JSON value into a `toml_edit::Item` for insertion into a TOML table.
+/// Objects become inline tables so they stay on one line under their parent key.
+fn json_to_toml_edit_item(v: &Value) -> toml_edit::Item {
+    toml_edit::Item::Value(json_to_toml_edit_value(v))
+}
+
+fn json_to_toml_edit_value(v: &Value) -> toml_edit::Value {
+    match v {
+        Value::String(s) => toml_edit::Value::from(s.as_str()),
+        Value::Bool(b) => toml_edit::Value::from(*b),
+        Value::Number(n) => n.as_i64().map_or_else(
+            || toml_edit::Value::from(n.as_f64().unwrap_or(0.0)),
+            toml_edit::Value::from,
+        ),
+        Value::Array(a) => {
+            let mut arr = toml_edit::Array::new();
+            for val in a {
+                arr.push(json_to_toml_edit_value(val));
+            }
+            toml_edit::Value::Array(arr)
+        }
+        Value::Object(m) => {
+            let mut tbl = toml_edit::InlineTable::new();
+            for (k, val) in m {
+                tbl.insert(k.as_str(), json_to_toml_edit_value(val));
+            }
+            toml_edit::Value::InlineTable(tbl)
+        }
+        Value::Null => toml_edit::Value::from(""),
     }
 }
 
-fn json_to_toml(v: &Value) -> toml::Value {
-    match v {
-        Value::String(s) => toml::Value::String(s.clone()),
-        Value::Bool(b) => toml::Value::Boolean(*b),
-        Value::Number(n) => n.as_i64().map_or_else(
-            || toml::Value::Float(n.as_f64().unwrap_or(0.0)),
-            toml::Value::Integer,
-        ),
-        Value::Array(a) => toml::Value::Array(a.iter().map(json_to_toml).collect()),
-        Value::Object(m) => toml::Value::Table(
-            m.iter()
-                .map(|(k, val)| (k.clone(), json_to_toml(val)))
+/// Convert a `toml_edit::Item` to a `serde_json::Value` for the `is_target` check
+/// in `purge_where`. Only needs to cover the cases our entries can produce.
+fn toml_item_to_json(item: &toml_edit::Item) -> Value {
+    match item {
+        toml_edit::Item::Value(v) => toml_edit_value_to_json(v),
+        toml_edit::Item::Table(t) => Value::Object(
+            t.iter()
+                .map(|(k, v)| (k.to_string(), toml_item_to_json(v)))
                 .collect(),
         ),
-        Value::Null => toml::Value::String(String::new()),
+        _ => Value::Null,
     }
 }
 
-fn toml_to_json(v: &toml::Value) -> Value {
+fn toml_edit_value_to_json(v: &toml_edit::Value) -> Value {
     match v {
-        toml::Value::String(s) => Value::String(s.clone()),
-        toml::Value::Boolean(b) => Value::Bool(*b),
-        toml::Value::Integer(i) => Value::Number((*i).into()),
-        toml::Value::Float(f) => {
-            serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number)
+        toml_edit::Value::String(s) => Value::String(s.value().clone()),
+        toml_edit::Value::Integer(i) => Value::Number((*i.value()).into()),
+        toml_edit::Value::Float(f) => {
+            serde_json::Number::from_f64(*f.value()).map_or(Value::Null, Value::Number)
         }
-        toml::Value::Datetime(d) => Value::String(d.to_string()),
-        toml::Value::Array(a) => Value::Array(a.iter().map(toml_to_json).collect()),
-        toml::Value::Table(t) => Value::Object(
+        toml_edit::Value::Boolean(b) => Value::Bool(*b.value()),
+        toml_edit::Value::Datetime(d) => Value::String(d.value().to_string()),
+        toml_edit::Value::Array(a) => Value::Array(a.iter().map(toml_edit_value_to_json).collect()),
+        toml_edit::Value::InlineTable(t) => Value::Object(
             t.iter()
-                .map(|(k, val)| (k.clone(), toml_to_json(val)))
+                .map(|(k, v)| (k.to_string(), toml_edit_value_to_json(v)))
                 .collect(),
         ),
     }

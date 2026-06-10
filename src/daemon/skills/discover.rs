@@ -225,10 +225,17 @@ async fn discover_one(
         joinset.spawn(async move {
             let _permit = sem.acquire_owned().await.ok()?;
             let path_lower = entry.path.to_ascii_lowercase();
-            let directory = path_lower
-                .strip_suffix("/skill.md")
-                .and_then(|s| entry.path.get(..s.len()))
-                .map_or_else(|| name.clone(), ToString::to_string);
+            // SK-2: root-level SKILL.md (e.g. path == "SKILL.md") has no
+            // parent directory; represent it with an empty-string sentinel so
+            // the install path can derive the directory name from the repo name.
+            let directory = if path_lower == "skill.md" {
+                String::new()
+            } else {
+                path_lower
+                    .strip_suffix("/skill.md")
+                    .and_then(|s| entry.path.get(..s.len()))
+                    .map_or_else(|| name.clone(), ToString::to_string)
+            };
 
             let body = fetch_raw(&http, &owner, &name, &branch, &entry.path)
                 .await
@@ -394,5 +401,44 @@ mod tests {
         assert!(is_skill_md_path("foo/bar/Skill.md"));
         assert!(!is_skill_md_path("foo/SKILL.markdown"));
         assert!(!is_skill_md_path("readme.md"));
+    }
+
+    /// SK-2: root-level SKILL.md (path == "SKILL.md") must produce an empty
+    /// directory sentinel, not fall back to the repo name.
+    #[test]
+    fn root_skill_md_produces_empty_directory_sentinel() {
+        // Simulate the directory derivation logic from discover_one.
+        let entry_path = "SKILL.md";
+        let repo_name = "my-repo";
+        let path_lower = entry_path.to_ascii_lowercase();
+        let directory = if path_lower == "skill.md" {
+            String::new()
+        } else {
+            path_lower
+                .strip_suffix("/skill.md")
+                .and_then(|s| entry_path.get(..s.len()))
+                .map_or_else(|| repo_name.to_string(), ToString::to_string)
+        };
+        assert!(
+            directory.is_empty(),
+            "root SKILL.md must produce an empty directory sentinel, got {directory:?}"
+        );
+    }
+
+    /// SK-2: subdirectory SKILL.md must still produce the containing directory.
+    #[test]
+    fn subdir_skill_md_produces_directory() {
+        let entry_path = "my-skill/SKILL.md";
+        let repo_name = "my-repo";
+        let path_lower = entry_path.to_ascii_lowercase();
+        let directory = if path_lower == "skill.md" {
+            String::new()
+        } else {
+            path_lower
+                .strip_suffix("/skill.md")
+                .and_then(|s| entry_path.get(..s.len()))
+                .map_or_else(|| repo_name.to_string(), ToString::to_string)
+        };
+        assert_eq!(directory, "my-skill");
     }
 }

@@ -204,32 +204,55 @@ fn rpc_error_response(id: Value, code: i32, reason: &str) -> axum::response::Res
 
 /// Resolve a DB-stored `McpServer` into the upstream-layer `ServerConfig`, fetching
 /// keyring secrets. Caller must already have the `McpServer` row.
-pub(crate) fn server_to_config(
+///
+/// All keyring I/O runs inside a single `spawn_blocking` call so that
+/// synchronous D-Bus/keychain operations do not block tokio workers.
+pub(crate) async fn server_to_config(
     server: &McpServer,
 ) -> Result<crate::daemon::upstream::manager::ServerConfig, ServerError> {
     use crate::daemon::db::types::{EnvValue, TRANSPORT_HTTP, TRANSPORT_STDIO};
     use crate::daemon::secrets;
+    use crate::daemon::upstream::http::BEARER_TOKEN_ENV;
     use crate::daemon::upstream::manager::{ServerConfig, Transport};
 
-    use crate::daemon::upstream::http::BEARER_TOKEN_ENV;
+    // Collect the data needed inside the blocking closure up front so we do
+    // not borrow `server` across the spawn boundary.
+    let server_name = server.name.clone();
+    let env_entries: Vec<(String, EnvValue)> = server
+        .env
+        .iter()
+        .map(|e| (e.name.clone(), e.value.clone()))
+        .collect();
 
-    let resolved_env: Vec<(String, String)> = {
-        let mut out = Vec::with_capacity(server.env.len());
-        for entry in &server.env {
-            let value = match &entry.value {
-                EnvValue::Plain(v) => v.clone(),
-                EnvValue::Secret(uuid) => match secrets::fetch(&server.name, uuid) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, server = %server.name, env = %entry.name, "secret fetch failed");
-                        String::new()
-                    }
-                },
-            };
-            out.push((entry.name.clone(), value));
-        }
-        out
-    };
+    let resolved_env: Vec<(String, String)> =
+        tokio::task::spawn_blocking(move || -> Vec<(String, String)> {
+            let mut out = Vec::with_capacity(env_entries.len());
+            for (name, value) in env_entries {
+                let resolved = match value {
+                    EnvValue::Plain(v) => v,
+                    EnvValue::Secret(uuid) => match secrets::fetch(&server_name, &uuid) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                server = %server_name,
+                                env = %name,
+                                "secret fetch failed"
+                            );
+                            String::new()
+                        }
+                    },
+                };
+                out.push((name, resolved));
+            }
+            out
+        })
+        .await
+        .map_err(|e| {
+            ServerError::Io(std::io::Error::other(format!(
+                "spawn_blocking join error: {e}"
+            )))
+        })?;
 
     let transport = match server.transport.as_str() {
         TRANSPORT_STDIO => Transport::Stdio {

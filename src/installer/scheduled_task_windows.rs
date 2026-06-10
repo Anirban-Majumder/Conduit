@@ -87,6 +87,9 @@ pub fn render_task_xml(exe: &Path) -> String {
          \x20     <Interval>PT1M</Interval>\n\
          \x20     <Count>5</Count>\n\
          \x20   </RestartOnFailure>\n\
+         \x20   <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n\
+         \x20   <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n\
+         \x20   <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n\
          \x20   <Enabled>true</Enabled>\n\
          \x20 </Settings>\n\
          \x20 <Actions Context=\"Author\">\n\

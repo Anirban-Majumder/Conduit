@@ -15,14 +15,31 @@ use crate::daemon::errors::SkillError;
 
 /// Mirror `source` into `dest_dir/install_name` using `mode`. `dest_dir` is the
 /// editor's skills base for this scope (already resolved by the caller).
+///
+/// `we_manage`: when `true` the caller holds a `managed_skill` DB row for this
+/// `(dest_dir, install_name)` pair, meaning Conduit wrote the destination and
+/// may safely overwrite it. When `false` and the destination already exists,
+/// this function returns `SkillError::TargetExists` instead of overwriting
+/// user-authored content.
 pub fn sync_to_target(
     source: &Path,
     dest_dir: &Path,
     install_name: &str,
     mode: SyncMode,
+    we_manage: bool,
 ) -> Result<(), SkillError> {
     fs::create_dir_all(dest_dir)?;
     let dest = dest_dir.join(install_name);
+
+    // SK-1: refuse to overwrite a destination we didn't create.
+    if !we_manage && dest.exists() {
+        tracing::warn!(
+            dest = %dest.display(),
+            "skipping sync: destination exists and is not managed by Conduit"
+        );
+        return Err(SkillError::TargetExists(dest));
+    }
+
     // Atomic swap: write the new link/dir under a sibling tmp name, then
     // rename over `dest`. Avoids the race window where another process could
     // create something at `dest` between our remove and re-create.

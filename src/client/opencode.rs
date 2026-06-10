@@ -12,14 +12,8 @@ pub static DEF: ClientDef = ClientDef {
     id: "OpenCode",
     display_name: "OpenCode",
     icon_svg: include_bytes!("../../assets/client/opencode.svg"),
-    config: PathSpec::PlatformSplit {
-        unix: ".config/opencode/opencode.json",
-        windows: "opencode/opencode.json",
-    },
-    skills: Some(PathSpec::PlatformSplit {
-        unix: ".config/opencode/skills",
-        windows: "opencode/skills",
-    }),
+    config: PathSpec::Home(".config/opencode/opencode.json"),
+    skills: Some(PathSpec::Home(".config/opencode/skills")),
     project_config_rel: Some(".opencode/opencode.json"),
     project_skills_rel: Some(".opencode/skills"),
     config_spec: ConfigSpec {

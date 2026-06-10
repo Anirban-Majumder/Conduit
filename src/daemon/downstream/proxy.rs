@@ -63,7 +63,7 @@ pub async fn route_tool_call(
     params: Value,
 ) -> Result<ProxyOutcome, ProxyError> {
     if method == TOOLS_LIST {
-        let config = server_to_config(server).map_err(io_to_upstream)?;
+        let config = server_to_config(server).await.map_err(io_to_upstream)?;
         let result = state.upstream.list_tools(&config).await?;
         return Ok(ProxyOutcome::Forward(result));
     }
@@ -210,7 +210,7 @@ async fn forward_and_audit(
     decision: AuditDecision,
     start: Instant,
 ) -> Result<ProxyOutcome, ProxyError> {
-    let config = server_to_config(server).map_err(io_to_upstream)?;
+    let config = server_to_config(server).await.map_err(io_to_upstream)?;
     match state.upstream.call_tool(&config, TOOLS_CALL, params).await {
         Ok(result) => {
             let latency = start.elapsed();

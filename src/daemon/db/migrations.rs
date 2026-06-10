@@ -87,8 +87,13 @@ pub(super) fn init_conn(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-/// Apply every migration whose version exceeds the stored `schema_version`,
-/// recording each and checking FK integrity after it.
+/// Apply every migration whose version exceeds the stored `schema_version`.
+///
+/// Each migration's `execute_batch`, FK check, and version record run inside a
+/// single transaction: a crash mid-migration leaves the version unrecorded, so
+/// the next start re-runs the migration cleanly instead of bricking DB init.
+/// FK check runs inside the transaction, before committing, so a failure also
+/// leaves the version unrecorded and the migration re-applies on next start.
 fn run_migrations(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL PRIMARY KEY);",
@@ -101,10 +106,12 @@ fn run_migrations(conn: &Connection) -> Result<(), DbError> {
         if version <= current {
             continue;
         }
-        conn.execute_batch(sql)?;
-        conn.prepare_cached("INSERT OR IGNORE INTO schema_version (version) VALUES (?1)")?
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)?;
+        check_foreign_keys(&tx)?;
+        tx.prepare_cached("INSERT OR IGNORE INTO schema_version (version) VALUES (?1)")?
             .execute([version])?;
-        check_foreign_keys(conn)?;
+        tx.commit()?;
     }
     Ok(())
 }

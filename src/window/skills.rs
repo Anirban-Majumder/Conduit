@@ -294,21 +294,29 @@ pub(crate) async fn paint_skills_with_discovery(
     let installed = skills.list_installed().await.unwrap_or_default();
     let repos = skills.list_repos().await.unwrap_or_default();
     let repo_rows = repos_to_rows(repos);
-    let installed_dirs: std::collections::HashSet<String> =
-        installed.iter().map(|s| s.directory.clone()).collect();
+    // SK-3: normalise to lowercase for case-insensitive FS collision detection.
+    let installed_dirs_lower: std::collections::HashSet<String> = installed
+        .iter()
+        .map(|s| s.directory.to_ascii_lowercase())
+        .collect();
     let active_client_ids = active_client_ids.to_vec();
 
     // Rows carry brand-icon `Image`s (!Send), so build them on the UI thread.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
         let mut rows = installed_skills_to_rows(&installed, &active_client_ids);
         for candidate in candidates {
-            let install_name = candidate
-                .directory
-                .rsplit('/')
-                .next()
-                .unwrap_or(&candidate.directory)
-                .to_string();
-            if installed_dirs.contains(&install_name) {
+            // SK-2: root-level sentinel means repo name is the install dir.
+            let install_name = if candidate.directory.is_empty() {
+                candidate.repo_name.clone()
+            } else {
+                candidate
+                    .directory
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&candidate.directory)
+                    .to_string()
+            };
+            if installed_dirs_lower.contains(&install_name.to_ascii_lowercase()) {
                 continue;
             }
             rows.push(SkillRow {

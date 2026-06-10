@@ -139,6 +139,7 @@ export component MainWindow inherits Window {
     callback set-text-setting(string, string);
     callback open-config-folder();
     callback copy-error-clicked(string);
+    callback cancel-wizard();  // fires on dismiss to cancel any running probe
 
     callback select-ide(string);
     callback reveal-ide-config(string);
@@ -496,6 +497,7 @@ export component MainWindow inherits Window {
         }
         copy-oauth-url => { root.copy-error-clicked(root.wizard-oauth-url); }
         dismiss => {
+            root.cancel-wizard();
             root.show-add-server-dialog = false;
             root.wizard-edit-mode = false;
             root.add-server-status = "";

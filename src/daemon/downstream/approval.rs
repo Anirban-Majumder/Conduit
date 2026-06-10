@@ -114,6 +114,14 @@ impl ApprovalCenter {
             }
         }
 
+        // RAII guard: removes the waiter entry if the future is dropped before
+        // completing (e.g. IDE disconnects mid-approval, cancelling the handler).
+        // HashMap::remove is idempotent — safe to call even if take_waiter won the race.
+        let _waiter_guard = WaiterGuard {
+            id: id.clone(),
+            waiters: Arc::clone(&self.waiters),
+        };
+
         self.bus.publish(Event::ApprovalPending {
             id: id.clone(),
             mcp_server: req.mcp_server,
@@ -135,18 +143,25 @@ impl ApprovalCenter {
                 Err(_dropped) => ApprovalOutcome::Timeout,
             },
             () = tokio::time::sleep(self.timeout()) => {
-                self.remove_waiter(&id);
-                if let Err(e) = self
+                // Conditional update — only this caller wins if the row is still pending.
+                match self
                     .db
                     .resolve_pending_approval(&id, ApprovalStatus::Timeout)
                     .await
                 {
-                    tracing::warn!(error = %e, id = %id, "flipping approval to timeout failed");
+                    Ok(1) => {
+                        self.bus.publish(Event::ApprovalResolved {
+                            id: id.clone(),
+                            status: ApprovalStatus::Timeout,
+                        });
+                    }
+                    Ok(_) => {
+                        // Another resolver (GUI/IPC) beat the timeout; do nothing.
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, id = %id, "flipping approval to timeout failed");
+                    }
                 }
-                self.bus.publish(Event::ApprovalResolved {
-                    id: id.clone(),
-                    status: ApprovalStatus::Timeout,
-                });
                 ApprovalOutcome::Timeout
             }
         };
@@ -163,21 +178,13 @@ impl ApprovalCenter {
             ApprovalStatus::Pending => return Err(ApprovalError::InvalidStatus),
         }
 
-        let current = self.db.get_pending_approval(id).await?;
-        let Some(row) = current else {
+        // Conditional UPDATE: wins the race only if the row is still `pending`.
+        // Changed-row count is the single source of truth — no separate pre-read.
+        let changed = self.db.resolve_pending_approval(id, status).await?;
+        if changed == 0 {
+            // Row was already resolved by a concurrent caller (or never existed).
             return Ok(());
-        };
-        match row.status {
-            ApprovalStatus::Pending => {}
-            ApprovalStatus::Approved
-            | ApprovalStatus::Denied
-            | ApprovalStatus::Timeout
-            | ApprovalStatus::Cancelled => {
-                return Ok(());
-            }
         }
-
-        self.db.resolve_pending_approval(id, status).await?;
 
         let waiter = self.take_waiter(id);
         if let Some(tx) = waiter {
@@ -195,20 +202,29 @@ impl ApprovalCenter {
         Ok(())
     }
 
-    fn remove_waiter(&self, id: &str) {
-        let mut guard = match self.waiters.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-        guard.remove(id);
-    }
-
     fn take_waiter(&self, id: &str) -> Option<oneshot::Sender<ApprovalStatus>> {
         let mut guard = match self.waiters.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
         guard.remove(id)
+    }
+}
+
+/// Removes the waiter entry on drop so that a cancelled `request()` future
+/// (IDE disconnects mid-approval) does not leak entries in the waiters map.
+struct WaiterGuard {
+    id: String,
+    waiters: WaiterMap,
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        let mut guard = match self.waiters.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.remove(&self.id);
     }
 }
 

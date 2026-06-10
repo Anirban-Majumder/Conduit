@@ -480,10 +480,12 @@ export component AddServerDialog inherits Rectangle {
                         clicked => { root.wizard-back(); }
                     }
                     PillButton {
-                        label: "Save";
-                        bg-color: Theme.accent;
-                        fg-color: Theme.on-accent;
-                        clicked => { root.wizard-save(); }
+                        label: root.busy ? "Saving…" : "Save";
+                        bg-color: root.busy ? Theme.surface-3 : Theme.accent;
+                        fg-color: root.busy ? Theme.text-secondary : Theme.on-accent;
+                        clicked => {
+                            if (!root.busy) { root.wizard-save(); }
+                        }
                     }
                 }
             }

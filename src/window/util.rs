@@ -106,7 +106,8 @@ pub(crate) async fn current_selected_server(weak: &slint::Weak<MainWindow>) -> O
         .filter(|s: &String| !s.is_empty())
 }
 
-/// Untrack a client and purge our entries from its config file.
+/// Untrack a client and purge our entries from its global config and every
+/// repo-scope file Conduit previously wrote.
 pub(crate) async fn remove_ide(db: &Db, port: u16, client_id: &str) {
     let resolved = match client_config::resolve_client(db, client_id).await {
         Ok(Some(c)) => Some(c),
@@ -117,6 +118,36 @@ pub(crate) async fn remove_ide(db: &Db, port: u16, client_id: &str) {
         }
     };
     if let Some(client) = resolved {
+        // Clear repo-scope files first.
+        let scopes = match db.list_scopes_for_client(client_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, client_id, "list_scopes_for_client failed");
+                vec![]
+            }
+        };
+        for scope_str in scopes {
+            if scope_str == "global" {
+                continue;
+            }
+            let repo_path = std::path::PathBuf::from(&scope_str);
+            let c = client.clone();
+            let scope = client_config::Scope::Repo(repo_path);
+            let result = tokio::task::spawn_blocking(move || {
+                client_config::render_scope(&c, &scope, &[], port)
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, client_id, scope = %scope_str, "render_scope(clear) failed");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, client_id, scope = %scope_str, "render_scope join failed");
+                }
+            }
+        }
+        // Clear the global config.
         let schema = client.schema.clone();
         let path = client.config_path.clone();
         let key = client.mcp_key.clone();

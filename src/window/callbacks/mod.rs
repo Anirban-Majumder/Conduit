@@ -24,6 +24,7 @@ use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::events::Bus;
 use conduit::daemon::skills::SkillManager;
+use conduit::daemon::upstream::manager::UpstreamManager;
 
 use crate::window::view::{EnvVarRow, MainWindow};
 
@@ -45,6 +46,7 @@ pub(crate) fn install_callbacks(
     window: &MainWindow,
     db: &Db,
     approvals: &Arc<ApprovalCenter>,
+    upstream: &Arc<UpstreamManager>,
     bus: &Bus,
     port: u16,
     rt: tokio::runtime::Handle,
@@ -64,6 +66,7 @@ pub(crate) fn install_callbacks(
         rt,
         skills,
         approvals: approvals.clone(),
+        upstream: upstream.clone(),
         bus: bus.clone(),
         port,
         config,

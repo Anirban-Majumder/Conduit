@@ -38,6 +38,12 @@ struct PendingWizard {
     tools: Vec<DbMcpTool>,
     descriptions: std::collections::HashMap<String, String>,
     oauth_credentials: Option<StoredCredentials>,
+    /// Incremented on each new probe / Back / dismiss so stale completions
+    /// no-op when their generation no longer matches.
+    generation: u64,
+    /// Cancel token for the currently-running probe task. Replaced (and the
+    /// old one fired) on re-probe, Back, and dismiss.
+    probe_cancel: Option<CancellationToken>,
 }
 
 #[expect(
@@ -184,11 +190,26 @@ pub(crate) fn install_wizard_callbacks(
             last_auth_error_msg: None,
         };
 
+        // Cancel any in-flight probe and bump the generation so its completion
+        // closure is a no-op if it arrives late.
+        let probe_cancel = CancellationToken::new();
+        let this_generation = {
+            let mut guard = pending_for_probe
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(old) = guard.probe_cancel.take() {
+                old.cancel();
+            }
+            guard.generation = guard.generation.wrapping_add(1);
+            guard.probe_cancel = Some(probe_cancel.clone());
+            guard.generation
+        };
+
         let weak = weak.clone();
         let pending = pending_for_probe.clone();
         let settings = settings_for_probe.clone();
         rt_for_probe.spawn(async move {
-            let cancel = CancellationToken::new();
+            let cancel = probe_cancel;
             let weak_for_progress = weak.clone();
             let progress: probe::ProgressSink = Arc::new(move |evt| match evt {
                 probe::ProbeEvent::Phase(msg) => {
@@ -255,6 +276,15 @@ pub(crate) fn install_wizard_callbacks(
                     updated_server.reported_version = Some(probed.server_version.clone());
                     updated_server.last_probed_at = Some(now);
                     updated_server.last_probe_error = None;
+                    // Only commit results if this is still the current probe
+                    // (generation hasn't been bumped by Back / re-probe / dismiss).
+                    let still_current = pending
+                        .lock()
+                        .map(|g| g.generation == this_generation)
+                        .unwrap_or(false);
+                    if !still_current {
+                        return;
+                    }
                     if let Ok(mut guard) = pending.lock() {
                         guard.server = Some(updated_server);
                         guard.tools = tools;
@@ -271,6 +301,14 @@ pub(crate) fn install_wizard_callbacks(
                     let _ = name;
                 }
                 Err(e) => {
+                    // Only update the UI for the current probe generation.
+                    let still_current = pending
+                        .lock()
+                        .map(|g| g.generation == this_generation)
+                        .unwrap_or(false);
+                    if !still_current {
+                        return;
+                    }
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
                         ui.set_add_server_busy(false);
                         ui.set_wizard_step(1);
@@ -289,8 +327,17 @@ pub(crate) fn install_wizard_callbacks(
     let bus_for_save = bus;
     let rt_for_save = rt;
     let pending_for_save = pending;
+    // Clone before the save closure consumes pending_for_save, so the back/dismiss
+    // handlers can reference the same Arc.
+    let pending_for_back_clone = pending_for_save.clone();
+    let pending_for_dismiss_clone = pending_for_save.clone();
     window.on_wizard_save(move || {
         let Some(ui) = weak.upgrade() else { return };
+        // Double-submit guard: the Save button is disabled while busy; skip if
+        // somehow invoked concurrently (e.g. rapid keyboard repeat).
+        if ui.get_add_server_busy() {
+            return;
+        }
         let staged = match pending_for_save.lock() {
             Ok(g) => g.clone(),
             Err(_) => return,
@@ -302,6 +349,7 @@ pub(crate) fn install_wizard_callbacks(
             ui.set_add_server_status_is_error(true);
             return;
         };
+        ui.set_add_server_busy(true);
 
         let tool_rows_model = ui.get_wizard_tools();
         let mut policy_overrides: std::collections::HashMap<String, Decision> =
@@ -374,6 +422,7 @@ pub(crate) fn install_wizard_callbacks(
             };
             let _ignored = weak.upgrade_in_event_loop(move |ui| match outcome {
                 Ok(n) => {
+                    ui.set_add_server_busy(false);
                     ui.set_show_add_server_dialog(false);
                     ui.set_wizard_step(1);
                     ui.set_add_server_status(SharedString::from(""));
@@ -383,6 +432,7 @@ pub(crate) fn install_wizard_callbacks(
                     tracing::info!(policies = n, "server saved");
                 }
                 Err(msg) => {
+                    ui.set_add_server_busy(false);
                     ui.set_add_server_status(SharedString::from(msg));
                     ui.set_add_server_status_is_error(true);
                 }
@@ -392,12 +442,33 @@ pub(crate) fn install_wizard_callbacks(
     });
 
     let weak = window.as_weak();
+    let pending_for_back = pending_for_back_clone;
     window.on_wizard_back_to_form(move || {
+        // Cancel the running probe (if any) and bump the generation so a late
+        // completion closure is a no-op.
+        if let Ok(mut guard) = pending_for_back.lock() {
+            if let Some(cancel) = guard.probe_cancel.take() {
+                cancel.cancel();
+            }
+            guard.generation = guard.generation.wrapping_add(1);
+        }
         let Some(ui) = weak.upgrade() else { return };
         ui.set_wizard_step(1);
         ui.set_wizard_phase_status(SharedString::from(""));
         ui.set_add_server_status(SharedString::from(""));
         ui.set_add_server_status_is_error(false);
+    });
+
+    // Wire dismiss: cancel any running probe and bump the generation so a late
+    // completion from an abandoned probe never hijacks the next wizard session.
+    let pending_for_dismiss = pending_for_dismiss_clone;
+    window.on_cancel_wizard(move || {
+        if let Ok(mut guard) = pending_for_dismiss.lock() {
+            if let Some(cancel) = guard.probe_cancel.take() {
+                cancel.cancel();
+            }
+            guard.generation = guard.generation.wrapping_add(1);
+        }
     });
 
     let weak = window.as_weak();

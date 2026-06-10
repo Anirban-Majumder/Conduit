@@ -250,14 +250,25 @@ export component EditorsTab inherits Rectangle {
                     }
                 }
 
-                if root.selected-status == "active" : Rectangle {
+                // The editor pane is keyed on (selected, selected-scope) so that
+                // switching editor or scope destroys and re-creates the TextInput.
+                // This prevents the one-way binding breakage (Slint removes a
+                // one-way binding on the first user keystroke, so the visible text
+                // would stay stale after any edit). Re-instantiation forces a fresh
+                // binding on every selection change — Reload and programmatic updates
+                // are always visible.
+                if root.selected-status == "active" && root.selected == "" : Rectangle {}
+                if root.selected-status == "active" && root.selected != "" : Rectangle {
                     background: Theme.bg;
                     border-radius: Theme.radius-md;
                     border-width: 1px;
                     border-color: Theme.border;
                     vertical-stretch: 1;
                     clip: true;
-                    VerticalLayout {
+                    // Each unique (selected, selected-scope) combination gets its own
+                    // TextInput instance. Slint creates a new element when the
+                    // condition's value changes, restoring the one-way binding.
+                    for _scope-key[_i] in [root.selected + "|" + root.selected-scope] : VerticalLayout {
                         padding: 0px;
                         Rectangle {
                             height: 34px;

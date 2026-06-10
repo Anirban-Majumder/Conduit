@@ -33,6 +33,10 @@ fn skill_capable_builtins() -> impl Iterator<Item = &'static ClientDef> {
     BUILTINS.iter().copied().filter(|b| b.skills.is_some())
 }
 
+/// Sentinel used in `SkillCandidate.directory` for skills whose `SKILL.md` is at
+/// the repository root (not inside a subdirectory).
+pub const ROOT_SKILL_SENTINEL: &str = "";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillCandidate {
     pub key: String,
@@ -52,6 +56,10 @@ pub struct SkillManager {
     paths: Paths,
     http: reqwest::Client,
     discover_cache: Arc<Mutex<Option<DiscoverCache>>>,
+    /// Ensures at most one network discovery runs at a time. The second caller
+    /// awaits the first; once the first finishes the cache is fresh, so the
+    /// second hits the cache immediately after acquiring the lock.
+    discover_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +81,7 @@ impl SkillManager {
             paths,
             http,
             discover_cache: Arc::new(Mutex::new(None)),
+            discover_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -94,19 +103,42 @@ impl SkillManager {
 
     /// Return the set of available (not installed) skills, fetching from GitHub
     /// when the in-memory cache is stale.
+    ///
+    /// Concurrent callers are serialised by `discover_lock`: the second caller
+    /// waits for the first to finish, then hits the freshly-populated cache
+    /// without issuing a second round of network requests.
     pub async fn discover(&self, force: bool) -> Result<Vec<SkillCandidate>, SkillError> {
         let repos = self.db.list_skill_repos().await?;
         let enabled: Vec<SkillRepo> = repos.into_iter().filter(|r| r.enabled).collect();
         let fingerprint = discover::fingerprint(&enabled);
 
+        // Fast path: cache hit before acquiring the network lock.
         if !force {
             let cached = self.discover_cache.lock().await.clone();
-            if let Some(cache) = cached {
+            if let Some(cache) = &cached {
                 if cache.fingerprint == fingerprint
                     && cache.generated_at.elapsed().unwrap_or(DISCOVER_CACHE_TTL)
                         < DISCOVER_CACHE_TTL
                 {
-                    return Ok(cache.skills);
+                    return Ok(cache.skills.clone());
+                }
+            }
+        }
+
+        // Serialise network work: hold the lock only while fetching + writing
+        // the cache. The lock guard must not be held across any UI call.
+        let _lock = self.discover_lock.lock().await;
+
+        // Re-check after acquiring the lock — a concurrent caller may have
+        // already populated the cache while we waited.
+        if !force {
+            let cached = self.discover_cache.lock().await.clone();
+            if let Some(cache) = &cached {
+                if cache.fingerprint == fingerprint
+                    && cache.generated_at.elapsed().unwrap_or(DISCOVER_CACHE_TTL)
+                        < DISCOVER_CACHE_TTL
+                {
+                    return Ok(cache.skills.clone());
                 }
             }
         }
@@ -166,24 +198,36 @@ impl SkillManager {
         candidate: SkillCandidate,
         targets: Vec<String>,
     ) -> Result<Skill, SkillError> {
-        let install_name = sanitize_segment(last_segment(&candidate.directory))
-            .ok_or_else(|| SkillError::InvalidPath(candidate.directory.clone()))?;
+        // SK-2: root-level skill uses the repo name as install directory.
+        let is_root = candidate.directory == ROOT_SKILL_SENTINEL;
+        let install_name = if is_root {
+            sanitize_segment(&candidate.repo_name)
+                .ok_or_else(|| SkillError::InvalidPath(candidate.repo_name.clone()))?
+        } else {
+            sanitize_segment(last_segment(&candidate.directory))
+                .ok_or_else(|| SkillError::InvalidPath(candidate.directory.clone()))?
+        };
 
-        if let Some(existing) = self.db.get_skill(&install_name).await? {
-            if existing
-                .repo_owner
-                .eq_ignore_ascii_case(&candidate.repo_owner)
-                && existing
-                    .repo_name
-                    .eq_ignore_ascii_case(&candidate.repo_name)
-            {
-                // Same slug, same repo — re-install (refresh) is fine.
-            } else {
-                return Err(SkillError::DirectoryConflict {
-                    name: install_name,
-                    owner: existing.repo_owner,
-                    repo: existing.repo_name,
-                });
+        // SK-3: case-insensitive conflict check against all installed skills.
+        let all_installed = self.db.list_skills().await?;
+        for existing in &all_installed {
+            if existing.directory.eq_ignore_ascii_case(&install_name) {
+                // Same directory (case-insensitively) — allow only if same repo.
+                if existing
+                    .repo_owner
+                    .eq_ignore_ascii_case(&candidate.repo_owner)
+                    && existing
+                        .repo_name
+                        .eq_ignore_ascii_case(&candidate.repo_name)
+                {
+                    // Same slug, same repo — re-install (refresh) is fine.
+                } else {
+                    return Err(SkillError::DirectoryConflict {
+                        name: install_name,
+                        owner: existing.repo_owner.clone(),
+                        repo: existing.repo_name.clone(),
+                    });
+                }
             }
         }
 
@@ -194,25 +238,43 @@ impl SkillManager {
             &candidate.repo_branch,
         )
         .await?;
-        let source_dir = sanitize_relative(&candidate.directory)
-            .ok_or_else(|| SkillError::InvalidPath(candidate.directory.clone()))?;
-        let files = tree
-            .entries
-            .into_iter()
-            .filter(|e| {
-                e.kind == discover::EntryKind::Blob
-                    && (e.path == source_dir || e.path.starts_with(&format!("{source_dir}/")))
-            })
-            .take(DOWNLOAD_FILES_PER_SKILL_LIMIT)
-            .collect::<Vec<_>>();
+
+        // SK-2: root-level skill — all blob entries are included directly,
+        // with their tree path used as the relative install path.
+        let (files, source_dir) = if is_root {
+            let all_blobs = tree
+                .entries
+                .into_iter()
+                .filter(|e| e.kind == discover::EntryKind::Blob)
+                .take(DOWNLOAD_FILES_PER_SKILL_LIMIT)
+                .collect::<Vec<_>>();
+            (all_blobs, String::new())
+        } else {
+            let source_dir = sanitize_relative(&candidate.directory)
+                .ok_or_else(|| SkillError::InvalidPath(candidate.directory.clone()))?;
+            let filtered = tree
+                .entries
+                .into_iter()
+                .filter(|e| {
+                    e.kind == discover::EntryKind::Blob
+                        && (e.path == source_dir || e.path.starts_with(&format!("{source_dir}/")))
+                })
+                .take(DOWNLOAD_FILES_PER_SKILL_LIMIT)
+                .collect::<Vec<_>>();
+            (filtered, source_dir)
+        };
 
         if !files.iter().any(|e| {
-            let rel = relative_to_source(&e.path, &source_dir);
+            let rel = if is_root {
+                e.path.clone()
+            } else {
+                relative_to_source(&e.path, &source_dir)
+            };
             !rel.contains('/') && discover::is_skill_md_path(&rel)
         }) {
             return Err(SkillError::MissingSkillFile {
                 repo: format!("{}/{}", candidate.repo_owner, candidate.repo_name),
-                dir: source_dir,
+                dir: source_dir.clone(),
             });
         }
 
@@ -233,7 +295,13 @@ impl SkillManager {
             let mut joinset: tokio::task::JoinSet<Result<(), SkillError>> =
                 tokio::task::JoinSet::new();
             for entry in files {
-                let relative = relative_to_source(&entry.path, &source_dir);
+                // SK-2: root-level skill — the tree path is already the relative
+                // install path; for subdirectory skills strip the source prefix.
+                let relative = if is_root {
+                    entry.path.clone()
+                } else {
+                    relative_to_source(&entry.path, &source_dir)
+                };
                 let safe = sanitize_relative(&relative)
                     .ok_or_else(|| SkillError::InvalidPath(relative.clone()))?;
                 let out = tmp.join(&safe);
@@ -367,7 +435,8 @@ impl SkillManager {
                 .await?;
             tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
                 let mode = Settings::load_or_default(&cfg).skills.sync_mode;
-                sync::sync_to_target(&source, &dest_dir, &install_name, mode)
+                // we_manage=true: the user explicitly enabled this target.
+                sync::sync_to_target(&source, &dest_dir, &install_name, mode, true)
             })
             .await
             .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))??;
@@ -420,12 +489,14 @@ impl SkillManager {
     /// they opt in per-IDE manually.
     pub async fn register_local_skills(&self) -> Result<usize, SkillError> {
         let managed = self.paths.skills_managed_dir();
-        let known: std::collections::HashSet<String> = self
+        // SK-3: compare case-insensitively to avoid double-registration on
+        // case-insensitive filesystems (macOS/Windows).
+        let known_lower: std::collections::HashSet<String> = self
             .db
             .list_skills()
             .await?
             .into_iter()
-            .map(|s| s.directory)
+            .map(|s| s.directory.to_ascii_lowercase())
             .collect();
         let mut count: usize = 0;
         let mut reader = match tokio::fs::read_dir(&managed).await {
@@ -441,7 +512,7 @@ impl SkillManager {
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            if name.starts_with('.') || known.contains(&name) {
+            if name.starts_with('.') || known_lower.contains(&name.to_ascii_lowercase()) {
                 continue;
             }
             let Ok(meta) = load_skill_metadata_from_dir(&entry.path(), &name).await else {
@@ -508,8 +579,8 @@ impl SkillManager {
     }
 
     /// Reconcile every built-in's GLOBAL skills dir to match `new_targets`:
-    /// mirror the chosen ones, remove the rest. Drives off DB `client` rows (not
-    /// the IDE catalog) and reads `sync_mode` fresh on the blocking worker.
+    /// mirror the chosen ones, remove the rest. Removals are DB-gated: a dir is
+    /// only removed when Conduit has a `managed_skill` row for it (SK-1 fix).
     async fn reconcile_global_targets(
         &self,
         directory: &str,
@@ -518,26 +589,42 @@ impl SkillManager {
         let source = self.paths.skills_managed_dir().join(directory);
         let want: std::collections::HashSet<&str> =
             new_targets.iter().map(String::as_str).collect();
-        let mut plan: Vec<(PathBuf, bool)> = Vec::new();
+
+        // Build the set of client IDs that currently have a managed_skill row
+        // in the global scope — only these are ours to remove.
+        let currently_managed_global: std::collections::HashSet<String> = self
+            .db
+            .list_skill_targets_scoped(directory)
+            .await?
+            .into_iter()
+            .filter(|(_, scope)| scope == "global")
+            .map(|(client_id, _)| client_id)
+            .collect();
+
+        let mut plan: Vec<(PathBuf, bool, bool)> = Vec::new(); // (dir, want_it, we_manage_it)
         for row in self.db.list_clients().await? {
             let client = ResolvedClient::from_row(row);
             if !client.is_builtin {
                 continue;
             }
             if let Some(dir) = client.skills_target(&Scope::Global) {
-                plan.push((dir, want.contains(client.id.as_str())));
+                let want_it = want.contains(client.id.as_str());
+                let we_manage = currently_managed_global.contains(&client.id);
+                plan.push((dir, want_it, we_manage));
             }
         }
         let install_name = directory.to_string();
         let cfg = self.paths.config_toml();
         tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
             let mode = Settings::load_or_default(&cfg).skills.sync_mode;
-            for (dest_dir, want_it) in plan {
+            for (dest_dir, want_it, we_manage) in plan {
                 if want_it {
-                    sync::sync_to_target(&source, &dest_dir, &install_name, mode)?;
-                } else {
+                    sync::sync_to_target(&source, &dest_dir, &install_name, mode, we_manage)?;
+                } else if we_manage {
+                    // Only remove what Conduit wrote.
                     sync::remove_from_target(&dest_dir, &install_name);
                 }
+                // Not wanted, not managed → skip; don't touch the user's dir.
             }
             Ok(())
         })
@@ -564,7 +651,8 @@ impl SkillManager {
         tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
             let mode = Settings::load_or_default(&cfg).skills.sync_mode;
             for dest_dir in dests {
-                sync::sync_to_target(&source, &dest_dir, &install_name, mode)?;
+                // we_manage=true: these dests came from the managed_skill DB table.
+                sync::sync_to_target(&source, &dest_dir, &install_name, mode, true)?;
             }
             Ok(())
         })

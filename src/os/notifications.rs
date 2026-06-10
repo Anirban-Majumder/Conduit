@@ -217,7 +217,9 @@ pub fn spawn(
     })
 }
 
-#[cfg(not(target_os = "windows"))]
+// NotificationHandle::close() exists only on the XDG/D-Bus backend; macOS's
+// handle has no close() method so the real impl is Linux-only.
+#[cfg(target_os = "linux")]
 fn close_by_id(notif_id: u32) {
     let _result = notify_rust::Notification::new()
         .id(notif_id)
@@ -226,9 +228,9 @@ fn close_by_id(notif_id: u32) {
         .map(notify_rust::NotificationHandle::close);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(not(target_os = "linux"))]
 const fn close_by_id(_notif_id: u32) {
-    // Windows notifications via WinRT don't expose a close handle.
+    // WinRT and macOS don't expose a close handle — no-op.
 }
 
 #[cfg(target_os = "linux")]

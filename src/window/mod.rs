@@ -14,6 +14,7 @@ use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::events::Bus;
 use conduit::daemon::skills::SkillManager;
+use conduit::daemon::upstream::manager::UpstreamManager;
 
 pub(crate) mod view;
 
@@ -32,6 +33,7 @@ pub(crate) struct CallbackContext {
     pub(crate) rt: tokio::runtime::Handle,
     pub(crate) skills: Arc<SkillManager>,
     pub(crate) approvals: Arc<ApprovalCenter>,
+    pub(crate) upstream: Arc<UpstreamManager>,
     pub(crate) bus: Bus,
     pub(crate) port: u16,
     pub(crate) config: ConfigWriter,

@@ -63,5 +63,14 @@ pub fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()
 
 #[cfg(not(windows))]
 pub fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
-    fs::rename(tmp, target)
+    fs::rename(tmp, target)?;
+    // Best-effort parent-dir fsync so the rename itself is durable.
+    if let Some(parent) = target.parent() {
+        if let Ok(dir) = fs::File::open(parent) {
+            if let Err(e) = dir.sync_all() {
+                tracing::trace!("parent dir fsync failed (non-fatal): {e}");
+            }
+        }
+    }
+    Ok(())
 }

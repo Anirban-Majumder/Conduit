@@ -2,9 +2,8 @@
 //!
 //! Spawns a child process and connects via stdin/stdout pipes.
 //! On Windows, `CreationFlags` + `JobObject` ensure grandchild cleanup.
-//! On Unix, `kill_on_drop` only kills the direct child — grandchild
-//! processes (Node/Python workers) may leak. TODO: use `ProcessGroup`
-//! from `process-wrap` (already a dep) to fix this.
+//! On Unix, `ProcessGroup::leader()` makes the child a process group leader so
+//! that SIGKILL on reap reaches grandchildren (Node/Python workers).
 
 use std::process::Stdio;
 
@@ -51,7 +50,12 @@ pub async fn connect(
         TokioChildProcess::new(wrapped)?
     };
     #[cfg(not(windows))]
-    let transport = TokioChildProcess::new(cmd)?;
+    let transport = {
+        use process_wrap::tokio::{CommandWrap, ProcessGroup};
+        let mut wrapped = CommandWrap::from(cmd);
+        wrapped.wrap(ProcessGroup::leader());
+        TokioChildProcess::new(wrapped)?
+    };
 
     let client = serve_client_with_ct((), transport, cancel)
         .await

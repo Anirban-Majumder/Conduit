@@ -31,6 +31,10 @@ const ERROR_RING_CAP: usize = 5;
 const EPHEMERAL: i32 = 0;
 const PERSISTENT: i32 = -1;
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const LIST_TOOLS_TIMEOUT: Duration = Duration::from_secs(60);
+const CALL_TOOL_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Transport descriptor for an upstream MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
@@ -87,11 +91,35 @@ pub enum UpstreamError {
     BadArgumentType { got: &'static str },
 }
 
+/// Fingerprint of the fields that would change the transport connection.
+/// Used to detect when a config edit requires kill+respawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigFingerprint {
+    transport: Transport,
+    lifecycle_seconds: i32,
+}
+
+impl ConfigFingerprint {
+    fn from_config(config: &ServerConfig) -> Self {
+        Self {
+            transport: config.transport.clone(),
+            lifecycle_seconds: config.lifecycle_seconds,
+        }
+    }
+}
+
 /// One running upstream client + last-use bookkeeping.
 struct Entry {
     client: RunningService<RoleClient, ()>,
     last_use: Instant,
     lifecycle_seconds: i32,
+    /// Config fingerprint at spawn time; used to detect stale entries on config edit.
+    fingerprint: ConfigFingerprint,
+    /// Number of calls currently in flight against this entry.
+    in_flight: usize,
+    /// Monotonically-increasing ID; ephemeral post-call kill compares this to
+    /// avoid killing a concurrently-spawned fresh entry under the same name.
+    generation: u64,
 }
 
 impl std::fmt::Debug for Entry {
@@ -100,6 +128,8 @@ impl std::fmt::Debug for Entry {
         f.debug_struct("Entry")
             .field("last_use", &self.last_use)
             .field("lifecycle_seconds", &self.lifecycle_seconds)
+            .field("in_flight", &self.in_flight)
+            .field("generation", &self.generation)
             .finish_non_exhaustive()
     }
 }
@@ -205,7 +235,7 @@ impl UpstreamManager {
             return Err(e);
         }
 
-        let peer = match self.get_peer_for_call(&config.name).await {
+        let (peer, generation) = match self.get_peer_for_call(&config.name).await {
             Ok(p) => p,
             Err(e) => {
                 self.record(&config.name, Some(e.to_string())).await;
@@ -213,9 +243,19 @@ impl UpstreamManager {
             }
         };
 
-        let response = match peer.call_tool(request).await {
-            Ok(call_result) => serde_json::to_value(call_result)?,
-            Err(e) => {
+        let result = tokio::time::timeout(CALL_TOOL_TIMEOUT, peer.call_tool(request)).await;
+
+        // Always decrement in-flight, even on timeout or error.
+        self.decrement_in_flight(&config.name).await;
+
+        let response = match result {
+            Err(_elapsed) => {
+                let msg = "call_tool timed out".to_string();
+                self.record(&config.name, Some(msg)).await;
+                return Err(UpstreamError::Timeout);
+            }
+            Ok(Ok(call_result)) => serde_json::to_value(call_result)?,
+            Ok(Err(e)) => {
                 let msg = e.to_string();
                 self.record(&config.name, Some(msg)).await;
                 return Err(UpstreamError::Rmcp(e));
@@ -224,7 +264,7 @@ impl UpstreamManager {
         self.record(&config.name, None).await;
 
         if config.lifecycle_seconds == EPHEMERAL {
-            self.kill(&config.name).await;
+            self.kill_generation(&config.name, generation).await;
         }
 
         Ok(response)
@@ -234,11 +274,16 @@ impl UpstreamManager {
     pub async fn list_tools(&self, config: &ServerConfig) -> Result<Value, UpstreamError> {
         self.ensure_running(config).await?;
 
-        let peer = self.get_peer_for_call(&config.name).await?;
+        let (peer, _generation) = self.get_peer_for_call(&config.name).await?;
 
-        match peer.list_tools(None).await {
-            Ok(list) => Ok(serde_json::to_value(list)?),
-            Err(e) => Err(UpstreamError::Rmcp(e)),
+        let result = tokio::time::timeout(LIST_TOOLS_TIMEOUT, peer.list_tools(None)).await;
+
+        self.decrement_in_flight(&config.name).await;
+
+        match result {
+            Err(_elapsed) => Err(UpstreamError::Timeout),
+            Ok(Ok(list)) => Ok(serde_json::to_value(list)?),
+            Ok(Err(e)) => Err(UpstreamError::Rmcp(e)),
         }
     }
 
@@ -264,49 +309,94 @@ impl UpstreamManager {
         }
     }
 
+    /// Decrement in-flight counter for an entry if it still exists.
+    async fn decrement_in_flight(&self, server_name: &str) {
+        let mut state = self.state.lock().await;
+        if let Some(entry) = state.get_mut(server_name) {
+            entry.in_flight = entry.in_flight.saturating_sub(1);
+        }
+    }
+
+    /// Kill the entry for `server_name` only if it still has `generation`.
+    /// Prevents an ephemeral post-call kill from evicting a concurrently-spawned fresh entry.
+    async fn kill_generation(&self, server_name: &str, generation: u64) {
+        let entry = {
+            let mut state = self.state.lock().await;
+            match state.get(server_name) {
+                Some(e) if e.generation == generation => state.remove(server_name),
+                _ => None,
+            }
+        };
+        if let Some(e) = entry {
+            cancel_entry(server_name, e).await;
+        }
+    }
+
     async fn get_peer_for_call(
         &self,
         server_name: &str,
-    ) -> Result<rmcp::service::Peer<RoleClient>, UpstreamError> {
+    ) -> Result<(rmcp::service::Peer<RoleClient>, u64), UpstreamError> {
         let mut state = self.state.lock().await;
         let Some(entry) = state.get_mut(server_name) else {
             return Err(UpstreamError::Crashed);
         };
-        if entry.client.is_closed() {
+        if entry.client.peer().is_transport_closed() {
             state.remove(server_name);
             return Err(UpstreamError::Crashed);
         }
         entry.last_use = Instant::now();
+        entry.in_flight += 1;
         let peer = entry.client.peer().clone();
+        let generation = entry.generation;
         drop(state);
-        Ok(peer)
+        Ok((peer, generation))
     }
 
     async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {
+        // Kill stale entry when config has changed (fingerprint mismatch).
+        let stale: Option<Entry> = {
+            let mut state = self.state.lock().await;
+            match state.get(config.name.as_str()) {
+                Some(e)
+                    if !e.client.peer().is_transport_closed()
+                        && e.fingerprint != ConfigFingerprint::from_config(config) =>
+                {
+                    state.remove(config.name.as_str())
+                }
+                _ => None,
+            }
+        };
+        if let Some(e) = stale {
+            cancel_entry(&config.name, e).await;
+        }
+
         let already_running = {
             let state = self.state.lock().await;
             state
                 .get(&config.name)
-                .is_some_and(|e| !e.client.is_closed())
+                .is_some_and(|e| !e.client.peer().is_transport_closed())
         };
         if already_running {
             return Ok(());
         }
 
-        let client = match &config.transport {
-            Transport::Stdio { command, args, env } => {
-                stdio::connect(command, args, env, self.cancel.clone()).await?
-            }
-            Transport::Http { url, bearer_token } => {
-                // Three cases: OAuth (stored creds → AuthClient w/ auto-refresh),
-                // static bearer token, or no auth.
-                match http::connect_oauth(url, &config.name, self.cancel.clone()).await? {
-                    Some(client) => client,
-                    None => {
-                        http::connect(url, bearer_token.as_deref(), self.cancel.clone()).await?
-                    }
-                }
-            }
+        // Each spawned client gets its own child token so that rmcp's
+        // RunningService::cancel() only cancels that one client, not the
+        // daemon-global token (UP-1).
+        let child_ct = self.cancel.child_token();
+        let client = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            connect_transport(&config.transport, &config.name, child_ct),
+        )
+        .await
+        .map_err(|_elapsed| UpstreamError::Timeout)??;
+
+        // Next generation number for this entry.
+        let generation = {
+            let state = self.state.lock().await;
+            state
+                .get(&config.name)
+                .map_or(0, |e| e.generation.wrapping_add(1))
         };
 
         // Insert atomically OR detect a race; cancel any duplicate OUTSIDE the lock.
@@ -314,7 +404,7 @@ impl UpstreamManager {
             let mut state = self.state.lock().await;
             let raced = state
                 .get(&config.name)
-                .is_some_and(|e| !e.client.is_closed());
+                .is_some_and(|e| !e.client.peer().is_transport_closed());
             if raced {
                 Some(client)
             } else {
@@ -324,6 +414,9 @@ impl UpstreamManager {
                         client,
                         last_use: Instant::now(),
                         lifecycle_seconds: config.lifecycle_seconds,
+                        fingerprint: ConfigFingerprint::from_config(config),
+                        in_flight: 0,
+                        generation,
                     },
                 );
                 None
@@ -336,6 +429,28 @@ impl UpstreamManager {
             }
         }
         Ok(())
+    }
+}
+
+/// Connect using the given transport descriptor. Each call should receive a
+/// fresh child `CancellationToken` so cancellation is scoped to this client only.
+async fn connect_transport(
+    transport: &Transport,
+    server_name: &str,
+    child_ct: CancellationToken,
+) -> Result<RunningService<RoleClient, ()>, UpstreamError> {
+    match transport {
+        Transport::Stdio { command, args, env } => {
+            stdio::connect(command, args, env, child_ct).await
+        }
+        Transport::Http { url, bearer_token } => {
+            // Three cases: OAuth (stored creds → AuthClient w/ auto-refresh),
+            // static bearer token, or no auth.
+            match http::connect_oauth(url, server_name, child_ct.clone()).await? {
+                Some(client) => Ok(client),
+                None => http::connect(url, bearer_token.as_deref(), child_ct).await,
+            }
+        }
     }
 }
 
@@ -418,11 +533,17 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
 }
 
 fn is_expired(entry: &Entry, now: Instant) -> bool {
-    if entry.client.is_closed() {
+    // Never reap while a call is in flight — avoids killing mid-call.
+    if entry.in_flight > 0 {
+        return false;
+    }
+    if entry.client.peer().is_transport_closed() {
         return true;
     }
     match entry.lifecycle_seconds {
         PERSISTENT => false,
+        // Ephemeral entries are only reaped here when idle (in_flight==0 above);
+        // active ephemeral entries are killed by the caller after the call.
         EPHEMERAL => true,
         n if n > 0 => {
             #[expect(clippy::cast_sign_loss, reason = "branch guarded by `n > 0` above")]
@@ -472,5 +593,18 @@ mod tests {
             parse_tool_call_params(v),
             Err(UpstreamError::InitFailed(_))
         ));
+    }
+
+    #[test]
+    fn child_token_does_not_cancel_parent() {
+        // UP-1: cancelling the child token (as rmcp's RunningService::cancel would)
+        // must not cancel the parent.
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+        child.cancel();
+        assert!(
+            !parent.is_cancelled(),
+            "child cancel must not propagate to parent"
+        );
     }
 }

@@ -108,4 +108,7 @@ pub enum SkillError {
 
     #[error("unknown target ide: {0}")]
     UnknownTarget(String),
+
+    #[error("target directory already exists and is not managed by Conduit: {0}")]
+    TargetExists(PathBuf),
 }
