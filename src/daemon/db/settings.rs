@@ -1,8 +1,8 @@
 //! Simple key/value access over the `settings_kv` table.
 //!
-//! A get/set string store for internal DB-resident settings (e.g. the global
-//! `default_unknown_tool_policy` read by policy resolution). User-tunable
-//! settings live in `config.toml`, not here.
+//! A get/set string store for runtime state only (`routing_paused`,
+//! `has_completed_first_run`, `shown_background_hint`, `client_def_version`,
+//! `skill_repos_seeded`). User-tunable settings live in `config.toml`, not here.
 
 use super::{Db, DbCmd};
 use rusqlite::{params, Connection, OptionalExtension};

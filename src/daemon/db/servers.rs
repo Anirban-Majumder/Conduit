@@ -186,8 +186,8 @@ pub(super) fn query_get_tool_decision(
 
 /// Two-tier policy resolution in a single query path (§2):
 ///   1. the per-tool `mcp_tool.decision` (source = `User`), else
-///   2. the global `settings_kv.default_unknown_tool_policy` (source = `Default`,
-///      falling back to `Ask` when unset/garbage).
+///   2. the caller-supplied global default (source = `Default`) — read from
+///      `config.toml` settings at the call site, not the DB.
 ///
 /// Returns the decision *and* its source so the caller needs no second read —
 /// the old `get_tool_decision` → `resolve_policy`(→`get_tool_decision`) miss
@@ -196,19 +196,12 @@ pub(super) fn query_resolve_policy(
     conn: &Connection,
     server: &str,
     tool: &str,
+    default: Decision,
 ) -> Result<(Decision, DecisionSource), DbError> {
     if let Some(d) = query_get_tool_decision(conn, server, tool)? {
         return Ok((d, DecisionSource::User));
     }
-    let default_str: Option<String> = conn
-        .prepare_cached("SELECT value FROM settings_kv WHERE key = 'default_unknown_tool_policy'")?
-        .query_row([], |row| row.get::<_, String>(0))
-        .optional()?;
-    let decision = default_str
-        .as_deref()
-        .and_then(Decision::from_db_str)
-        .unwrap_or(Decision::Ask);
-    Ok((decision, DecisionSource::Default))
+    Ok((default, DecisionSource::Default))
 }
 
 pub(super) fn query_set_server_auth_error(
@@ -457,14 +450,17 @@ impl Db {
     }
 
     /// Two-tier policy resolution returning the decision and its source (§2).
+    /// `default` is the global fallback from `config.toml` settings.
     pub async fn resolve_policy(
         &self,
         server: &str,
         tool: &str,
+        default: Decision,
     ) -> Result<(Decision, DecisionSource), DbError> {
         self.send_cmd(|reply| DbCmd::ResolvePolicy {
             server: server.to_string(),
             tool: tool.to_string(),
+            default,
             reply,
         })
         .await

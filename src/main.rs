@@ -20,15 +20,16 @@
 )]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use slint::ComponentHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use conduit::daemon::config::toml::Settings;
-use conduit::daemon::config::watcher;
+use conduit::daemon::config::writer::ConfigWriter;
+use conduit::daemon::config::{watcher, SharedSettings};
 use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::{spawn_timeout_sweeper, ApprovalCenter};
 use conduit::daemon::downstream::http_server::{self, AppState};
@@ -73,8 +74,11 @@ fn main() -> Result<()> {
     paths.ensure_created().context("create state dirs")?;
     tracing::info!(root = %paths.root().display(), "state root ready");
 
-    let settings = Settings::load_or_default(&paths.config_toml());
-    tracing::info!(port = settings.daemon.port, "settings loaded");
+    let settings: SharedSettings = Arc::new(ArcSwap::from_pointee(Settings::load_or_default(
+        &paths.config_toml(),
+    )));
+    let port = settings.load().daemon.port;
+    tracing::info!(port, "settings loaded");
 
     let cancel = CancellationToken::new();
     let worker = Worker::spawn(cancel.clone()).context("spawn tokio worker")?;
@@ -131,15 +135,24 @@ fn main() -> Result<()> {
 
     let _watcher = {
         let _guard = worker.handle().enter();
-        watcher::spawn(&paths.config_toml(), bus.clone(), cancel.clone())
-            .context("spawn config watcher")?
+        watcher::spawn(
+            &paths.config_toml(),
+            bus.clone(),
+            settings.clone(),
+            cancel.clone(),
+        )
+        .context("spawn config watcher")?
     };
 
-    let approval_timeout = Duration::from_secs(u64::from(settings.daemon.approval_timeout_seconds));
+    let config_writer = {
+        let _guard = worker.handle().enter();
+        ConfigWriter::spawn(paths.config_toml(), settings.clone(), cancel.clone())
+    };
+
     let approvals = Arc::new(ApprovalCenter::new(
         db.clone(),
         bus.clone(),
-        approval_timeout,
+        settings.clone(),
     ));
     let upstream = {
         let _guard = worker.handle().enter();
@@ -160,13 +173,14 @@ fn main() -> Result<()> {
         approvals: approvals.clone(),
         upstream,
         bus: bus.clone(),
-        port: settings.daemon.port,
+        port,
+        settings: settings.clone(),
     };
 
     {
         let _guard = worker.handle().enter();
         let _sweeper =
-            spawn_timeout_sweeper(db.clone(), bus.clone(), approval_timeout, cancel.clone());
+            spawn_timeout_sweeper(db.clone(), bus.clone(), settings.clone(), cancel.clone());
         let http_cancel = cancel.clone();
         tokio::spawn(async move {
             if let Err(e) = http_server::serve(app_state, http_cancel).await {
@@ -177,7 +191,7 @@ fn main() -> Result<()> {
 
     {
         let _guard = worker.handle().enter();
-        conduit::daemon::retention::spawn(db.clone(), config_toml_path, cancel.clone());
+        conduit::daemon::retention::spawn(db.clone(), settings.clone(), cancel.clone());
     }
 
     let window = MainWindow::new().context("build slint main window")?;
@@ -186,18 +200,20 @@ fn main() -> Result<()> {
         &db,
         &approvals,
         &bus,
-        settings.daemon.port,
+        port,
         worker.handle().clone(),
         skill_manager.clone(),
+        config_writer,
+        settings.clone(),
+        config_toml_path,
     );
     push_initial_models(
         &window,
         &db,
-        &settings,
+        &settings.load_full(),
         worker.handle().clone(),
         skill_manager.clone(),
     );
-    let settings_arc = Arc::new(settings);
     spawn_event_bridge(
         &window,
         bus.subscribe(),
@@ -216,7 +232,7 @@ fn main() -> Result<()> {
         let _notif = os_notifications::spawn(
             bus.subscribe(),
             db.clone(),
-            settings_arc,
+            settings.clone(),
             cancel.clone(),
             action_tx,
         );
@@ -260,10 +276,14 @@ fn main() -> Result<()> {
     // Tray icon on a dedicated thread; nil if SNI host or libxdo absent.
     let _tray = install_tray(&db, &bus, &cancel, &window, worker.handle().clone());
 
-    let _hotkey = install_hotkey(&window);
+    let _hotkey = install_hotkey(&window, &settings.load().gui.focus_hotkey);
 
     // First-run override: force-show on first run, otherwise honor setting.
-    match worker.handle().block_on(should_show_window_at_startup(&db)) {
+    let open_at_startup = settings.load().gui.open_window_at_startup;
+    match worker
+        .handle()
+        .block_on(should_show_window_at_startup(&db, open_at_startup))
+    {
         Ok(true) => {
             window.show().context("show main window")?;
         }
@@ -278,7 +298,13 @@ fn main() -> Result<()> {
 
     let db_for_close = db;
     let rt_for_close = worker.handle().clone();
+    let settings_for_close = settings;
     window.window().on_close_requested(move || {
+        if !settings_for_close.load().gui.close_to_tray {
+            tracing::info!("close_to_tray=false; window close quits conduit");
+            slint::quit_event_loop().ok();
+            return slint::CloseRequestResponse::HideWindow;
+        }
         tracing::info!("window close requested; daemon stays running");
         // Background hint: one-time notification on first close after onboarding.
         let db = db_for_close.clone();
@@ -353,13 +379,13 @@ fn install_tray(
     os_tray::install(db.clone(), rt, bus.subscribe(), cancel.clone(), callbacks)
 }
 
-fn install_hotkey(window: &MainWindow) -> Option<hotkey::HotkeyHandles> {
-    let handles = hotkey::try_install()?;
+fn install_hotkey(window: &MainWindow, spec: &str) -> Option<hotkey::HotkeyHandles> {
+    let handles = hotkey::try_install(spec)?;
     let weak = window.as_weak();
     hotkey::spawn_event_pump(handles.hotkey_id, move || {
         focus_window(&weak);
     });
-    tracing::info!("global hotkey Ctrl+Alt+Shift+M registered");
+    tracing::info!(hotkey = spec, "global hotkey registered");
     Some(handles)
 }
 

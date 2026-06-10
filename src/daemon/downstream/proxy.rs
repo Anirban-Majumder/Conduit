@@ -83,8 +83,15 @@ pub async fn route_tool_call(
         .to_string();
     let args_json = serde_json::to_string(&params).unwrap_or_else(|_| "null".to_string());
 
-    // Single 2-tier read: per-tool decision, else the global default (§2).
-    let (decision, source) = state.db.resolve_policy(&server.name, &tool_name).await?;
+    // Single 2-tier read: per-tool decision, else the global default (§2),
+    // read live from settings so a Settings-tab edit applies instantly.
+    let default_policy =
+        Decision::from_db_str(&state.settings.load().daemon.default_unknown_tool_policy)
+            .unwrap_or(Decision::Ask);
+    let (decision, source) = state
+        .db
+        .resolve_policy(&server.name, &tool_name, default_policy)
+        .await?;
 
     let start = Instant::now();
     let outcome = match decision {

@@ -6,8 +6,12 @@
     reason = "test ergonomics"
 )]
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwap;
+use conduit::daemon::config::toml::Settings;
+use conduit::daemon::config::SharedSettings;
 use conduit::daemon::db::types::{ApprovalStatus, PendingApproval};
 use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::{
@@ -18,7 +22,11 @@ use conduit::daemon::events::{Bus, Event};
 use tokio::time::timeout as wait_for;
 use tokio_util::sync::CancellationToken;
 
-const SHORT: Duration = Duration::from_millis(200);
+fn settings_with_timeout(secs: u32) -> SharedSettings {
+    let mut s = Settings::default();
+    s.daemon.approval_timeout_seconds = secs;
+    Arc::new(ArcSwap::from_pointee(s))
+}
 
 fn now_unix() -> i64 {
     let s = SystemTime::now()
@@ -54,7 +62,7 @@ async fn first_pending_id(center: &ApprovalCenter) -> String {
 async fn request_returns_approved_when_resolved_approve() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
 
     let req_fut = {
         let center_ref = &center;
@@ -74,7 +82,7 @@ async fn request_returns_approved_when_resolved_approve() {
 async fn request_returns_denied_when_resolved_deny() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
 
     let req_fut = {
         let center_ref = &center;
@@ -94,9 +102,9 @@ async fn request_returns_denied_when_resolved_deny() {
 async fn request_returns_timeout_when_no_resolution() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, SHORT);
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(1));
 
-    let outcome = wait_for(Duration::from_secs(2), center.request(sample_req()))
+    let outcome = wait_for(Duration::from_secs(3), center.request(sample_req()))
         .await
         .expect("request did not return within hard deadline")
         .unwrap();
@@ -114,7 +122,7 @@ async fn request_returns_timeout_when_no_resolution() {
 async fn request_persists_pending_row_before_resolution() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
 
     let req_fut = {
         let center_ref = &center;
@@ -143,7 +151,7 @@ async fn request_persists_pending_row_before_resolution() {
 async fn resolve_unknown_id_is_ok() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
 
     center
         .resolve("does-not-exist", ApprovalStatus::Approved)
@@ -156,7 +164,7 @@ async fn approval_pending_event_published_before_waiting() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
 
     let req_fut = {
         let center_ref = &center;
@@ -194,7 +202,7 @@ async fn approval_resolved_event_fires_on_resolve() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
 
     let req_fut = {
         let center_ref = &center;
@@ -240,7 +248,7 @@ async fn approval_resolved_event_fires_on_resolve() {
 async fn resolve_to_pending_rejected() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, Duration::from_secs(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
     let err = center
         .resolve("whatever", ApprovalStatus::Pending)
         .await
@@ -311,7 +319,7 @@ async fn sweeper_flips_pre_existing_stale_rows_to_timeout() {
     let handle = spawn_timeout_sweeper(
         Db::spawn_in_memory().unwrap(),
         Bus::new(),
-        Duration::from_secs(60),
+        settings_with_timeout(60),
         cancel.clone(),
     );
     cancel.cancel();

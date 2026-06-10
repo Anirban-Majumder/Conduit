@@ -23,6 +23,27 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Error)]
+pub enum ConfigWriteError {
+    #[error("invalid value for {key}: {reason}")]
+    Invalid { key: String, reason: String },
+
+    #[error("unknown setting key: {0}")]
+    UnknownKey(String),
+
+    #[error("config.toml is not valid TOML: {0}")]
+    Toml(#[from] toml_edit::TomlError),
+
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("config writer actor gone")]
+    ActorGone,
+}
+
+#[derive(Debug, Error)]
 pub enum WatcherError {
     #[error("notify: {0}")]
     Notify(#[from] notify::Error),

@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use conduit::daemon::config::writer::ConfigWriter;
+use conduit::daemon::config::SharedSettings;
 use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::events::Bus;
@@ -32,4 +34,7 @@ pub(crate) struct CallbackContext {
     pub(crate) approvals: Arc<ApprovalCenter>,
     pub(crate) bus: Bus,
     pub(crate) port: u16,
+    pub(crate) config: ConfigWriter,
+    pub(crate) settings: SharedSettings,
+    pub(crate) config_toml_path: std::path::PathBuf,
 }

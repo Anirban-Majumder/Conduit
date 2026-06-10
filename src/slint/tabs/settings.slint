@@ -1,113 +1,251 @@
-// Settings tab: editable startup + default-policy toggles, plus a read-only
-// mirror of the user's config.toml values. Editable settings round-trip through
-// Rust callbacks; the config.toml block is display-only.
+// Settings tab: editable user settings backed by config.toml. Every control
+// commits through a typed root callback into the Rust config-writer; a rejected
+// edit reverts to last-good (revision bump) and flags the field via invalid-key
+// (red underline). Restart-required settings carry an inline hint.
 // Instantiated by main.slint when the Settings tab is active.
 
 import { Theme } from "../theme.slint";
-import { PolicySelector, SettingLine } from "../components/primitives.slint";
+import { PolicySelector, PillButton, LabeledInput } from "../components/primitives.slint";
 import { SettingsRow } from "../structs.slint";
 
-export component SettingsTab inherits Rectangle {
-    in property <SettingsRow> data;
-    in property <bool> open-window-at-startup;
-    in property <string> default-unknown-tool-policy;
-    callback toggle-open-window(bool);
-    callback set-default-policy(string);
-
+component SectionBox inherits Rectangle {
+    in property <string> title;
+    background: Theme.surface;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border;
     VerticalLayout {
-        spacing: Theme.gap-md;
+        padding: Theme.gap-md;
+        spacing: Theme.gap-sm;
+        Text {
+            text: root.title;
+            color: Theme.text-secondary;
+            font-size: Theme.font-eyebrow;
+        }
+        @children
+    }
+}
 
+component SettingToggle inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> checked;
+    callback toggled(bool);
+    background: transparent;
+    min-height: 28px;
+    HorizontalLayout {
+        spacing: Theme.gap-sm;
+        alignment: start;
         Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: Theme.gap-md;
-                spacing: Theme.gap-sm;
-                Text {
-                    text: "Startup";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-eyebrow;
-                }
-                Rectangle {
-                    background: transparent;
-                    min-height: 32px;
-                    HorizontalLayout {
-                        spacing: Theme.gap-sm;
-                        alignment: start;
-                        Rectangle {
-                            background: root.open-window-at-startup ? Theme.accent : Theme.surface-3;
-                            border-radius: 4px;
-                            width: 18px;
-                            height: 18px;
-                            Text {
-                                text: root.open-window-at-startup ? "✓" : "";
-                                color: Theme.bg;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            ta := TouchArea {
-                                clicked => {
-                                    root.toggle-open-window(!root.open-window-at-startup);
-                                }
-                            }
-                        }
-                        Text {
-                            text: "Open window when daemon starts";
-                            color: Theme.text-primary;
-                            font-size: Theme.font-body-sm;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
+            background: root.checked ? Theme.accent : Theme.surface-3;
+            border-radius: 4px;
+            width: 18px;
+            height: 18px;
+            Text {
+                text: root.checked ? "✓" : "";
+                color: Theme.bg;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                clicked => { root.toggled(!root.checked); }
             }
         }
-
-        Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: Theme.gap-md;
-                spacing: Theme.gap-sm;
-                Text {
-                    text: "When an unknown tool is called";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-eyebrow;
-                }
-                PolicySelector {
-                    decision: root.default-unknown-tool-policy;
-                    change-decision(d) => { root.set-default-policy(d); }
-                }
-            }
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.font-body-sm;
+            vertical-alignment: center;
         }
-
-        Rectangle {
-            background: Theme.surface;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: Theme.gap-md;
-                spacing: 4px;
-                Text {
-                    text: "From config.toml (read-only)";
-                    color: Theme.text-tertiary;
-                    font-size: Theme.font-eyebrow;
-                }
-                SettingLine { label: "daemon.port"; value: root.data.port; }
-                SettingLine { label: "daemon.approval_timeout_seconds"; value: root.data.approval_timeout; }
-                SettingLine { label: "daemon.default_lifecycle_seconds"; value: root.data.default_lifecycle; }
-                SettingLine { label: "daemon.audit_retention_days"; value: root.data.audit_retention; }
-                SettingLine { label: "daemon.autostart_at_login"; value: root.data.autostart_at_login; }
-                SettingLine { label: "gui.theme"; value: root.data.theme; }
-                SettingLine { label: "notifications.enabled"; value: root.data.notifications_enabled; }
-                SettingLine { label: "skills.sync_mode"; value: root.data.skills_sync_mode; }
-            }
+        if root.hint != "" : Text {
+            text: root.hint;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-eyebrow;
+            vertical-alignment: center;
         }
     }
 }
 
+component EnumSetting inherits VerticalLayout {
+    in property <string> label;
+    in property <[string]> options;
+    in property <string> value;
+    callback changed(string);
+    spacing: 4px;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Theme.font-eyebrow;
+    }
+    HorizontalLayout {
+        spacing: 4px;
+        alignment: start;
+        for opt in root.options : PillButton {
+            label: opt;
+            bg-color: root.value == opt ? Theme.accent : Theme.surface-3;
+            fg-color: root.value == opt ? Theme.bg : Theme.text-secondary;
+            clicked => { root.changed(opt); }
+        }
+    }
+}
+
+export component SettingsTab inherits Rectangle {
+    in property <SettingsRow> data;
+    in property <string> invalid-key;
+    in property <int> revision;
+    callback set-bool-setting(string, bool);
+    callback set-number-setting(string, string);
+    callback set-enum-setting(string, string);
+    callback set-text-setting(string, string);
+    callback open-config-folder();
+
+    Flickable {
+        viewport-height: content.preferred-height;
+        content := VerticalLayout {
+            spacing: Theme.gap-md;
+            padding-right: Theme.gap-sm;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "Edits save to config.toml and apply immediately unless marked.";
+                    color: Theme.text-tertiary;
+                    font-size: Theme.font-body-sm;
+                    vertical-alignment: center;
+                }
+                PillButton {
+                    label: "Open config folder";
+                    outline: true;
+                    clicked => { root.open-config-folder(); }
+                }
+            }
+
+            SectionBox {
+                title: "DAEMON";
+                LabeledInput {
+                    label: "PORT · RESTART REQUIRED";
+                    text: root.data.port;
+                    invalid: root.invalid-key == "daemon.port";
+                    revision: root.revision;
+                    committed(v) => { root.set-number-setting("daemon.port", v); }
+                }
+                LabeledInput {
+                    label: "APPROVAL TIMEOUT (SECONDS)";
+                    text: root.data.approval-timeout;
+                    invalid: root.invalid-key == "daemon.approval_timeout_seconds";
+                    revision: root.revision;
+                    committed(v) => { root.set-number-setting("daemon.approval_timeout_seconds", v); }
+                }
+                LabeledInput {
+                    label: "DEFAULT LIFECYCLE (SECONDS · -1 PERSISTENT · 0 EPHEMERAL)";
+                    text: root.data.default-lifecycle;
+                    invalid: root.invalid-key == "daemon.default_lifecycle_seconds";
+                    revision: root.revision;
+                    committed(v) => { root.set-number-setting("daemon.default_lifecycle_seconds", v); }
+                }
+                LabeledInput {
+                    label: "AUDIT RETENTION (DAYS · 0 KEEPS FOREVER)";
+                    text: root.data.audit-retention;
+                    invalid: root.invalid-key == "daemon.audit_retention_days";
+                    revision: root.revision;
+                    committed(v) => { root.set-number-setting("daemon.audit_retention_days", v); }
+                }
+                EnumSetting {
+                    label: "LOG LEVEL · RESTART REQUIRED";
+                    options: ["error", "warn", "info", "debug", "trace"];
+                    value: root.data.log-level;
+                    changed(v) => { root.set-enum-setting("daemon.log_level", v); }
+                }
+                SettingToggle {
+                    label: "Start daemon at login";
+                    hint: "restart required";
+                    checked: root.data.autostart-at-login;
+                    toggled(v) => { root.set-bool-setting("daemon.autostart_at_login", v); }
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "WHEN AN UNKNOWN TOOL IS CALLED";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-eyebrow;
+                    }
+                    PolicySelector {
+                        decision: root.data.default-unknown-tool-policy;
+                        change-decision(d) => { root.set-enum-setting("daemon.default_unknown_tool_policy", d); }
+                    }
+                }
+            }
+
+            SectionBox {
+                title: "GUI";
+                EnumSetting {
+                    label: "THEME";
+                    options: ["verge-dark"];
+                    value: root.data.theme;
+                    changed(v) => { root.set-enum-setting("gui.theme", v); }
+                }
+                LabeledInput {
+                    label: "FOCUS HOTKEY · RESTART REQUIRED";
+                    text: root.data.focus-hotkey;
+                    invalid: root.invalid-key == "gui.focus_hotkey";
+                    revision: root.revision;
+                    committed(v) => { root.set-text-setting("gui.focus_hotkey", v); }
+                }
+                EnumSetting {
+                    label: "UPDATE CHANNEL";
+                    options: ["stable", "beta"];
+                    value: root.data.update-channel;
+                    changed(v) => { root.set-enum-setting("gui.update_channel", v); }
+                }
+                LabeledInput {
+                    label: "UPDATE CHECK INTERVAL (HOURS)";
+                    text: root.data.update-check-interval-hours;
+                    invalid: root.invalid-key == "gui.update_check_interval_hours";
+                    revision: root.revision;
+                    committed(v) => { root.set-number-setting("gui.update_check_interval_hours", v); }
+                }
+                SettingToggle {
+                    label: "Show memory usage in Servers tab";
+                    checked: root.data.show-rss-in-servers-tab;
+                    toggled(v) => { root.set-bool-setting("gui.show_rss_in_servers_tab", v); }
+                }
+                SettingToggle {
+                    label: "Open window when daemon starts";
+                    checked: root.data.open-window-at-startup;
+                    toggled(v) => { root.set-bool-setting("gui.open_window_at_startup", v); }
+                }
+                SettingToggle {
+                    label: "Closing the window keeps Conduit in the tray";
+                    hint: "off: closing the window quits";
+                    checked: root.data.close-to-tray;
+                    toggled(v) => { root.set-bool-setting("gui.close_to_tray", v); }
+                }
+            }
+
+            SectionBox {
+                title: "NOTIFICATIONS";
+                SettingToggle {
+                    label: "Show approval notifications";
+                    checked: root.data.notifications-enabled;
+                    toggled(v) => { root.set-bool-setting("notifications.enabled", v); }
+                }
+                SettingToggle {
+                    label: "Play a sound";
+                    checked: root.data.notifications-sound;
+                    toggled(v) => { root.set-bool-setting("notifications.sound", v); }
+                }
+            }
+
+            SectionBox {
+                title: "SKILLS";
+                EnumSetting {
+                    label: "SYNC MODE";
+                    options: ["symlink", "copy"];
+                    value: root.data.skills-sync-mode;
+                    changed(v) => { root.set-enum-setting("skills.sync_mode", v); }
+                }
+            }
+        }
+    }
+}

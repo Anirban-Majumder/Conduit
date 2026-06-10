@@ -45,6 +45,7 @@ pub struct DaemonSettings {
     pub audit_retention_days: u32,
     pub log_level: String,
     pub autostart_at_login: bool,
+    pub default_unknown_tool_policy: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +56,8 @@ pub struct GuiSettings {
     pub update_channel: String,
     pub update_check_interval_hours: u32,
     pub show_rss_in_servers_tab: bool,
+    pub open_window_at_startup: bool,
+    pub close_to_tray: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +76,7 @@ impl Default for DaemonSettings {
             audit_retention_days: 7,
             log_level: "info".to_string(),
             autostart_at_login: true,
+            default_unknown_tool_policy: "ask".to_string(),
         }
     }
 }
@@ -85,6 +89,8 @@ impl Default for GuiSettings {
             update_channel: "stable".to_string(),
             update_check_interval_hours: 24,
             show_rss_in_servers_tab: true,
+            open_window_at_startup: false,
+            close_to_tray: true,
         }
     }
 }

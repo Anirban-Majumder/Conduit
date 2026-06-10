@@ -11,12 +11,15 @@ mod log;
 mod misc;
 mod scope;
 mod servers;
+mod settings;
 
 use std::rc::Rc;
 use std::sync::Arc;
 
 use slint::{ModelRc, VecModel};
 
+use conduit::daemon::config::writer::ConfigWriter;
+use conduit::daemon::config::SharedSettings;
 use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::events::Bus;
@@ -29,10 +32,15 @@ use crate::window::callbacks::log::install_log_callbacks;
 use crate::window::callbacks::misc::install_misc_callbacks;
 use crate::window::callbacks::scope::install_scope_callbacks;
 use crate::window::callbacks::servers::install_server_callbacks;
+use crate::window::callbacks::settings::install_settings_callbacks;
 use crate::window::skills::install_skills_callbacks;
 use crate::window::wizard::install_wizard_callbacks;
 use crate::window::CallbackContext;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "single wiring point: every dep lands in CallbackContext right here"
+)]
 pub(crate) fn install_callbacks(
     window: &MainWindow,
     db: &Db,
@@ -41,6 +49,9 @@ pub(crate) fn install_callbacks(
     port: u16,
     rt: tokio::runtime::Handle,
     skills: Arc<SkillManager>,
+    config: ConfigWriter,
+    settings: SharedSettings,
+    config_toml_path: std::path::PathBuf,
 ) {
     // Shared, Rust-owned model backing the wizard's env-var/header rows. A single
     // VecModel identity (mutated in place) keeps TextInput focus stable while
@@ -55,8 +66,12 @@ pub(crate) fn install_callbacks(
         approvals: approvals.clone(),
         bus: bus.clone(),
         port,
+        config,
+        settings,
+        config_toml_path,
     };
 
+    install_settings_callbacks(window, &ctx);
     install_skills_callbacks(window, &ctx);
     install_server_callbacks(window, &ctx);
     install_scope_callbacks(window, &ctx);

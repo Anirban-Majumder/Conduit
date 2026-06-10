@@ -64,11 +64,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_client_key ON audit_log(client_key);
 -- ── Settings (created before the skill_repos seed reads its sentinel) ──
 CREATE TABLE IF NOT EXISTS settings_kv (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO settings_kv (key, value) VALUES
-  ('default_unknown_tool_policy', 'ask'),
-  ('open_window_at_startup',      'false'),
-  ('routing_paused',              'false'),
-  ('has_completed_first_run',     'false'),
-  ('shown_background_hint',       'false');
+  ('routing_paused',          'false'),
+  ('has_completed_first_run', 'false'),
+  ('shown_background_hint',   'false');
 
 -- ── Skills (skills table precedes managed_skill's FK target) ──────────
 CREATE TABLE IF NOT EXISTS skill_repos (

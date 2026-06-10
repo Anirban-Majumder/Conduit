@@ -9,8 +9,8 @@ use conduit::daemon::onboarding::{
 #[tokio::test]
 async fn first_run_forces_show_even_when_open_window_false() {
     let db = Db::spawn_in_memory().unwrap();
-    // Defaults already seeded: open_window_at_startup=false, has_completed_first_run=false.
-    let show = should_show_window_at_startup(&db).await.unwrap();
+    // has_completed_first_run defaults to false.
+    let show = should_show_window_at_startup(&db, false).await.unwrap();
     assert!(show, "first-run should force the window open");
 }
 
@@ -18,7 +18,7 @@ async fn first_run_forces_show_even_when_open_window_false() {
 async fn after_first_run_window_honors_open_window_at_startup_false() {
     let db = Db::spawn_in_memory().unwrap();
     mark_first_run_completed(&db).await.unwrap();
-    let show = should_show_window_at_startup(&db).await.unwrap();
+    let show = should_show_window_at_startup(&db, false).await.unwrap();
     assert!(
         !show,
         "after onboarding with open_window_at_startup=false, window should stay hidden"
@@ -29,10 +29,7 @@ async fn after_first_run_window_honors_open_window_at_startup_false() {
 async fn after_first_run_window_honors_open_window_at_startup_true() {
     let db = Db::spawn_in_memory().unwrap();
     mark_first_run_completed(&db).await.unwrap();
-    db.set_settings_kv("open_window_at_startup", "true")
-        .await
-        .unwrap();
-    let show = should_show_window_at_startup(&db).await.unwrap();
+    let show = should_show_window_at_startup(&db, true).await.unwrap();
     assert!(show, "open_window_at_startup=true should show window");
 }
 

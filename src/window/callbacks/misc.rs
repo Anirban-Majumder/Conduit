@@ -1,8 +1,9 @@
-//! Miscellaneous Slint callbacks: settings toggles, policy edits, paste parsing.
+//! Miscellaneous Slint callbacks: per-tool policy edits and paste parsing.
 //!
-//! Covers the settings-tab `settings_kv` toggles, global policy changes, and the
-//! add-server JSON paste parser. Like the other callback modules, DB work runs
-//! on the tokio worker and UI writes go through the Slint event loop.
+//! Covers per-tool policy changes and the add-server JSON paste parser.
+//! Settings-tab edits live in `callbacks::settings`. Like the other callback
+//! modules, DB work runs on the tokio worker and UI writes go through the
+//! Slint event loop.
 
 use std::rc::Rc;
 
@@ -22,30 +23,6 @@ pub(crate) fn install_misc_callbacks(
 ) {
     let db = &ctx.db;
     let rt = &ctx.rt;
-
-    let db_for_open_toggle = db.clone();
-    let rt_for_open_toggle = rt.clone();
-    window.on_toggle_open_window_at_startup(move |v| {
-        let db = db_for_open_toggle.clone();
-        rt_for_open_toggle.spawn(async move {
-            let value = if v { "true" } else { "false" };
-            if let Err(e) = db.set_settings_kv("open_window_at_startup", value).await {
-                tracing::warn!(error = %e, "set open_window_at_startup failed");
-            }
-        });
-    });
-
-    let db_for_default_policy = db.clone();
-    let rt_for_default_policy = rt.clone();
-    window.on_set_default_unknown_tool_policy(move |p| {
-        let db = db_for_default_policy.clone();
-        let p = p.to_string();
-        rt_for_default_policy.spawn(async move {
-            if let Err(e) = db.set_settings_kv("default_unknown_tool_policy", &p).await {
-                tracing::warn!(error = %e, "set default_unknown_tool_policy failed");
-            }
-        });
-    });
 
     let db_for_policy = db.clone();
     let rt_for_policy = rt.clone();

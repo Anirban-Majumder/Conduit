@@ -93,6 +93,7 @@ pub enum DbCmd {
     ResolvePolicy {
         server: String,
         tool: String,
+        default: Decision,
         reply: oneshot::Sender<Result<(Decision, DecisionSource), DbError>>,
     },
 
