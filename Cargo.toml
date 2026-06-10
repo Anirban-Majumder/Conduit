@@ -66,6 +66,8 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 open = "5"
 sha2 = "0.10"
 base64 = "0.22"
+toml_edit = "0.25.12"
+arc-swap = "1.9.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"  # pinned to match tray-icon's transitive muda — share one gtk-rs instance

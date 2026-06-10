@@ -20,7 +20,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::daemon::config::toml::Settings;
+use crate::daemon::config::SharedSettings;
 use crate::daemon::db::Db;
 use crate::daemon::events::Event;
 use crate::os::notification_router::NotificationAction;
@@ -117,7 +117,10 @@ fn request_close(notif_id: u32, close_sem: &Arc<Semaphore>) {
                 .ok();
         }
         Err(_) => {
-            tracing::warn!(notif_id, "notification close semaphore full; skipping close");
+            tracing::warn!(
+                notif_id,
+                "notification close semaphore full; skipping close"
+            );
         }
     }
 }
@@ -155,21 +158,16 @@ async fn resolve_ide_name(db: &Db, client_key: &str) -> String {
 pub fn spawn(
     mut rx: Receiver<Event>,
     db: Db,
-    settings: Arc<Settings>,
+    settings: SharedSettings,
     cancel: CancellationToken,
     action_tx: Sender<NotificationAction>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if !settings.notifications.enabled {
-            tracing::info!("notifications disabled in config; bridge idle");
-            return;
-        }
         let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
         // reason: caps std::thread spawns for close_by_id per ApprovalResolved burst (32 max)
         let close_sem = Arc::new(Semaphore::new(32));
         // reason: caps concurrent pending-approval notification threads on Linux (64 max)
         let notif_sem = Arc::new(Semaphore::new(64));
-        let approval_timeout_secs = settings.daemon.approval_timeout_seconds;
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
@@ -182,6 +180,15 @@ pub fn spawn(
                 }
                 ev = rx.recv() => match ev {
                     Ok(Event::ApprovalPending { id, client_key, mcp_server, tool, .. }) => {
+                        // Read at use-time so a toggle in the Settings tab
+                        // applies without a restart.
+                        let (enabled, approval_timeout_secs) = {
+                            let s = settings.load();
+                            (s.notifications.enabled, s.daemon.approval_timeout_seconds)
+                        };
+                        if !enabled {
+                            continue;
+                        }
                         let ide_name = resolve_ide_name(&db, &client_key).await;
                         spawn_notification(
                             id,

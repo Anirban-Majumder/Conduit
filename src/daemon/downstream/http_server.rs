@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+use crate::daemon::config::SharedSettings;
 use crate::daemon::db::types::McpServer;
 use crate::daemon::db::Db;
 use crate::daemon::downstream::approval::ApprovalCenter;
@@ -36,6 +37,7 @@ pub struct AppState {
     pub upstream: Arc<UpstreamManager>,
     pub bus: Bus,
     pub port: u16,
+    pub settings: SharedSettings,
 }
 
 impl std::fmt::Debug for AppState {

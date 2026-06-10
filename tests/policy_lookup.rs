@@ -1,8 +1,9 @@
 //! D2 gate: the two-tier policy resolver (§2).
 //!
 //! Resolution is a single path: per-tool `mcp_tool.decision` (source `User`),
-//! else the global `settings_kv.default_unknown_tool_policy` (source `Default`,
-//! falling back to `Ask`). There is NO per-server tier and no double round-trip.
+//! else the caller-supplied global default (source `Default`) — read from
+//! `config.toml` settings at the call site. There is NO per-server tier and no
+//! double round-trip.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test ergonomics")]
 
@@ -53,7 +54,10 @@ async fn tier1_per_tool_decision_wins_with_user_source() {
         .await
         .unwrap();
 
-    let (decision, source) = db.resolve_policy("gmail", "send").await.unwrap();
+    let (decision, source) = db
+        .resolve_policy("gmail", "send", Decision::Ask)
+        .await
+        .unwrap();
     assert_eq!(decision, Decision::Allow);
     assert_eq!(source, DecisionSource::User);
 }
@@ -61,40 +65,28 @@ async fn tier1_per_tool_decision_wins_with_user_source() {
 #[tokio::test]
 async fn freshly_probed_tool_inherits_global_default_not_ask_seed() {
     let db = Db::spawn_in_memory().unwrap();
-    db.set_settings_kv("default_unknown_tool_policy", "deny")
-        .await
-        .unwrap();
     // A just-probed tool has decision = NULL; it must fall through to the
     // global default rather than a per-tool 'ask' seed.
     seed_server(&db, "gmail", &["send"]).await;
 
-    let (decision, source) = db.resolve_policy("gmail", "send").await.unwrap();
+    let (decision, source) = db
+        .resolve_policy("gmail", "send", Decision::Deny)
+        .await
+        .unwrap();
     assert_eq!(decision, Decision::Deny);
     assert_eq!(source, DecisionSource::Default);
 }
 
 #[tokio::test]
-async fn tier2_falls_through_to_settings_kv_default() {
+async fn tier2_falls_through_to_supplied_default() {
     let db = Db::spawn_in_memory().unwrap();
-    db.set_settings_kv("default_unknown_tool_policy", "deny")
-        .await
-        .unwrap();
 
     // No tool row at all → straight to the global default.
-    let (decision, source) = db.resolve_policy("none", "none").await.unwrap();
-    assert_eq!(decision, Decision::Deny);
-    assert_eq!(source, DecisionSource::Default);
-}
-
-#[tokio::test]
-async fn default_ask_when_settings_kv_garbage() {
-    let db = Db::spawn_in_memory().unwrap();
-    db.set_settings_kv("default_unknown_tool_policy", "garbage")
+    let (decision, source) = db
+        .resolve_policy("none", "none", Decision::Deny)
         .await
         .unwrap();
-
-    let (decision, source) = db.resolve_policy("none", "none").await.unwrap();
-    assert_eq!(decision, Decision::Ask);
+    assert_eq!(decision, Decision::Deny);
     assert_eq!(source, DecisionSource::Default);
 }
 
@@ -108,11 +100,11 @@ async fn reprobe_drops_decision_for_vanished_tool() {
 
     // Re-probe without "send": its row (and its decision) is deleted.
     seed_server(&db, "gmail", &["read"]).await;
-    db.set_settings_kv("default_unknown_tool_policy", "ask")
+
+    let (decision, source) = db
+        .resolve_policy("gmail", "send", Decision::Ask)
         .await
         .unwrap();
-
-    let (decision, source) = db.resolve_policy("gmail", "send").await.unwrap();
     assert_eq!(
         decision,
         Decision::Ask,
@@ -127,9 +119,6 @@ async fn reprobe_preserves_decision_for_surviving_tool() {
     // still advertised. (Guards the `ON CONFLICT DO UPDATE` set-list in
     // query_upsert_server_with_tools from regressing to `decision = excluded.decision`.)
     let db = Db::spawn_in_memory().unwrap();
-    db.set_settings_kv("default_unknown_tool_policy", "ask")
-        .await
-        .unwrap();
     seed_server(&db, "gmail", &["send", "read"]).await;
     db.set_tool_decision("gmail", "send", Decision::Allow, DecisionSource::User)
         .await
@@ -138,7 +127,10 @@ async fn reprobe_preserves_decision_for_surviving_tool() {
     // Re-probe with "send" STILL present (metadata refresh / discovered_at bump).
     seed_server(&db, "gmail", &["send", "read"]).await;
 
-    let (decision, source) = db.resolve_policy("gmail", "send").await.unwrap();
+    let (decision, source) = db
+        .resolve_policy("gmail", "send", Decision::Ask)
+        .await
+        .unwrap();
     assert_eq!(
         decision,
         Decision::Allow,

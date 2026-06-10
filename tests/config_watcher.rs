@@ -6,8 +6,11 @@
     reason = "test ergonomics"
 )]
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
+use conduit::daemon::config::toml::Settings;
 use conduit::daemon::config::watcher;
 use conduit::daemon::events::{Bus, Event};
 use tokio_util::sync::CancellationToken;
@@ -27,7 +30,9 @@ async fn watcher_publishes_config_reloaded_after_debounce() {
     let mut rx = bus.subscribe();
     let cancel = CancellationToken::new();
 
-    let _watcher = watcher::spawn(&path, bus.clone(), cancel.clone()).expect("spawn watcher");
+    let shared = Arc::new(ArcSwap::from_pointee(Settings::default()));
+    let _watcher =
+        watcher::spawn(&path, bus.clone(), shared.clone(), cancel.clone()).expect("spawn watcher");
 
     // Give the inotify (or platform equivalent) watch a moment to register.
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -48,6 +53,11 @@ async fn watcher_publishes_config_reloaded_after_debounce() {
     .expect("ConfigReloaded delivered within 10s of change");
 
     assert_eq!(result.daemon.port, 12345);
+    assert_eq!(
+        shared.load().daemon.port,
+        12345,
+        "watcher must store reloaded settings into the shared handle"
+    );
 
     cancel.cancel();
     std::fs::remove_dir_all(&tmp_dir).ok();

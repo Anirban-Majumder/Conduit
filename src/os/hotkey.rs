@@ -1,9 +1,12 @@
-//! Global focus hotkey (Ctrl+Alt+Shift+M) to raise the GUI window.
+//! Global focus hotkey (from `gui.focus_hotkey`, default Ctrl+Alt+Shift+M) to
+//! raise the GUI window.
 //!
 //! Wayland-no-SNI fallback for when the tray is unavailable (spec §"Open
 //! questions"). The registration handle lives for the process lifetime — main
 //! holds it and dropping it unregisters. The event pump runs on its own
 //! `std::thread` and invokes the caller-supplied focus closure.
+
+use std::str::FromStr;
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
@@ -23,9 +26,12 @@ impl std::fmt::Debug for HotkeyHandles {
     }
 }
 
-/// Register Ctrl+Alt+Shift+M as the default focus hotkey (spec default).
-/// Returns None if registration fails (already registered elsewhere etc.).
-pub fn try_install() -> Option<HotkeyHandles> {
+/// Register the configured focus hotkey.
+///
+/// An unparseable spec falls back to the Ctrl+Alt+Shift+M default — a
+/// hand-edited config must not cost the hotkey. Returns None if registration
+/// fails (already registered elsewhere etc.).
+pub fn try_install(spec: &str) -> Option<HotkeyHandles> {
     let manager = match GlobalHotKeyManager::new() {
         Ok(m) => m,
         Err(e) => {
@@ -33,10 +39,13 @@ pub fn try_install() -> Option<HotkeyHandles> {
             return None;
         }
     };
-    let key = HotKey::new(
-        Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
-        Code::KeyM,
-    );
+    let key = HotKey::from_str(spec).unwrap_or_else(|e| {
+        tracing::warn!(spec, error = %e, "hotkey: invalid focus_hotkey; using default");
+        HotKey::new(
+            Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT),
+            Code::KeyM,
+        )
+    });
     let id = key.id();
     if let Err(e) = manager.register(key) {
         tracing::warn!(error = %e, "hotkey: register failed");

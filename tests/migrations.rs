@@ -232,14 +232,18 @@ async fn delete_server_cascades_to_tool_decisions() {
 #[tokio::test]
 async fn seeds_settings_kv_with_defaults() {
     let db = Db::spawn_in_memory().expect("spawn db actor");
+    // Only runtime-state keys live in settings_kv; user settings (e.g. the
+    // default tool policy, open-at-startup) moved to config.toml.
     for (key, expected) in [
-        ("default_unknown_tool_policy", "ask"),
-        ("open_window_at_startup", "false"),
         ("routing_paused", "false"),
         ("has_completed_first_run", "false"),
         ("shown_background_hint", "false"),
     ] {
         let got = db.get_settings_kv(key).await.expect("settings_kv query");
         assert_eq!(got.as_deref(), Some(expected), "wrong seed for {key}");
+    }
+    for key in ["default_unknown_tool_policy", "open_window_at_startup"] {
+        let got = db.get_settings_kv(key).await.expect("settings_kv query");
+        assert_eq!(got, None, "{key} must not be seeded anymore");
     }
 }

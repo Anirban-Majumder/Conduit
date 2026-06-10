@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::daemon::config::SharedSettings;
 use crate::daemon::db::types::{ApprovalStatus, PendingApproval};
 use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;
@@ -56,18 +57,24 @@ type WaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<ApprovalStatus>>>>;
 pub struct ApprovalCenter {
     db: Db,
     bus: Bus,
-    timeout: Duration,
+    settings: SharedSettings,
     waiters: WaiterMap,
 }
 
 impl ApprovalCenter {
-    pub fn new(db: Db, bus: Bus, timeout: Duration) -> Self {
+    pub fn new(db: Db, bus: Bus, settings: SharedSettings) -> Self {
         Self {
             db,
             bus,
-            timeout,
+            settings,
             waiters: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(u64::from(
+            self.settings.load().daemon.approval_timeout_seconds,
+        ))
     }
 
     pub const fn db(&self) -> &Db {
@@ -127,7 +134,7 @@ impl ApprovalCenter {
                 }
                 Err(_dropped) => ApprovalOutcome::Timeout,
             },
-            () = tokio::time::sleep(self.timeout) => {
+            () = tokio::time::sleep(self.timeout()) => {
                 self.remove_waiter(&id);
                 if let Err(e) = self
                     .db
@@ -222,7 +229,7 @@ pub async fn sweep_and_publish_timeouts(db: &Db, bus: &Bus, cutoff: i64) -> Resu
 pub fn spawn_timeout_sweeper(
     db: Db,
     bus: Bus,
-    timeout: Duration,
+    settings: SharedSettings,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -234,9 +241,8 @@ pub fn spawn_timeout_sweeper(
             tokio::select! {
                 () = cancel.cancelled() => break,
                 _ = ticker.tick() => {
-                    let cutoff = now_unix_secs().saturating_sub(
-                        i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
-                    );
+                    let timeout = settings.load().daemon.approval_timeout_seconds;
+                    let cutoff = now_unix_secs().saturating_sub(i64::from(timeout));
                     match sweep_and_publish_timeouts(&db, &bus, cutoff).await {
                         Ok(0) => {}
                         Ok(n) => tracing::info!(swept = n, "swept stale pending approvals"),

@@ -140,9 +140,12 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
         DbCmd::ResolvePolicy {
             server,
             tool,
+            default,
             reply,
         } => {
-            reply.send(query_resolve_policy(conn, &server, &tool)).ok();
+            reply
+                .send(query_resolve_policy(conn, &server, &tool, default))
+                .ok();
         }
 
         // ── Clients ────────────────────────────────────────────────────

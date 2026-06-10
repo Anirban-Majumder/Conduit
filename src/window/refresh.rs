@@ -63,23 +63,6 @@ pub(crate) fn push_initial_models(
         // otherwise delay the dashboard's first paint.
         refresh_dashboard(&weak, &db_for_refresh, &skills).await;
         refresh_skills(&weak_for_skills, &skills).await;
-        let auto = db_for_refresh
-            .get_settings_kv("open_window_at_startup")
-            .await
-            .ok()
-            .flatten()
-            .as_deref()
-            == Some("true");
-        let default_policy = db_for_refresh
-            .get_settings_kv("default_unknown_tool_policy")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| "ask".to_string());
-        let _ignored = weak.upgrade_in_event_loop(move |ui| {
-            ui.set_open_window_at_startup(auto);
-            ui.set_default_unknown_tool_policy(SharedString::from(default_policy));
-        });
     });
 }
 
@@ -115,8 +98,13 @@ pub(crate) fn spawn_event_bridge(
                         }
                         Ok(Event::ConfigReloaded { settings }) => {
                             let row = settings_to_row(&settings);
-                            weak.upgrade_in_event_loop(move |ui| ui.set_settings(row))
-                                .ok();
+                            weak.upgrade_in_event_loop(move |ui| {
+                                ui.set_settings(row);
+                                ui.set_settings_revision(
+                                    ui.get_settings_revision().wrapping_add(1),
+                                );
+                            })
+                            .ok();
                         }
                         Ok(Event::ServerHealthChanged { name }) => {
                             tracing::debug!(server = %name, "health changed; consumer to refresh");

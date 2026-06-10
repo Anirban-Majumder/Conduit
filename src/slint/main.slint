@@ -44,6 +44,8 @@ export component MainWindow inherits Window {
     in property <[PolicyRow]> policies;
     in property <[AuditRow]> audit;
     in property <SettingsRow> settings;
+    in-out property <string> settings-invalid-key;
+    in-out property <int> settings-revision;
     in property <string> status-message: "ready";
     in property <bool> daemon-healthy: true;
 
@@ -97,9 +99,6 @@ export component MainWindow inherits Window {
     in-out property <bool> wizard-edit-mode: false;
     in-out property <string> wizard-oauth-url;
 
-    in-out property <bool> open-window-at-startup;
-    in-out property <string> default-unknown-tool-policy: "ask";
-
     in-out property <string> selected-editor: "";
     in-out property <string> selected-editor-display: "";
     in-out property <string> selected-editor-status-label: "active";
@@ -134,8 +133,11 @@ export component MainWindow inherits Window {
     callback env-set-value(int, string);
     callback reset-add-server-env();
     callback populate-env-from-string(string);
-    callback toggle-open-window-at-startup(bool);
-    callback set-default-unknown-tool-policy(string);
+    callback set-bool-setting(string, bool);
+    callback set-number-setting(string, string);
+    callback set-enum-setting(string, string);
+    callback set-text-setting(string, string);
+    callback open-config-folder();
     callback copy-error-clicked(string);
 
     callback select-ide(string);
@@ -392,10 +394,13 @@ export component MainWindow inherits Window {
                 }
                 if root.active-tab == 5 : SettingsTab {
                     data: root.settings;
-                    open-window-at-startup: root.open-window-at-startup;
-                    default-unknown-tool-policy: root.default-unknown-tool-policy;
-                    toggle-open-window(v) => { root.toggle-open-window-at-startup(v); }
-                    set-default-policy(p) => { root.set-default-unknown-tool-policy(p); }
+                    invalid-key: root.settings-invalid-key;
+                    revision: root.settings-revision;
+                    set-bool-setting(k, v) => { root.set-bool-setting(k, v); }
+                    set-number-setting(k, v) => { root.set-number-setting(k, v); }
+                    set-enum-setting(k, v) => { root.set-enum-setting(k, v); }
+                    set-text-setting(k, v) => { root.set-text-setting(k, v); }
+                    open-config-folder => { root.open-config-folder(); }
                 }
                 if root.active-tab == 6 : HelpTab {}
             }

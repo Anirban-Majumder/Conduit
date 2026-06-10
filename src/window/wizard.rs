@@ -101,7 +101,7 @@ pub(crate) fn install_wizard_callbacks(
     });
 
     let weak = window.as_weak();
-    let db_for_probe = db.clone();
+    let settings_for_probe = ctx.settings.clone();
     let rt_for_probe = rt.clone();
     let pending_for_probe = pending.clone();
     let env_for_probe = env_rows.clone();
@@ -186,7 +186,7 @@ pub(crate) fn install_wizard_callbacks(
 
         let weak = weak.clone();
         let pending = pending_for_probe.clone();
-        let db = db_for_probe.clone();
+        let settings = settings_for_probe.clone();
         rt_for_probe.spawn(async move {
             let cancel = CancellationToken::new();
             let weak_for_progress = weak.clone();
@@ -230,16 +230,12 @@ pub(crate) fn install_wizard_callbacks(
                         })
                         .collect();
                     // Pre-fill each tool's decision with the current GLOBAL default
-                    // (settings_kv.default_unknown_tool_policy, fallback Ask) so the
+                    // (daemon.default_unknown_tool_policy, fallback Ask) so the
                     // wizard explicitly pins new tools to it on save — e.g. a global
                     // default of `deny` yields denied tools.
-                    let default_decision = db
-                        .get_settings_kv("default_unknown_tool_policy")
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|s| Decision::from_db_str(&s))
-                        .unwrap_or(Decision::Ask);
+                    let default_decision =
+                        Decision::from_db_str(&settings.load().daemon.default_unknown_tool_policy)
+                            .unwrap_or(Decision::Ask);
                     let tool_rows: Vec<ToolPolicyUiRow> = tools
                         .iter()
                         .map(|t| {
@@ -272,7 +268,7 @@ pub(crate) fn install_wizard_callbacks(
                         ui.set_wizard_oauth_url(SharedString::from(""));
                         ui.set_wizard_tools(ModelRc::new(VecModel::from(tool_rows)));
                     });
-                    let _ = (name, db);
+                    let _ = name;
                 }
                 Err(e) => {
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {

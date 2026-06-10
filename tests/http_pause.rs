@@ -9,6 +9,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
+use conduit::daemon::config::toml::Settings;
+use conduit::daemon::config::SharedSettings;
 use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::downstream::http_server::{serve, AppState};
@@ -16,6 +19,10 @@ use conduit::daemon::events::Bus;
 use conduit::daemon::paths::Paths;
 use conduit::daemon::upstream::manager::UpstreamManager;
 use tokio_util::sync::CancellationToken;
+
+fn default_settings() -> SharedSettings {
+    Arc::new(ArcSwap::from_pointee(Settings::default()))
+}
 
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -30,10 +37,11 @@ async fn paused_router_returns_daemon_paused() {
     let port = pick_free_port();
     let bus = Bus::new();
     let cancel = CancellationToken::new();
+    let settings = default_settings();
     let approvals = Arc::new(ApprovalCenter::new(
         db.clone(),
         bus.clone(),
-        Duration::from_secs(30),
+        settings.clone(),
     ));
     let dir = std::env::temp_dir().join(format!("mcp-pause-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -44,6 +52,7 @@ async fn paused_router_returns_daemon_paused() {
         upstream,
         bus: bus.clone(),
         port,
+        settings,
     };
 
     let serve_cancel = cancel.clone();

@@ -309,7 +309,15 @@ export component LabeledInput inherits VerticalLayout {
     in property <string> label;
     in property <string> text;
     in property <bool> read-only: false;
+    in property <bool> invalid: false;
+    // Bump to force the input back to `text` — user typing severs the
+    // text binding, so reverts/external reloads re-sync through this.
+    in property <int> revision;
     callback edited(string);
+    // Commit-on-blur/Enter: fired once when editing ends, for callers that
+    // validate/persist rather than track every keystroke.
+    callback committed(string);
+    changed revision => { input.text = root.text; }
     spacing: 4px;
     Text {
         text: root.label;
@@ -324,8 +332,16 @@ export component LabeledInput inherits VerticalLayout {
         height: 32px;
         read-only: root.read-only;
         edited => { root.edited(self.text); }
+        accepted => { root.committed(self.text); }
+        changed has-focus => {
+            if (!self.has-focus) { root.committed(self.text); }
+        }
     }
-    Rectangle { background: Theme.border; height: 1px; }
+    Rectangle {
+        background: root.invalid ? Theme.danger
+                  : input.has-focus ? Theme.accent : Theme.border;
+        height: 1px;
+    }
 }
 
 

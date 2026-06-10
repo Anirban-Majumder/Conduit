@@ -13,6 +13,7 @@ use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
 use crate::daemon::config::toml::Settings;
+use crate::daemon::config::SharedSettings;
 use crate::daemon::errors::WatcherError;
 use crate::daemon::events::{Bus, Event};
 
@@ -35,6 +36,7 @@ const EVENT_CHANNEL_DEPTH: usize = 32;
 pub fn spawn(
     config_path: &Path,
     bus: Bus,
+    shared: SharedSettings,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<RecommendedWatcher, WatcherError> {
     let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
@@ -61,7 +63,7 @@ pub fn spawn(
 
     watcher.watch(parent, RecursiveMode::NonRecursive)?;
 
-    tokio::spawn(debounce_loop(rx, target, bus, cancel));
+    tokio::spawn(debounce_loop(rx, target, bus, shared, cancel));
 
     Ok(watcher)
 }
@@ -70,6 +72,7 @@ async fn debounce_loop(
     mut rx: mpsc::Receiver<notify::Event>,
     target: PathBuf,
     bus: Bus,
+    shared: SharedSettings,
     cancel: tokio_util::sync::CancellationToken,
 ) {
     let mut pending_since: Option<tokio::time::Instant> = None;
@@ -99,6 +102,7 @@ async fn debounce_loop(
                     path = %target.display(),
                     "config.toml reloaded; publishing ConfigReloaded"
                 );
+                shared.store(std::sync::Arc::new(settings.clone()));
                 bus.publish(Event::ConfigReloaded { settings });
             }
         }

@@ -9,11 +9,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
+use conduit::daemon::config::toml::Settings;
+use conduit::daemon::config::SharedSettings;
 use conduit::daemon::db::types::{ApprovalStatus, McpServer, PendingApproval};
 use conduit::daemon::db::Db;
 use conduit::daemon::downstream::approval::ApprovalCenter;
 use conduit::daemon::events::{Bus, Event};
 use conduit::os::notification_router::{dispatch_action, NotificationAction};
+
+fn default_settings() -> SharedSettings {
+    Arc::new(ArcSwap::from_pointee(Settings::default()))
+}
 
 fn sample_server(name: &str) -> McpServer {
     McpServer {
@@ -69,7 +76,7 @@ async fn approve_action_resolves_pending() {
     let approvals = Arc::new(ApprovalCenter::new(
         db.clone(),
         bus.clone(),
-        Duration::from_secs(60),
+        default_settings(),
     ));
     fresh_pending(&db, "uuid-1", "github", "create_issue").await;
 
@@ -91,7 +98,7 @@ async fn deny_action_resolves_pending() {
     let approvals = Arc::new(ApprovalCenter::new(
         db.clone(),
         bus.clone(),
-        Duration::from_secs(60),
+        default_settings(),
     ));
     fresh_pending(&db, "uuid-2", "github", "delete_repo").await;
 
@@ -114,7 +121,7 @@ async fn focus_action_publishes_focus_approval_event() {
     let approvals = Arc::new(ApprovalCenter::new(
         db.clone(),
         bus.clone(),
-        Duration::from_secs(60),
+        default_settings(),
     ));
 
     dispatch_action(
@@ -141,7 +148,7 @@ async fn stale_action_is_a_noop() {
     let approvals = Arc::new(ApprovalCenter::new(
         db.clone(),
         bus.clone(),
-        Duration::from_secs(60),
+        default_settings(),
     ));
     fresh_pending(&db, "uuid-5", "github", "x").await;
     approvals

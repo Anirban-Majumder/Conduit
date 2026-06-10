@@ -215,7 +215,7 @@ async fn rename_server_cascades_to_managed_mcp_and_tool_decisions() {
 
     // The per-tool decision survived under the new server name.
     let (decision, _src) = db
-        .resolve_policy("github-org", "create_issue")
+        .resolve_policy("github-org", "create_issue", Decision::Ask)
         .await
         .unwrap();
     assert_eq!(decision, Decision::Allow);
