@@ -173,7 +173,7 @@ pub(crate) fn install_skills_callbacks(window: &MainWindow, ctx: &CallbackContex
         };
         let all: Vec<SkillRow> = ui.get_skills_all().iter().collect();
         let filtered = filter_skill_rows(&all, query.as_str());
-        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+        set_model_vec(&ui.get_skills(), filtered);
     });
 
     let rt_for_open_folder = rt.clone();
@@ -232,10 +232,19 @@ pub(crate) async fn paint_skills_from_db(
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
         let rows = installed_skills_to_rows(&installed, &active_client_ids);
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
-        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
-        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
-        ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
+        set_model_vec(&ui.get_skills(), filtered);
+        set_model_vec(&ui.get_skills_all(), rows);
+        set_model_vec(&ui.get_skill_repos(), repo_rows);
     });
+}
+
+/// Set a list property in place by mutating its seeded `VecModel`, preserving
+/// model identity (tier-4b). The models are seeded once in `push_initial_models`,
+/// so the downcast succeeds; the silent no-op on failure matches `refresh.rs`.
+fn set_model_vec<T: Clone + 'static>(model: &ModelRc<T>, rows: Vec<T>) {
+    if let Some(m) = model.as_any().downcast_ref::<VecModel<T>>() {
+        m.set_vec(rows);
+    }
 }
 
 pub(crate) fn filter_skill_rows(rows: &[SkillRow], query: &str) -> Vec<SkillRow> {
@@ -312,9 +321,9 @@ pub(crate) async fn paint_skills_with_discovery(
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         });
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
-        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
-        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
-        ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
+        set_model_vec(&ui.get_skills(), filtered);
+        set_model_vec(&ui.get_skills_all(), rows);
+        set_model_vec(&ui.get_skill_repos(), repo_rows);
     });
 }
 

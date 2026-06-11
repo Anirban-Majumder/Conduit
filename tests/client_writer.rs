@@ -642,6 +642,48 @@ fn jsonc_render_preserves_bytes_outside_key_path() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn jsonc_render_indents_managed_block_at_key_path_depth() {
+    // N1: the spliced subtree sits at key_path depth 1 ("servers"), so its
+    // entries and closing brace must indent accordingly — not at column 0.
+    let dir = fresh_tmp("jsonc-n1-indent");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp.json");
+
+    let original = r#"{
+  "editor.fontSize": 14,
+  "servers": {
+    "user-srv": { "type": "http", "url": "http://localhost:9999/user/svc/mcp" }
+  }
+}"#;
+    std::fs::write(&path, original).unwrap();
+
+    render_servers(
+        &vscode_schema(),
+        &path,
+        "vsc00001",
+        &["gmail".to_string()],
+        9876,
+    )
+    .unwrap();
+
+    let after = std::fs::read_to_string(&path).unwrap();
+
+    // Managed entry key sits two indent levels deep (4 spaces), not at column 2.
+    assert!(
+        after.contains("\n    \"gmail\""),
+        "managed entry indented at depth 2 (4 spaces): {after}"
+    );
+    // The managed `servers` object's closing brace sits one level deep (2 spaces),
+    // immediately followed by the document's closing brace at column 0.
+    assert!(
+        after.contains("\n  }\n}"),
+        "managed object closing brace indented at depth 1: {after}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Round-trip equivalence: after the JSONC splice write, the output must
 /// still parse as valid JSONC, and the comment-stripped `serde_json` value
 /// must contain exactly the managed entries plus surviving user keys —

@@ -20,7 +20,7 @@ use conduit::daemon::skills::SkillManager;
 
 use crate::window::view::{
     ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, ScopeRow, ServerDetail,
-    ServerRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
+    ServerRow, SkillRepoRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 use crate::window::skills::{installed_skills_to_rows, refresh_skills};
@@ -55,6 +55,9 @@ pub(crate) fn push_initial_models(
     window.set_ides(ModelRc::new(VecModel::<IdeRow>::default()));
     window.set_audit(ModelRc::new(VecModel::<AuditRow>::default()));
     window.set_dashboard_skills(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_skills(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_skills_all(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_skill_repos(ModelRc::new(VecModel::<SkillRepoRow>::default()));
     window.set_selected_server_tools(ModelRc::new(VecModel::<ToolPolicyUiRow>::default()));
     window.set_selected_server_targets(ModelRc::new(VecModel::<IdeTarget>::default()));
     window.set_scope_popover_scopes(ModelRc::new(VecModel::<ScopeRow>::default()));

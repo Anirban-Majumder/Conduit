@@ -278,14 +278,46 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 Vec::new()
             };
 
+            // Resolve the HTTP bearer: prefer a plain Authorization header, else
+            // fetch a Secret-backed bearer from the keyring. `headers_field_from_env`
+            // drops Secret values, so without this an HTTP server whose bearer is
+            // stored as a Secret would probe unauthenticated (#5). Latent today
+            // (nothing writes an HTTP bearer as Secret), fixed defensively.
+            let secret_bearer_uuid = server.env.iter().find_map(|e| match &e.value {
+                EnvValue::Secret(u) if e.name == http::BEARER_TOKEN_ENV => Some(u.clone()),
+                _ => None,
+            });
+            let http_bearer: Option<Zeroizing<String>> = if server.transport != TRANSPORT_HTTP {
+                None
+            } else if let Some(t) = bearer_from_headers(&env_pairs) {
+                Some(Zeroizing::new(t))
+            } else if let Some(uuid) = secret_bearer_uuid {
+                let server_name = name.clone();
+                match tokio::task::spawn_blocking(move || {
+                    conduit::daemon::secrets::fetch(&server_name, &uuid)
+                })
+                .await
+                {
+                    Ok(Ok(v)) => Some(Zeroizing::new(v)),
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, server = %name, "secret bearer fetch failed for retest; probing unauthenticated");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, server = %name, "secret bearer fetch join failed for retest");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let draft = if server.transport == TRANSPORT_HTTP {
-                let bearer = bearer_from_headers(&env_pairs);
                 DraftServerConfig {
                     name: name.clone(),
                     transport: DraftTransport::Http {
                         url: server.url.clone().unwrap_or_default(),
-                        auth: bearer
-                            .map_or(HttpAuth::None, |t| HttpAuth::Bearer(Zeroizing::new(t))),
+                        auth: http_bearer.map_or(HttpAuth::None, HttpAuth::Bearer),
                         headers: env_pairs,
                     },
                     lifecycle_seconds: server.lifecycle_seconds,

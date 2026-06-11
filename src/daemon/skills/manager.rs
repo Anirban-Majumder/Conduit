@@ -252,14 +252,27 @@ impl SkillManager {
         // SK-2: root-level skill — all blob entries are included directly,
         // with their tree path used as the relative install path.
         let (files, source_dir) = if is_root {
-            // Root installs pull ALL files with no cap — the SKILL.md at the
-            // repo root implies the whole repo is the skill.
+            // Root install: the SKILL.md at the repo root implies the whole repo
+            // is the skill. Still cap downloads — a hostile/huge repo would
+            // otherwise pull its entire tree (only in-flight concurrency, not the
+            // file count, is bounded).
             let all_blobs = tree
                 .entries
                 .into_iter()
                 .filter(|e| e.kind == discover::EntryKind::Blob)
                 .collect::<Vec<_>>();
-            (all_blobs, String::new())
+            if all_blobs.len() > DOWNLOAD_FILES_PER_SKILL_LIMIT {
+                tracing::warn!(
+                    total = all_blobs.len(),
+                    limit = DOWNLOAD_FILES_PER_SKILL_LIMIT,
+                    "root skill has more files than the per-skill download limit; some files will be skipped"
+                );
+            }
+            let filtered = all_blobs
+                .into_iter()
+                .take(DOWNLOAD_FILES_PER_SKILL_LIMIT)
+                .collect::<Vec<_>>();
+            (filtered, String::new())
         } else {
             let source_dir = sanitize_relative(&candidate.directory)
                 .ok_or_else(|| SkillError::InvalidPath(candidate.directory.clone()))?;

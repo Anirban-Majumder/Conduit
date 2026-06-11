@@ -54,6 +54,11 @@ pub fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()
         )
     };
 
+    // No parent-directory fsync here: Windows has no directory-handle fsync
+    // equivalent, and both `fs::rename` (MoveFileEx) and `ReplaceFileW` are
+    // already metadata-atomic. File *contents* are fsync'd by the caller before
+    // the rename. The durability gap (a crash losing the rename) is the
+    // documented Unix-only hardening.
     if ok != 0 {
         Ok(())
     } else {

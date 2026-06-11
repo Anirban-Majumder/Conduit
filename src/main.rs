@@ -292,6 +292,26 @@ fn main() -> Result<()> {
         tokio::spawn(ipc::accept_loop(listener, cancel.clone(), on_show));
     }
 
+    // Graceful shutdown on SIGTERM/SIGINT (Unix) or Ctrl-C (Windows). Without it,
+    // a headless launch whose tray failed to install (no SNI host) has no
+    // quit_event_loop() path, and even `kill -TERM` would terminate abruptly,
+    // leaking the bound IPC socket. This drives the same orderly shutdown as the
+    // tray's Quit: fire the cancel token, then quit the Slint loop so main()
+    // runs its cleanup tail.
+    {
+        let _guard = worker.handle().enter();
+        let cancel_for_signal = cancel.clone();
+        tokio::spawn(async move {
+            wait_for_shutdown_signal().await;
+            tracing::info!("shutdown signal received; quitting");
+            cancel_for_signal.cancel();
+            slint::invoke_from_event_loop(|| {
+                slint::quit_event_loop().ok();
+            })
+            .ok();
+        });
+    }
+
     // Tray icon on a dedicated thread; nil if SNI host or libxdo absent.
     let _tray = install_tray(&db, &bus, &cancel, &window, worker.handle().clone());
 
@@ -418,6 +438,41 @@ fn focus_window(weak: &slint::Weak<MainWindow>) {
         }
     })
     .ok();
+}
+
+/// Resolve when the OS asks the process to terminate. On Unix that is SIGTERM
+/// (systemd `stop`, `kill`) or SIGINT (Ctrl-C); on other platforms, Ctrl-C.
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to install SIGTERM handler");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    let mut int = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to install SIGINT handler");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::warn!(error = %e, "failed to await Ctrl-C");
+        std::future::pending::<()>().await;
+    }
 }
 
 fn init_tracing() {

@@ -30,11 +30,28 @@ use super::ClientError;
 
 static WRITE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
-/// Obtain (or create) the per-canonical-path lock for `path`.
-/// Canonicalization falls back to the literal path when the file doesn't exist yet.
+/// Stable lock key for `path` that does not depend on the file existing yet.
+/// Full `canonicalize` only works once the file is present, so a writer creating
+/// the file and one updating it afterwards would key on different entries and
+/// momentarily bypass the per-path serialization (CC-16). Canonicalize the
+/// parent dir (which normally exists) and re-attach the file name so both writers
+/// land on the same entry; fall back to a lexically-absolute path, then literal.
+fn lock_key(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            return canonical_parent.join(name);
+        }
+    }
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Obtain (or create) the per-path lock for `path`, keyed via [`lock_key`].
 /// Returns a cloned `Arc` so the registry lock is released before any file I/O.
 fn path_lock(path: &Path) -> Arc<Mutex<()>> {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = lock_key(path);
     let registry = WRITE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     // Hold the registry lock only long enough to clone the Arc out.
     let mut map = registry
@@ -346,9 +363,12 @@ fn try_splice_jsonc(
     let span = target_obj.range();
 
     // Build the replacement text: serialize the new subtree value from new_root.
+    // The subtree sits at `key_path.len()` nesting depth, so seed the serializer
+    // at that base depth — otherwise its inner entries and closing brace come out
+    // under-indented (the opening brace is fine, it inherits the spliced prefix).
     let new_subtree = descend_existing_json_ref(new_root, key_path)?;
     let indent = detect_indent(text);
-    let replacement = serialize_object_indented(new_subtree, indent);
+    let replacement = serialize_object_indented(new_subtree, indent, key_path.len());
 
     // Splice: keep everything outside the span byte-for-byte.
     let before = text.get(..span.start)?;
@@ -392,8 +412,8 @@ fn detect_indent(text: &str) -> &str {
 /// This is a minimal pretty-printer: one entry per line, trailing comma on
 /// each entry, no trailing comma on the last. Only needs to handle the shapes
 /// our entry templates can produce (objects, arrays, strings, numbers, bools, null).
-fn serialize_object_indented(map: &Map<String, Value>, indent: &str) -> String {
-    serialize_value_indented(&Value::Object(map.clone()), indent, 0)
+fn serialize_object_indented(map: &Map<String, Value>, indent: &str, base_depth: usize) -> String {
+    serialize_value_indented(&Value::Object(map.clone()), indent, base_depth)
 }
 
 fn serialize_value_indented(v: &Value, indent: &str, depth: usize) -> String {
