@@ -512,24 +512,37 @@ impl SkillManager {
         let source = self.paths.skills_managed_dir().join(directory);
         let install_name = directory.to_string();
         let cfg = self.paths.config_toml();
+        // SK-1 applies here too: a destination dir Conduit didn't write (no
+        // pre-existing managed_skill row) must not be overwritten or removed.
+        let we_manage = self
+            .db
+            .list_skill_targets_scoped(directory)
+            .await?
+            .iter()
+            .any(|(c, s)| c == client_id && s == scope);
         if enabled {
-            self.db
-                .add_skill_target(directory, client_id, scope)
-                .await?;
+            // Sync FIRST, row after — recording the row before a TargetExists
+            // conflict would claim a user-authored dir for later removal.
             tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
                 let mode = Settings::load_or_default(&cfg).skills.sync_mode;
-                // we_manage=true: the user explicitly enabled this target.
-                sync::sync_to_target(&source, &dest_dir, &install_name, mode, true)
+                sync::sync_to_target(&source, &dest_dir, &install_name, mode, we_manage)
             })
             .await
             .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))??;
+            self.db
+                .add_skill_target(directory, client_id, scope)
+                .await?;
         } else {
             self.db
                 .remove_skill_target(directory, client_id, scope)
                 .await?;
-            tokio::task::spawn_blocking(move || sync::remove_from_target(&dest_dir, &install_name))
+            if we_manage {
+                tokio::task::spawn_blocking(move || {
+                    sync::remove_from_target(&dest_dir, &install_name);
+                })
                 .await
                 .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?;
+            }
         }
         self.bus.publish(Event::SkillsChanged);
         Ok(())

@@ -443,7 +443,19 @@ pub(crate) fn install_wizard_callbacks(
                     ui.set_wizard_step(1);
                     ui.set_add_server_status(SharedString::from(""));
                     if let Ok(mut g) = pending.lock() {
-                        *g = PendingWizard::default();
+                        // Clear staged data but keep `generation` monotonic for
+                        // the process lifetime — resetting it to 0 would let a
+                        // still-running probe from a previous wizard session
+                        // match the next session's generation and commit its
+                        // stale draft over the new one.
+                        g.server = None;
+                        g.tools.clear();
+                        g.descriptions.clear();
+                        g.oauth_credentials = None;
+                        g.generation = g.generation.wrapping_add(1);
+                        if let Some(cancel) = g.probe_cancel.take() {
+                            cancel.cancel();
+                        }
                     }
                     tracing::info!(policies = n, "server saved");
                 }
