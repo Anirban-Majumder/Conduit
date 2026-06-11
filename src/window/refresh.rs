@@ -395,7 +395,13 @@ pub(crate) async fn refresh_server_targets(
 
     // Build `IdeTarget`s (incl. brand-icon `Image`s) on the UI thread — `Image`
     // is !Send.
+    let name_owned = server_name.to_string();
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        // Drop stale paints: same guard as refresh_server_detail (UI-15) — the
+        // user may have selected a different server while the DB calls ran.
+        if ui.get_selected_server().as_str() != name_owned {
+            return;
+        }
         let rows: Vec<IdeTarget> = actives
             .iter()
             .map(|client| IdeTarget {

@@ -388,24 +388,27 @@ fn descend_ast_object<'a>(
     Some(cur)
 }
 
-/// Detect the predominant indentation unit from the file text.
-/// Looks at the first line that starts with whitespace and uses that.
-/// Falls back to 2 spaces if no indented line is found.
+/// Detect the indentation unit from the file text: the shortest non-empty
+/// leading whitespace across all indented lines (the first line at depth 1),
+/// not just the first indented line — which could sit at depth 2+ and would
+/// double the unit. Falls back to 2 spaces if no indented line is found.
 fn detect_indent(text: &str) -> &str {
+    let mut best: Option<&str> = None;
     for line in text.lines() {
         let trimmed = line.trim_start_matches([' ', '\t']);
-        if !trimmed.is_empty() && trimmed != line {
-            // The leading whitespace is all ASCII (' '/'\\t'), so every char is
-            // one byte. Splitting at char boundaries is always correct here.
-            let ws_byte_len = line.len() - trimmed.len();
-            // SAFETY: ws_byte_len is the count of ASCII space/tab bytes; those
-            // are always valid UTF-8 boundaries.
-            if let Some(s) = line.get(..ws_byte_len) {
-                return s;
+        if trimmed.is_empty() || trimmed == line {
+            continue;
+        }
+        // Leading whitespace is all ASCII (' '/'\t'), so byte slicing at
+        // ws_byte_len is always a valid UTF-8 boundary.
+        let ws_byte_len = line.len() - trimmed.len();
+        if let Some(s) = line.get(..ws_byte_len) {
+            if best.is_none_or(|b| s.len() < b.len()) {
+                best = Some(s);
             }
         }
     }
-    "  "
+    best.unwrap_or("  ")
 }
 
 /// Serialize a JSON object map as a `{…}` block using `indent` per level.
@@ -601,6 +604,13 @@ fn purge_where(
             });
             if !removed {
                 return Ok(());
+            }
+            // CC-1: same comment-preserving splice as render_exact_json; full
+            // serialize only when the splice can't locate the subtree.
+            if schema.format == ConfigFormat::Jsonc {
+                if let Some(spliced) = try_splice_jsonc(path, &schema.key_path, &root) {
+                    return atomic_write_jsonc_str(path, &spliced);
+                }
             }
             atomic_write_json(path, &Value::Object(root))
         }
@@ -1211,5 +1221,46 @@ mod tests {
         assert!(v["mcpServers"].is_object(), "mcpServers must be an object");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // CC-1: purge_one on a JSONC file must preserve comments outside the
+    // managed subtree (it shares the splice path with render_exact).
+    #[test]
+    fn purge_one_preserves_jsonc_comments() {
+        let dir = tmp("purge-one-jsonc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.json");
+        std::fs::write(
+            &path,
+            "{\n  // user comment that must survive\n  \"theme\": \"dark\",\n  \"mcp\": {\n    \"keepme\": { \"type\": \"remote\", \"url\": \"http://user\" }\n  }\n}\n",
+        )
+        .unwrap();
+
+        let s = schema(
+            ConfigFormat::Jsonc,
+            &["mcp"],
+            json!({"type":"remote","url":"${url}"}),
+        );
+        render_servers(&s, &path, "oc000001", &["gmail".to_string()], 9876).unwrap();
+        purge_one(&s, &path, "oc000001", "gmail", 9876).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("// user comment that must survive"),
+            "purge_one must not strip JSONC comments:\n{text}"
+        );
+        let root = read_json(&path, ConfigFormat::Jsonc).unwrap().unwrap();
+        let v = Value::Object(root);
+        assert!(v["mcp"]["gmail"].is_null(), "our entry must be purged");
+        assert_eq!(v["mcp"]["keepme"]["url"], "http://user");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_indent_uses_shallowest_indented_line() {
+        // First indented line is at depth 2 (4 spaces); a later line is at
+        // depth 1 (2 spaces) — the unit must be the shallower one.
+        let text = "{\n\"a\": {\n    \"deep\": 1\n  },\n  \"b\": 2\n}\n";
+        assert_eq!(detect_indent(text), "  ");
     }
 }

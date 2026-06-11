@@ -289,8 +289,9 @@ fn rpc_error_response(id: Value, code: i32, reason: &str) -> axum::response::Res
 /// Resolve a DB-stored `McpServer` into the upstream-layer `ServerConfig`, fetching
 /// keyring secrets. Caller must already have the `McpServer` row.
 ///
-/// All keyring I/O runs inside a single `spawn_blocking` call so that
-/// synchronous D-Bus/keychain operations do not block tokio workers.
+/// Keyring I/O runs inside a single `spawn_blocking` call so that synchronous
+/// D-Bus/keychain operations do not block tokio workers; the common all-plain
+/// case resolves inline without a blocking-pool hop.
 pub(crate) async fn server_to_config(
     server: &McpServer,
 ) -> Result<crate::daemon::upstream::manager::ServerConfig, ServerError> {
@@ -299,16 +300,20 @@ pub(crate) async fn server_to_config(
     use crate::daemon::upstream::http::BEARER_TOKEN_ENV;
     use crate::daemon::upstream::manager::{ServerConfig, Transport};
 
-    // Collect the data needed inside the blocking closure up front so we do
-    // not borrow `server` across the spawn boundary.
-    let server_name = server.name.clone();
-    let env_entries: Vec<(String, EnvValue)> = server
+    let has_secrets = server
         .env
         .iter()
-        .map(|e| (e.name.clone(), e.value.clone()))
-        .collect();
+        .any(|e| matches!(e.value, EnvValue::Secret(_)));
 
-    let resolved_env: Vec<(String, String)> =
+    let resolved_env: Vec<(String, String)> = if has_secrets {
+        // Collect the data needed inside the blocking closure up front so we
+        // do not borrow `server` across the spawn boundary.
+        let server_name = server.name.clone();
+        let env_entries: Vec<(String, EnvValue)> = server
+            .env
+            .iter()
+            .map(|e| (e.name.clone(), e.value.clone()))
+            .collect();
         tokio::task::spawn_blocking(move || -> Vec<(String, String)> {
             let mut out = Vec::with_capacity(env_entries.len());
             for (name, value) in env_entries {
@@ -336,7 +341,21 @@ pub(crate) async fn server_to_config(
             ServerError::Io(std::io::Error::other(format!(
                 "spawn_blocking join error: {e}"
             )))
-        })?;
+        })?
+    } else {
+        server
+            .env
+            .iter()
+            .map(|e| {
+                let value = match &e.value {
+                    EnvValue::Plain(v) => v.clone(),
+                    // Unreachable: has_secrets is false on this branch.
+                    EnvValue::Secret(_) => String::new(),
+                };
+                (e.name.clone(), value)
+            })
+            .collect()
+    };
 
     let transport = match server.transport.as_str() {
         TRANSPORT_STDIO => Transport::Stdio {

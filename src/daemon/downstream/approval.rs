@@ -145,7 +145,15 @@ impl ApprovalCenter {
                 Err(_dropped) => ApprovalOutcome::Timeout,
             },
             // DS-12: clean shutdown path — cancel token fires before the approval timeout.
-            () = self.cancel.cancelled() => ApprovalOutcome::Timeout,
+            // Best-effort row flip so the approval doesn't linger as `pending`
+            // until the next stale sweep; the DB actor may already be gone.
+            () = self.cancel.cancelled() => {
+                let _ignored = self
+                    .db
+                    .resolve_pending_approval(&id, ApprovalStatus::Timeout)
+                    .await;
+                ApprovalOutcome::Timeout
+            }
             () = tokio::time::sleep(self.timeout()) => {
                 // Conditional update — only this caller wins if the row is still pending.
                 match self

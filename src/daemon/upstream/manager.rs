@@ -84,18 +84,17 @@ pub enum UpstreamError {
 }
 
 /// Fingerprint of the fields that would change the transport connection.
-/// Used to detect when a config edit requires kill+respawn.
+/// Used to detect when a config edit requires kill+respawn. Lifecycle edits
+/// are NOT part of it — a TTL-only change updates the live entry in place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfigFingerprint {
     transport: Transport,
-    lifecycle_seconds: i32,
 }
 
 impl ConfigFingerprint {
     fn from_config(config: &ServerConfig) -> Self {
         Self {
             transport: config.transport.clone(),
-            lifecycle_seconds: config.lifecycle_seconds,
         }
     }
 }
@@ -232,7 +231,13 @@ impl UpstreamManager {
         let result = tokio::time::timeout(CALL_TOOL_TIMEOUT, peer.call_tool(request)).await;
 
         // Always decrement in-flight, even on timeout or error.
-        self.decrement_in_flight(&config.name).await;
+        self.decrement_in_flight(&config.name, generation).await;
+
+        // Ephemeral upstreams die right after the call — success or failure —
+        // so a failed call doesn't leave the child lingering until the reaper.
+        if config.lifecycle_seconds == EPHEMERAL {
+            self.kill_generation(&config.name, generation).await;
+        }
 
         let response = match result {
             Err(_elapsed) => {
@@ -249,10 +254,6 @@ impl UpstreamManager {
         };
         self.record(&config.name, None).await;
 
-        if config.lifecycle_seconds == EPHEMERAL {
-            self.kill_generation(&config.name, generation).await;
-        }
-
         Ok(response)
     }
 
@@ -260,11 +261,11 @@ impl UpstreamManager {
     pub async fn list_tools(&self, config: &ServerConfig) -> Result<Value, UpstreamError> {
         self.ensure_running(config).await?;
 
-        let (peer, _generation) = self.get_peer_for_call(&config.name).await?;
+        let (peer, generation) = self.get_peer_for_call(&config.name).await?;
 
         let result = tokio::time::timeout(LIST_TOOLS_TIMEOUT, peer.list_tools(None)).await;
 
-        self.decrement_in_flight(&config.name).await;
+        self.decrement_in_flight(&config.name, generation).await;
 
         match result {
             Err(_elapsed) => Err(UpstreamError::Timeout),
@@ -295,11 +296,17 @@ impl UpstreamManager {
         }
     }
 
-    /// Decrement in-flight counter for an entry if it still exists.
-    async fn decrement_in_flight(&self, server_name: &str) {
+    /// Decrement the in-flight counter for the entry that this call's
+    /// increment landed on. Generation-checked: if the entry was replaced
+    /// while the call ran (config edit kill+respawn), decrementing the new
+    /// entry would release someone else's in-flight slot and let the reaper
+    /// kill it mid-call.
+    async fn decrement_in_flight(&self, server_name: &str, generation: u64) {
         let mut state = self.state.lock().await;
         if let Some(entry) = state.get_mut(server_name) {
-            entry.in_flight = entry.in_flight.saturating_sub(1);
+            if entry.generation == generation {
+                entry.in_flight = entry.in_flight.saturating_sub(1);
+            }
         }
     }
 
@@ -342,31 +349,30 @@ impl UpstreamManager {
     }
 
     async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {
-        // Kill stale entry when config has changed (fingerprint mismatch).
+        let fingerprint = ConfigFingerprint::from_config(config);
+        // Live entry: same transport → refresh lifecycle in place and reuse it
+        // (a TTL-only edit must not kill a healthy child); changed transport →
+        // kill stale entry and fall through to respawn.
         let stale: Option<Entry> = {
             let mut state = self.state.lock().await;
-            match state.get(config.name.as_str()) {
-                Some(e)
-                    if !e.client.peer().is_transport_closed()
-                        && e.fingerprint != ConfigFingerprint::from_config(config) =>
-                {
-                    state.remove(config.name.as_str())
+            let transport_changed = match state.get_mut(config.name.as_str()) {
+                Some(e) if !e.client.peer().is_transport_closed() => {
+                    if e.fingerprint == fingerprint {
+                        e.lifecycle_seconds = config.lifecycle_seconds;
+                        return Ok(());
+                    }
+                    true
                 }
-                _ => None,
+                _ => false,
+            };
+            if transport_changed {
+                state.remove(config.name.as_str())
+            } else {
+                None
             }
         };
         if let Some(e) = stale {
             cancel_entry(&config.name, e).await;
-        }
-
-        let already_running = {
-            let state = self.state.lock().await;
-            state
-                .get(&config.name)
-                .is_some_and(|e| !e.client.peer().is_transport_closed())
-        };
-        if already_running {
-            return Ok(());
         }
 
         // Each spawned client gets its own child token so that rmcp's
@@ -404,7 +410,7 @@ impl UpstreamManager {
                         client,
                         last_use: Instant::now(),
                         lifecycle_seconds: config.lifecycle_seconds,
-                        fingerprint: ConfigFingerprint::from_config(config),
+                        fingerprint,
                         in_flight: 0,
                         generation,
                     },

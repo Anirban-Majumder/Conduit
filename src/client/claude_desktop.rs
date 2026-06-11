@@ -26,7 +26,9 @@ pub static DEF: ClientDef = ClientDef {
         format: ConfigFormat::Json,
         key_path: &["mcpServers"],
         // Claude Desktop accepts STDIO entries. mcp-remote bridges HTTP→STDIO.
-        entry_template: r#"{"command":"npx","args":["-y","mcp-remote","${url}"]}"#,
+        // Version-pinned so npx resolution is stable; this is Claude Desktop's
+        // own spawn, not Conduit's (the no-npx rule covers Conduit upstreams).
+        entry_template: r#"{"command":"npx","args":["-y","mcp-remote@0.1","${url}"]}"#,
     },
     binaries: &[],
     #[cfg(target_os = "macos")]
