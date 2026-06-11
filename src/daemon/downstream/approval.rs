@@ -154,15 +154,37 @@ impl ApprovalCenter {
                             id: id.clone(),
                             status: ApprovalStatus::Timeout,
                         });
+                        ApprovalOutcome::Timeout
                     }
                     Ok(_) => {
-                        // Another resolver (GUI/IPC) beat the timeout; do nothing.
+                        // Another resolver (GUI/IPC) beat the timeout — re-read the DB row
+                        // so we return the actual outcome rather than a spurious Timeout.
+                        // resolve() writes the row before sending on the oneshot, so the
+                        // final status is already visible by the time we reach here.
+                        match self.db.get_pending_approval(&id).await {
+                            Ok(Some(row)) => match row.status {
+                                ApprovalStatus::Approved => ApprovalOutcome::Approved,
+                                ApprovalStatus::Denied => ApprovalOutcome::Denied,
+                                // Cancelled or any unexpected status: treat as Timeout
+                                // so the caller gets a deterministic non-success result.
+                                _ => ApprovalOutcome::Timeout,
+                            },
+                            Ok(None) => ApprovalOutcome::Timeout,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    id = %id,
+                                    "reading resolved approval status failed; returning Timeout"
+                                );
+                                ApprovalOutcome::Timeout
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, id = %id, "flipping approval to timeout failed");
+                        ApprovalOutcome::Timeout
                     }
                 }
-                ApprovalOutcome::Timeout
             }
         };
 

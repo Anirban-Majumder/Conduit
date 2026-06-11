@@ -374,14 +374,17 @@ impl SkillManager {
         // must not clobber targets the user later changed. Here the caller's
         // `targets` IS the intended set, so set them explicitly after metadata.
         self.db.upsert_skill_metadata(skill.clone()).await?;
-        self.db
-            .set_skill_targets(&install_name, "global", normalized_targets.clone())
+
+        // SK-1: reconcile BEFORE writing the new managed_skill rows so that
+        // `we_manage` reflects pre-install state. A first-time install has no
+        // rows yet → we_manage=false → TargetExists guard fires for user-owned
+        // dirs. A re-install already has rows → we_manage=true → overwrite ok.
+        // (mirrors the ordering in `set_targets`)
+        self.reconcile_global_targets(&install_name, &normalized_targets)
             .await?;
 
-        // Mirror to the chosen global targets (removing de-selected ones), then
-        // re-mirror any repo scopes the skill is already in so a re-install
-        // refreshes their content too. File ops run on spawn_blocking inside.
-        self.reconcile_global_targets(&install_name, &normalized_targets)
+        self.db
+            .set_skill_targets(&install_name, "global", normalized_targets.clone())
             .await?;
         self.remirror_repo_scopes(&install_name).await?;
 

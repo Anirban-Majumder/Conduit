@@ -107,6 +107,7 @@ export component MainWindow inherits Window {
     in-out property <string> selected-editor-status: "";
     in-out property <bool> selected-editor-status-is-error: false;
     in-out property <bool> selected-editor-dirty: false;
+    in-out property <int> selected-editor-reload-nonce;
 
     callback approve-clicked(string);
     callback deny-clicked(string);
@@ -342,6 +343,7 @@ export component MainWindow inherits Window {
                     refreshing: root.ides-refreshing;
                     scopes: root.selected-editor-scopes;
                     selected-scope: root.selected-editor-scope;
+                    editor-reload-nonce: root.selected-editor-reload-nonce;
                     config-format: root.selected-editor-format;
                     remove-clicked(kind) => { root.remove-ide-clicked(kind); }
                     retrack-clicked(kind) => { root.retrack-ide-clicked(kind); }

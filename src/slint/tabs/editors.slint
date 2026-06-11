@@ -28,6 +28,7 @@ export component EditorsTab inherits Rectangle {
     in property <bool> refreshing;
     in property <[ScopeOption]> scopes;          // Global + repos for this editor
     in property <string> selected-scope: "global";
+    in property <int> editor-reload-nonce;
     in property <string> config-format: "json";  // "json" | "toml"
     callback remove-clicked(string);
     callback retrack-clicked(string);
@@ -268,7 +269,7 @@ export component EditorsTab inherits Rectangle {
                     // Each unique (selected, selected-scope) combination gets its own
                     // TextInput instance. Slint creates a new element when the
                     // condition's value changes, restoring the one-way binding.
-                    for _scope-key[_i] in [root.selected + "|" + root.selected-scope] : VerticalLayout {
+                    for _scope-key[_i] in [root.selected + "|" + root.selected-scope + "|" + root.editor-reload-nonce] : VerticalLayout {
                         padding: 0px;
                         Rectangle {
                             height: 34px;

@@ -146,6 +146,10 @@ pub struct RuntimeStatus {
 pub struct UpstreamManager {
     state: Arc<Mutex<HashMap<String, Entry>>>,
     status: Arc<Mutex<HashMap<String, RuntimeStatus>>>,
+    /// Per-name generation counters that survive entry removal, so a late
+    /// `kill_generation(name, 0)` cannot match a freshly-spawned gen-0 entry
+    /// after a crash or ephemeral kill (UP-4).
+    generations: Arc<Mutex<HashMap<String, u64>>>,
     cancel: CancellationToken,
     bus: Option<Bus>,
     #[expect(
@@ -163,9 +167,11 @@ impl UpstreamManager {
     pub fn with_bus(paths: Paths, cancel: CancellationToken, bus: Option<Bus>) -> Self {
         let state = Arc::new(Mutex::new(HashMap::new()));
         let status = Arc::new(Mutex::new(HashMap::new()));
+        let generations = Arc::new(Mutex::new(HashMap::new()));
         let mgr = Self {
             state: state.clone(),
             status,
+            generations,
             cancel: cancel.clone(),
             bus,
             paths,
@@ -317,13 +323,16 @@ impl UpstreamManager {
         }
     }
 
-    /// Kill the entry for `server_name` only if it still has `generation`.
-    /// Prevents an ephemeral post-call kill from evicting a concurrently-spawned fresh entry.
+    /// Kill the entry for `server_name` only if it still has `generation` AND
+    /// no other call is in flight. If `in_flight > 0` the reaper will clean up
+    /// once the last concurrent caller has decremented its counter.
     async fn kill_generation(&self, server_name: &str, generation: u64) {
         let entry = {
             let mut state = self.state.lock().await;
             match state.get(server_name) {
-                Some(e) if e.generation == generation => state.remove(server_name),
+                Some(e) if e.generation == generation && e.in_flight == 0 => {
+                    state.remove(server_name)
+                }
                 _ => None,
             }
         };
@@ -391,12 +400,13 @@ impl UpstreamManager {
         .await
         .map_err(|_elapsed| UpstreamError::Timeout)??;
 
-        // Next generation number for this entry.
+        // Next generation number: taken from the per-name counter that outlives
+        // entry removal, so generation 0 is never reused after a crash/kill.
         let generation = {
-            let state = self.state.lock().await;
-            state
-                .get(&config.name)
-                .map_or(0, |e| e.generation.wrapping_add(1))
+            let mut gens = self.generations.lock().await;
+            let next = gens.get(&config.name).copied().unwrap_or(0).wrapping_add(1);
+            gens.insert(config.name.clone(), next);
+            next
         };
 
         // Insert atomically OR detect a race; cancel any duplicate OUTSIDE the lock.

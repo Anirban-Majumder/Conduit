@@ -184,3 +184,56 @@ async fn manager_set_skill_scope_mirrors_repo_and_skips_vscode() {
 
     let _ignored = fs::remove_dir_all(&root);
 }
+
+/// SK-1 (install path): when a global skills dir already holds user-authored
+/// content that Conduit has no `managed_skill` row for, reconcile must refuse
+/// with `TargetExists` and leave the content untouched.
+///
+/// This mirrors the fix in `install()`: reconcile runs BEFORE `set_skill_targets`
+/// writes new rows, so `we_manage=false` for a brand-new target.
+#[tokio::test]
+async fn reconcile_global_targets_refuses_unmanaged_destination() {
+    let root = fresh_tmp("install-sk1");
+    let home = root.join("home");
+    let paths = Paths::under(root.join("conduit"));
+    paths.ensure_created().unwrap();
+    let db = Db::spawn_in_memory().unwrap();
+    let mgr = SkillManager::new(paths.clone(), db.clone(), Bus::new()).unwrap();
+
+    seed_source(&paths.skills_managed_dir(), "my-skill");
+    db.upsert_skill_metadata(skill("my-skill")).await.unwrap();
+
+    let global_skills_dir = home.join(".cursor/skills");
+    // Pre-existing user-authored content at the destination — no managed_skill row.
+    let user_dest = global_skills_dir.join("my-skill");
+    fs::create_dir_all(&user_dest).unwrap();
+    fs::write(user_dest.join("user-file.txt"), "user content").unwrap();
+
+    db.project_builtin(
+        "Cursor",
+        "Cursor",
+        "/cfg",
+        Some(global_skills_dir.to_str().unwrap()),
+        "{}",
+        Some(".cursor/mcp.json"),
+        Some(".cursor/skills"),
+    )
+    .await
+    .unwrap();
+
+    // set_targets calls reconcile_global_targets with no prior managed_skill rows
+    // → we_manage=false → must refuse TargetExists, not overwrite.
+    let result = mgr
+        .set_targets("my-skill", vec!["Cursor".to_string()])
+        .await;
+    assert!(
+        result.is_err(),
+        "set_targets must refuse to overwrite an unmanaged global destination"
+    );
+    assert!(
+        user_dest.join("user-file.txt").exists(),
+        "user-authored file must not be deleted"
+    );
+
+    let _ignored = fs::remove_dir_all(&root);
+}

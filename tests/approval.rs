@@ -427,3 +427,59 @@ async fn concurrent_resolve_exactly_one_winner() {
         "unexpected outcome: {outcome:?}"
     );
 }
+
+/// DS-2: approve races the timeout boundary — `request()` must return Approved.
+///
+/// The timeout fires and its conditional UPDATE loses (changed == 0) because
+/// `resolve(Approved)` already won the row. The `request()` future must return
+/// `ApprovalOutcome::Approved`, not a spurious `Timeout`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approve_racing_timeout_returns_approved_not_timeout() {
+    // Use a very short timeout so the sleep fires almost immediately.
+    let db = Db::spawn_in_memory().unwrap();
+    let bus = Bus::new();
+    let center = Arc::new(ApprovalCenter::new(db, bus, settings_with_timeout(1)));
+
+    let req_fut = {
+        let c = Arc::clone(&center);
+        tokio::spawn(async move { c.request(sample_req()).await.unwrap() })
+    };
+
+    // Wait for the row to appear, then resolve Approved just before the timeout
+    // would fire.  We sleep 900ms so the resolve lands before the 1-second sleep
+    // in `request()`, but the two events are close enough to race in practice.
+    for _ in 0..50 {
+        let rows = center.db().list_pending_approvals().await.unwrap();
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let rows = center.db().list_pending_approvals().await.unwrap();
+    let id = rows.first().expect("pending row").id.clone();
+
+    // Sleep until just before the timeout fires, then approve.
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    center.resolve(&id, ApprovalStatus::Approved).await.unwrap();
+
+    // Even if the 1-second sleep in `request()` fires before the oneshot is
+    // delivered, the timeout branch must re-read the DB and return Approved.
+    let outcome = wait_for(Duration::from_secs(3), req_fut)
+        .await
+        .expect("request completed in time")
+        .unwrap();
+    assert_eq!(
+        outcome,
+        ApprovalOutcome::Approved,
+        "expected Approved but got {outcome:?}"
+    );
+
+    // DB row must reflect Approved, not Timeout.
+    let row = center
+        .db()
+        .get_pending_approval(&id)
+        .await
+        .unwrap()
+        .expect("row present");
+    assert_eq!(row.status, ApprovalStatus::Approved);
+}
