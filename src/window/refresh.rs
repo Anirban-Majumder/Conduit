@@ -355,7 +355,11 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
 
     let name_owned = name.to_string();
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        ui.set_selected_server(SharedString::from(name_owned));
+        // Drop stale paints: if the user clicked a different server while DB
+        // queries were in flight, don't overwrite the newer selection.
+        if ui.get_selected_server().as_str() != name_owned {
+            return;
+        }
         ui.set_selected_server_detail(detail);
         if let Some(m) = ui
             .get_selected_server_tools()

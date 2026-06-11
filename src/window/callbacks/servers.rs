@@ -132,6 +132,12 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
         let db = db_for_select.clone();
         let weak = weak_for_select.clone();
         let name = name.to_string();
+        // Set selection synchronously on the UI thread so the pane switches
+        // immediately and the guard in refresh_server_detail can detect stale
+        // completions from a previously-clicked server.
+        if let Some(ui) = weak.upgrade() {
+            ui.set_selected_server(SharedString::from(name.clone()));
+        }
         rt_for_select.spawn(async move {
             refresh_server_detail(&weak, &db, &name).await;
         });
