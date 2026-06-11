@@ -510,6 +510,13 @@ fn cleanup_empty_repo_file(
     path: &Path,
     repo_dir: &Path,
 ) -> Result<(), ClientError> {
+    // CC-16: check-then-delete under the same per-path lock the writers use —
+    // unlocked, a concurrent render could re-add an entry between this check
+    // and the remove_file, and the delete would drop its write.
+    let lock = path_lock(path);
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !path.exists() || !file_is_scaffold_only(schema, path)? {
         return Ok(());
     }

@@ -98,6 +98,8 @@ pub(crate) fn spawn_event_bridge(
         // Dirty flag: set when AuditAppended arrives; cleared after the coalesced
         // refresh fires. At most one audit query + UI repaint per ~300ms burst.
         let mut audit_dirty = false;
+        // Single-flight gate for the spawned SkillsChanged refresh (see below).
+        let skills_refresh_inflight = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut coalesce = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
@@ -139,16 +141,7 @@ pub(crate) fn spawn_event_bridge(
                             .ok();
                         }
                         Ok(Event::SkillsChanged) => {
-                            // Spawn onto the runtime so the bridge loop is not
-                            // blocked while network skill discovery runs (per repo:
-                            // up to 3 tree fetches + N SKILL.md fetches, 20s
-                            // timeouts each). The skills manager has an internal
-                            // overlap guard, so concurrent discoveries are safe.
-                            let weak_sk = weak.clone();
-                            let skills_sk = skills.clone();
-                            rt.spawn(async move {
-                                refresh_skills(&weak_sk, &skills_sk).await;
-                            });
+                            spawn_skills_refresh(&skills_refresh_inflight, &rt, &weak, &skills);
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Ok(Event::AuthFailure { server, message }) => {
@@ -198,6 +191,32 @@ pub(crate) fn spawn_event_bridge(
                 }
             }
         }
+    });
+}
+
+/// Spawn the `SkillsChanged` backstop refresh off the bridge loop (network
+/// skill discovery can take 20s+ per fetch). Single-flight: skipped while a
+/// previous refresh runs — tasks would otherwise pile up behind the manager's
+/// discover lock during event bursts; skill callbacks also refresh directly,
+/// so a skipped backstop self-heals.
+fn spawn_skills_refresh(
+    inflight: &Arc<std::sync::atomic::AtomicBool>,
+    rt: &tokio::runtime::Handle,
+    weak: &slint::Weak<MainWindow>,
+    skills: &Arc<SkillManager>,
+) {
+    if inflight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let weak = weak.clone();
+    let skills = skills.clone();
+    let inflight = Arc::clone(inflight);
+    rt.spawn(async move {
+        refresh_skills(&weak, &skills).await;
+        inflight.store(false, Ordering::Release);
     });
 }
 
@@ -483,10 +502,13 @@ pub(crate) async fn refresh_scope_popover(
 
     let (item, kind, editor) = (item.to_string(), kind.to_string(), editor.to_string());
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        if !initial_open
-            && (!ui.get_scope_popover_open()
-                || ui.get_scope_popover_item().as_str() != item
-                || ui.get_scope_popover_editor().as_str() != editor)
+        // The open callback sets item/editor synchronously, so even an
+        // initial-open paint must still match — a slower open for a
+        // previously-clicked row is stale. Mutation refreshes additionally
+        // require the popover to still be open (no re-open after dismiss).
+        if ui.get_scope_popover_item().as_str() != item
+            || ui.get_scope_popover_editor().as_str() != editor
+            || (!initial_open && !ui.get_scope_popover_open())
         {
             return;
         }
