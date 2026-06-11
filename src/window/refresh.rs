@@ -5,6 +5,7 @@
 //! event. Every `refresh_*` is async (DB-actor calls) and writes UI state only
 //! through `upgrade_in_event_loop`, so all are safe to call from worker tasks.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
@@ -18,8 +19,8 @@ use conduit::daemon::events::Event;
 use conduit::daemon::skills::SkillManager;
 
 use crate::window::view::{
-    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, PolicyRow, ScopeRow,
-    ServerDetail, ServerRow, ToolPolicyRow as ToolPolicyUiRow,
+    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, ScopeRow, ServerDetail,
+    ServerRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 use crate::window::skills::{installed_skills_to_rows, refresh_skills};
@@ -188,7 +189,6 @@ pub(crate) async fn refresh_all(weak: &slint::Weak<MainWindow>, db: &Db) {
     refresh_pending(weak, db).await;
     refresh_servers(weak, db).await;
     refresh_ides(weak, db).await;
-    refresh_policies(weak, db).await;
     refresh_audit(weak, db).await;
 }
 
@@ -433,58 +433,6 @@ pub(crate) async fn refresh_scope_popover(
     });
 }
 
-/// Add/remove a server from a client's managed set, then re-derive its config
-/// file from the resulting set (the one renderer, no per-IDE branching).
-pub(crate) async fn toggle_server_for_ide(
-    db: &Db,
-    port: u16,
-    server_name: &str,
-    client_id: &str,
-    enable: bool,
-) {
-    let Some(client) = client_config::resolve_client(db, client_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        tracing::warn!(client_id = %client_id, "no client row for id");
-        return;
-    };
-    if !client.is_builtin {
-        tracing::warn!(client_id = %client_id, "custom client config is user-authored; ignoring toggle");
-        return;
-    }
-
-    let mut entries = db
-        .list_managed_servers(client_id, "global")
-        .await
-        .unwrap_or_default();
-    let present = entries.iter().any(|n| n == server_name);
-    if enable && !present {
-        entries.push(server_name.to_string());
-    } else if !enable && present {
-        entries.retain(|n| n != server_name);
-    }
-
-    if let Err(e) = db
-        .set_managed_servers(client_id, "global", entries.clone())
-        .await
-    {
-        tracing::warn!(error = %e, "set_managed_servers failed");
-        return;
-    }
-
-    // render_mcp makes the file hold exactly `entries` (purge ours + render).
-    let render =
-        tokio::task::spawn_blocking(move || client_config::render_mcp(&client, &entries, port))
-            .await;
-    match render {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!(error = %e, client_id, "render failed"),
-        Err(e) => tracing::warn!(error = %e, client_id, "render join failed"),
-    }
-}
-
 pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
     let records = db.list_clients().await.unwrap_or_default();
     // Build rows (and decode their SVG icons) on the UI thread: `slint::Image`
@@ -506,26 +454,6 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
             })
             .collect();
         ui.set_ides(ModelRc::new(VecModel::from(rows)));
-    })
-    .ok();
-}
-
-pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
-    // list_all_policies is removed; collect tool decisions in one batched query.
-    let tools = db.list_all_tools().await.unwrap_or_default();
-    let mut rows: Vec<PolicyRow> = Vec::new();
-    for t in tools {
-        if let Some(decision) = t.decision {
-            rows.push(PolicyRow {
-                server: SharedString::from(t.server.clone()),
-                tool: SharedString::from(t.name),
-                decision: SharedString::from(decision.as_db_str()),
-                source: SharedString::from(""), // decision source not tracked per-tool anymore
-            });
-        }
-    }
-    weak.upgrade_in_event_loop(move |ui| {
-        ui.set_policies(ModelRc::new(VecModel::from(rows)));
     })
     .ok();
 }
@@ -596,6 +524,83 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
     .ok();
 }
 
+/// Like `refresh_audit` but guards the UI write with a generation counter so
+/// out-of-order completions don't overwrite a fresher result. `my_gen` is the
+/// value captured at spawn time; `current` is the shared counter.
+pub(crate) async fn refresh_audit_gen(
+    weak: &slint::Weak<MainWindow>,
+    db: &Db,
+    my_gen: u64,
+    current: &Arc<AtomicU64>,
+) {
+    let (search, decision_str) = read_ui_state(weak, |ui| {
+        (
+            ui.get_audit_search_query().to_string(),
+            ui.get_audit_decision_filter().to_string(),
+        )
+    })
+    .await
+    .unwrap_or_default();
+
+    let decision = if decision_str.is_empty() {
+        None
+    } else {
+        let d = AuditDecision::from_db_str(&decision_str);
+        if d.is_none() {
+            tracing::warn!(value = %decision_str, "unknown audit decision filter; showing all");
+        }
+        d
+    };
+    let text = if search.is_empty() {
+        None
+    } else {
+        Some(search)
+    };
+
+    let filter = AuditFilter {
+        limit: Some(25),
+        decision,
+        text,
+        ..Default::default()
+    };
+    let entries = db.query_audit_log(filter).await.unwrap_or_default();
+    // Stale guard: if a newer query has been issued since we started, discard.
+    if current.load(Ordering::Relaxed) != my_gen {
+        return;
+    }
+    let now = unix_now();
+    let rows: Vec<AuditRow> = entries
+        .into_iter()
+        .map(|e| AuditRow {
+            id: SharedString::from(e.id.map(|n| n.to_string()).unwrap_or_default()),
+            ts_label: SharedString::from(relative_time(now - e.ts)),
+            ts_full: SharedString::from(clock_full(e.ts)),
+            ide_name: SharedString::from(e.client_name.unwrap_or_else(|| "?".to_string())),
+            server: SharedString::from(e.mcp_server),
+            tool: SharedString::from(e.tool.unwrap_or_default()),
+            decision: SharedString::from(e.decision.as_db_str()),
+            decision_source: SharedString::from(
+                e.decision_source
+                    .map(|s| s.as_db_str().to_string())
+                    .unwrap_or_default(),
+            ),
+            latency_label: SharedString::from(
+                e.latency_ms.map(|n| format!("{n}ms")).unwrap_or_default(),
+            ),
+            request_args: SharedString::from(e.request_args.unwrap_or_default()),
+            response_status: SharedString::from(e.response_status.unwrap_or_default()),
+            response_length: SharedString::from(
+                e.response_length.map(|n| n.to_string()).unwrap_or_default(),
+            ),
+            error_code: SharedString::from(e.error_code.unwrap_or_default()),
+        })
+        .collect();
+    weak.upgrade_in_event_loop(move |ui| {
+        ui.set_audit(ModelRc::new(VecModel::from(rows)));
+    })
+    .ok();
+}
+
 pub(crate) async fn refresh_dashboard(
     weak: &slint::Weak<MainWindow>,
     db: &Db,
@@ -621,34 +626,24 @@ pub(crate) async fn refresh_dashboard(
     let skill_count = installed_skills.len();
 
     let since = unix_now() - 86_400;
-    let recent = db
-        .query_audit_log(AuditFilter {
+    let counts = db
+        .count_audit_entries(AuditFilter {
             since_ts: Some(since),
-            limit: Some(10_000),
             ..Default::default()
         })
         .await
         .unwrap_or_default();
-    let calls_24h = recent.len();
-    let denied_24h = recent
-        .iter()
-        .filter(|e| {
-            matches!(
-                e.decision,
-                AuditDecision::Deny | AuditDecision::AskDenied | AuditDecision::AskTimeout
-            )
-        })
-        .count();
 
     let to_i32 = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+    let count_to_i32 = |n: u64| i32::try_from(n).unwrap_or(i32::MAX);
     let stats = DashboardStats {
         server_count: to_i32(server_count),
         server_live: to_i32(server_live),
         server_auth_failures: to_i32(server_auth_failures),
         skill_count: to_i32(skill_count),
         editor_count: to_i32(editor_count),
-        calls_24h: to_i32(calls_24h),
-        denied_24h: to_i32(denied_24h),
+        calls_24h: count_to_i32(counts.total),
+        denied_24h: count_to_i32(counts.denied),
     };
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_dashboard_stats(stats);

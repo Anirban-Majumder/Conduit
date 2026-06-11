@@ -24,11 +24,19 @@ fn url_for(port: u16, key: &str, server: &str) -> String {
     format!("http://127.0.0.1:{port}/{key}/{server}/mcp")
 }
 
-/// Does `url` point at our daemon for this (port, key)? Matches any server
-/// segment so purge sweeps every entry we ever wrote under this key.
-fn url_is_ours(url: &str, port: u16, key: &str) -> bool {
-    let prefix = format!("http://127.0.0.1:{port}/{key}/");
-    let Some(rest) = url.strip_prefix(&prefix) else {
+/// Does `url` point at our daemon for this key? Matches any port so that
+/// changing `daemon.port` doesn't orphan entries written under the old port.
+/// The per-client `key` segment is already globally unique — it is sufficient
+/// to identify ownership without the port.
+fn url_is_ours(url: &str, _port: u16, key: &str) -> bool {
+    // Accept http://127.0.0.1:<any-port>/<key>/<server>/mcp
+    let Some(after_host) = url.strip_prefix("http://127.0.0.1:") else {
+        return false;
+    };
+    // Skip past the port digits.
+    let after_port = after_host.trim_start_matches(|c: char| c.is_ascii_digit());
+    let expected_prefix = format!("/{key}/");
+    let Some(rest) = after_port.strip_prefix(expected_prefix.as_str()) else {
         return false;
     };
     let Some(server_part) = rest.strip_suffix("/mcp") else {
@@ -132,10 +140,17 @@ pub fn render_scope(
         tracing::trace!(client = %client.id, "render_scope: no config target; skipping");
         return Ok(());
     };
+    // CC-20: only allow empty-file cleanup if the file contained (or will
+    // contain) our entries. Check before purging so we can distinguish a
+    // user-created placeholder `{}` from a file we wrote.
+    let had_our_entries = file_has_our_entries(&client.schema, &path, &client.mcp_key, port);
     purge_mcp(&client.schema, &path, &client.mcp_key, port)?;
     render_servers(&client.schema, &path, &client.mcp_key, servers, port)?;
     if let Scope::Repo(repo_dir) = scope {
-        cleanup_empty_repo_file(&client.schema, &path, repo_dir)?;
+        let we_own_file = had_our_entries || !servers.is_empty();
+        if we_own_file {
+            cleanup_empty_repo_file(&client.schema, &path, repo_dir)?;
+        }
     }
     Ok(())
 }
@@ -200,6 +215,31 @@ pub fn purge_one(
 }
 
 // ── Empty-repo cleanup (repo scope only) ─────────────────────────────────────
+
+/// CC-20: true when the file currently holds at least one entry belonging to us.
+/// Used to distinguish a file Conduit created from a user-created placeholder.
+/// Best-effort: returns false on any read/parse error.
+fn file_has_our_entries(schema: &ConfigSchema, path: &Path, key: &str, port: u16) -> bool {
+    match schema.format {
+        ConfigFormat::Toml => read_toml_edit(path).is_ok_and(|opt| {
+            opt.is_some_and(|mut doc| {
+                descend_existing_toml_edit(&mut doc, &schema.key_path).is_some_and(|table| {
+                    table
+                        .iter()
+                        .any(|(_, item)| entry_is_ours(&toml_item_to_json(item), port, key))
+                })
+            })
+        }),
+        ConfigFormat::Json | ConfigFormat::Jsonc => {
+            read_json(path, schema.format).is_ok_and(|opt| {
+                opt.is_some_and(|mut root| {
+                    descend_existing_json(&mut root, &schema.key_path)
+                        .is_some_and(|map| map.values().any(|e| entry_is_ours(e, port, key)))
+                })
+            })
+        }
+    }
+}
 
 /// After a repo-scope render, delete the file if it holds only our (now-empty)
 /// scaffold, then prune empty ancestor dirs up to (not incl.) the repo dir.
@@ -409,11 +449,20 @@ fn read_json(path: &Path, format: ConfigFormat) -> Result<Option<Map<String, Val
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
     }
-    let text = String::from_utf8_lossy(&bytes);
+    // CC-18: strip a leading UTF-8 BOM (EF BB BF) before parsing.
+    let payload = bytes
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(bytes.as_slice());
+    // CC-18: use strict UTF-8 decoding — lossy conversion silently corrupts
+    // non-UTF-8 bytes and then writes them back, destroying the file.
+    let text = std::str::from_utf8(payload).map_err(|_e| ClientError::ParseJson {
+        path: path.to_owned(),
+        source: serde::de::Error::custom("config file is not valid UTF-8"),
+    })?;
     let cleaned = if format == ConfigFormat::Jsonc {
-        strip_jsonc(&text)
+        strip_jsonc(text)
     } else {
-        text.into_owned()
+        text.to_owned()
     };
     let value: Value = serde_json::from_str(&cleaned).map_err(|source| ClientError::ParseJson {
         path: path.to_owned(),
@@ -840,6 +889,74 @@ mod tests {
             v["context_servers"]["theirs"].is_object(),
             "user entry kept"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // CC-7: purge must match our entries regardless of port number.
+    #[test]
+    fn purge_matches_any_port_for_same_key() {
+        let dir = tmp("any-port");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.json");
+        let s = schema(
+            ConfigFormat::Json,
+            &["mcpServers"],
+            json!({"url": "${url}"}),
+        );
+
+        // Write an entry under the old port (9876).
+        render_servers(&s, &path, "mykey001", &["server1".to_string()], 9876).unwrap();
+
+        // Now purge using a DIFFERENT port (8080) — should still find the entry.
+        purge_mcp(&s, &path, "mykey001", 8080).unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(
+            v["mcpServers"]["server1"].is_null(),
+            "entry written on old port should be purged on new port"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // CC-18: a leading UTF-8 BOM must be stripped before JSON parsing.
+    #[test]
+    fn read_json_strips_utf8_bom() {
+        let dir = tmp("bom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bom.json");
+        // Prepend a UTF-8 BOM (EF BB BF) to a valid JSON object.
+        let mut content = b"\xef\xbb\xbf".to_vec();
+        content.extend_from_slice(br#"{"mcpServers":{}}"#);
+        std::fs::write(&path, &content).unwrap();
+
+        let s = schema(
+            ConfigFormat::Json,
+            &["mcpServers"],
+            json!({"url": "${url}"}),
+        );
+        // Should succeed rather than failing with a parse error.
+        render_servers(&s, &path, "k0000001", &["svc".to_string()], 9876).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(v["mcpServers"]["svc"].is_object());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // CC-18: a file with invalid UTF-8 bytes must return an error, not corrupt.
+    #[test]
+    fn read_json_errors_on_invalid_utf8() {
+        let dir = tmp("bad-utf8");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.json");
+        // 0xFF is invalid in UTF-8.
+        std::fs::write(&path, b"\xff\xfe{}").unwrap();
+
+        let s = schema(
+            ConfigFormat::Json,
+            &["mcpServers"],
+            json!({"url": "${url}"}),
+        );
+        let result = render_servers(&s, &path, "k0000002", &["svc".to_string()], 9876);
+        assert!(result.is_err(), "invalid UTF-8 file should return an error");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -4,12 +4,12 @@
 //! and forwards `tools/call` / `tools/list` to them, spawning lazily on first
 //! use (`ensure_running`). A background reaper kills entries past their idle
 //! TTL; `lifecycle_seconds` is `0` = ephemeral (killed right after the call),
-//! `-1` = persistent, `N > 0` = idle TTL seconds. `RuntimeStatus` tracks
-//! last-call health and publishes debounced `ServerHealthChanged` events.
-//! `UpstreamError` is the typed error surface; `Rmcp` variants pass through to
-//! the caller verbatim per the JSON-RPC pass-through rule.
+//! `-1` = persistent, `N > 0` = idle TTL seconds. `record()` publishes
+//! debounced `ServerHealthChanged` events. `UpstreamError` is the typed error
+//! surface; `Rmcp` variants pass through to the caller verbatim per the
+//! JSON-RPC pass-through rule.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,8 +25,6 @@ use crate::daemon::paths::Paths;
 use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
 use crate::daemon::upstream::{http, stdio};
-
-const ERROR_RING_CAP: usize = 5;
 
 const EPHEMERAL: i32 = 0;
 const PERSISTENT: i32 = -1;
@@ -71,12 +69,6 @@ pub enum UpstreamError {
 
     #[error("initialize failed: {0}")]
     InitFailed(String),
-
-    /// Upstream returned 401 Unauthorized with a parseable `WWW-Authenticate`
-    /// header. The string is the raw header value, e.g.
-    /// `Bearer realm="OAuth", resource_metadata="https://..."`.
-    #[error("auth required: {0}")]
-    AuthRequired(String),
 
     #[error("upstream process died between calls")]
     Crashed,
@@ -137,8 +129,6 @@ impl std::fmt::Debug for Entry {
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatus {
     pub last_call_at: Option<i64>,
-    pub last_call_error: Option<String>,
-    pub recent_errors: VecDeque<(i64, String)>,
     last_emit_at: Option<Instant>,
 }
 
@@ -186,19 +176,9 @@ impl UpstreamManager {
 
     async fn record(&self, server: &str, error: Option<String>) {
         let now = Instant::now();
-        let unix = now_unix_secs();
         let mut map = self.status.lock().await;
         let entry = map.entry(server.to_string()).or_default();
-        entry.last_call_at = Some(unix);
-        if let Some(ref e) = error {
-            entry.last_call_error = Some(e.clone());
-            entry.recent_errors.push_back((unix, e.clone()));
-            while entry.recent_errors.len() > ERROR_RING_CAP {
-                entry.recent_errors.pop_front();
-            }
-        } else {
-            entry.last_call_error = None;
-        }
+        entry.last_call_at = Some(now_unix_secs());
         let due = error.is_some()
             || entry
                 .last_emit_at

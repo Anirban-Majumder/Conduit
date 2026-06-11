@@ -27,6 +27,8 @@ pub enum ProxyOutcome {
     Forward(Value),
     UserDenied,
     ApprovalTimeout,
+    /// The requested JSON-RPC method is not supported by this proxy layer.
+    MethodNotFound,
 }
 
 #[derive(Debug, Error)]
@@ -68,12 +70,10 @@ pub async fn route_tool_call(
         return Ok(ProxyOutcome::Forward(result));
     }
     if method != TOOLS_CALL {
-        // v0 only proxies tools/list and tools/call. initialize is handled
-        // internally by rmcp during upstream spawn; everything else returns
-        // method_not_found at the JSON-RPC layer in the HTTP handler.
-        return Err(ProxyError::Upstream(UpstreamError::InitFailed(format!(
-            "method not supported: {method}"
-        ))));
+        // v0 only proxies tools/list and tools/call. initialize/ping are
+        // handled in the HTTP handler before reaching here. Anything else
+        // returns method_not_found.
+        return Ok(ProxyOutcome::MethodNotFound);
     }
 
     let tool_name = params

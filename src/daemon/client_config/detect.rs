@@ -41,6 +41,10 @@ pub struct DetectedClient {
 /// Scan PATH directories for a binary matching any of the given names.
 pub fn scan_paths(paths: &[PathBuf], binary_names: &[&str]) -> Option<PathBuf> {
     for dir in paths {
+        // CC-19: skip empty PATH components — they would resolve against CWD.
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
         for name in binary_names {
             let candidate = dir.join(name);
             if candidate.is_file() {
@@ -48,9 +52,13 @@ pub fn scan_paths(paths: &[PathBuf], binary_names: &[&str]) -> Option<PathBuf> {
             }
             #[cfg(target_os = "windows")]
             {
-                let with_exe = dir.join(format!("{name}.exe"));
-                if with_exe.is_file() {
-                    return Some(with_exe);
+                // CC-19: also probe .exe, .cmd, .ps1 — npm/pnpm/volta install
+                // shims like claude.cmd rather than a plain binary.
+                for ext in &[".exe", ".cmd", ".ps1"] {
+                    let with_ext = dir.join(format!("{name}{ext}"));
+                    if with_ext.is_file() {
+                        return Some(with_ext);
+                    }
                 }
             }
         }

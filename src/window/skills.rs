@@ -123,38 +123,6 @@ pub(crate) fn install_skills_callbacks(window: &MainWindow, ctx: &CallbackContex
         });
     });
 
-    let rt_for_toggle = rt.clone();
-    let skills_for_toggle = skills.clone();
-    let weak = window.as_weak();
-    window.on_skills_toggle_target(move |directory, ide, enable| {
-        let skills = skills_for_toggle.clone();
-        let weak = weak.clone();
-        let directory = directory.to_string();
-        let ide = ide.to_string();
-        rt_for_toggle.spawn(async move {
-            let Ok(Some(current)) = skills
-                .list_installed()
-                .await
-                .map(|all| all.into_iter().find(|s| s.directory == directory))
-            else {
-                return;
-            };
-            let mut targets: Vec<String> = current.targets.clone();
-            targets.retain(|t| t != &ide);
-            if enable {
-                targets.push(ide.clone());
-            }
-            if let Err(e) = skills.set_targets(&directory, targets).await {
-                let msg = format!("Toggle failed: {e}");
-                tracing::warn!(error = %e, "skill set_targets failed");
-                weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_skills_status_message(SharedString::from(msg));
-                })
-                .ok();
-            }
-        });
-    });
-
     let rt_for_add_repo = rt.clone();
     let skills_for_add_repo = skills.clone();
     window.on_skills_add_repo(move |owner, name, branch| {

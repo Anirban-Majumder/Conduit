@@ -179,7 +179,7 @@ async fn migrations_idempotent_on_re_open() {
 
 #[tokio::test]
 async fn delete_server_cascades_to_tool_decisions() {
-    use conduit::daemon::db::types::{Decision, DecisionSource, McpServer, McpTool};
+    use conduit::daemon::db::types::{Decision, McpServer, McpTool};
 
     let db = Db::spawn_in_memory().expect("spawn db actor");
     let server = McpServer {
@@ -209,7 +209,7 @@ async fn delete_server_cascades_to_tool_decisions() {
     )
     .await
     .unwrap();
-    db.set_tool_decision("gmail", "send", Decision::Allow, DecisionSource::User)
+    db.set_tool_decision("gmail", "send", Decision::Allow)
         .await
         .unwrap();
     assert!(db

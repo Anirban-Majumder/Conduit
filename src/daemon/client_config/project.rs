@@ -8,6 +8,8 @@
 //! row is absent. Every detect bumps `last_seen_at`. Custom rows (`is_builtin=0`)
 //! are never in `detected` and are never touched.
 
+use std::collections::HashMap;
+
 use super::detect::DetectedClient;
 use super::types::{ConfigSchema, ResolvedClient, Scope};
 use crate::daemon::db::Db;
@@ -26,9 +28,18 @@ pub async fn project_builtins(db: &Db, detected: &[DetectedClient]) -> Result<()
         let def = d.def;
         let existing = db.get_client(def.id).await?;
         if version_changed || existing.is_none() {
-            let config_path = super::paths::resolve(&def.config)
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
+            // CC-13: skip projection when the base dir is unavailable (e.g. no
+            // home dir in a headless CI environment). An empty-string path stored
+            // in the DB later causes a misleading NonUtf8Path / empty-path error;
+            // better to warn and skip than to persist a broken row.
+            let Some(resolved_config) = super::paths::resolve(&def.config) else {
+                tracing::warn!(
+                    client_id = %def.id,
+                    "project_builtins: cannot resolve config path (base dir unavailable); skipping"
+                );
+                continue;
+            };
+            let config_path = resolved_config.display().to_string();
             let skills_dir = def
                 .skills
                 .as_ref()
@@ -74,7 +85,16 @@ pub async fn project_builtins(db: &Db, detected: &[DetectedClient]) -> Result<()
 /// renderer's write path skips byte-identical files, so a consistent tree writes
 /// nothing. Best-effort: a single client/scope failure is logged and skipped.
 pub async fn reconcile_configs(db: &Db, port: u16) -> Result<(), DbError> {
-    for row in db.list_tracked_clients().await? {
+    let all_rows = db.list_tracked_clients().await?;
+    // CC-12: check for clients sharing the same config file + key_path.
+    let all_clients: Vec<ResolvedClient> = all_rows
+        .iter()
+        .filter(|r| r.is_builtin)
+        .map(|r| ResolvedClient::from_row(r.clone()))
+        .collect();
+    warn_config_conflicts(&all_clients, &Scope::Global);
+
+    for row in all_rows {
         if !row.is_builtin {
             continue;
         }
@@ -105,6 +125,33 @@ pub async fn reconcile_configs(db: &Db, port: u16) -> Result<(), DbError> {
         }
     }
     Ok(())
+}
+
+/// CC-12: warn when two tracked clients write to the same physical config file
+/// with the same `key_path` prefix (e.g. `ClaudeCode` + `OpenClaude` both targeting
+/// `.mcp.json` / `mcpServers` in repo scope). Detection only — no behavior change.
+fn warn_config_conflicts(clients: &[ResolvedClient], scope: &Scope) {
+    // Key: (absolute config path, key_path as string) → first client id that owns it
+    let mut seen: HashMap<(std::path::PathBuf, String), String> = HashMap::new();
+    for client in clients {
+        let Some(target) = client.config_target(scope) else {
+            continue;
+        };
+        let key_str = client.schema.key_path.join(".");
+        let map_key = (target, key_str);
+        if let Some(first_id) = seen.get(&map_key) {
+            tracing::warn!(
+                client_a = %first_id,
+                client_b = %client.id,
+                path = %map_key.0.display(),
+                key_path = %map_key.1,
+                "CC-12: two tracked clients write to the same config file and key_path; \
+                 they will clobber each other on every render"
+            );
+        } else {
+            seen.insert(map_key, client.id.clone());
+        }
+    }
 }
 
 async fn reconcile_orphaned_builtins(db: &Db) -> Result<(), DbError> {

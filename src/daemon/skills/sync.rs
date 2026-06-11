@@ -107,6 +107,10 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
             copy_dir_all(&from, &to)?;
         } else if ty.is_file() {
             fs::copy(&from, &to)?;
+        } else if ty.is_symlink() {
+            // SK-10: symlinks are skipped; following them risks escaping the
+            // skill directory boundary. Warn so operators can diagnose missing files.
+            tracing::warn!(path = %from.display(), "copy_dir_all: skipping symlink");
         }
     }
     Ok(())

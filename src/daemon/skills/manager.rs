@@ -23,6 +23,9 @@ use crate::daemon::paths::Paths;
 use crate::daemon::time_util::{now_unix_nanos, now_unix_secs};
 
 const DISCOVER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+/// SK-5: when any repo errors during discovery, use a much shorter TTL so the
+/// next refresh retries rather than serving the partial list for a full hour.
+const DISCOVER_CACHE_TTL_PARTIAL: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_AGENT: &str = "conduit-skills";
 const DOWNLOAD_FILES_PER_SKILL_LIMIT: usize = 200;
@@ -67,6 +70,8 @@ struct DiscoverCache {
     fingerprint: String,
     generated_at: SystemTime,
     skills: Vec<SkillCandidate>,
+    /// SK-5: full TTL normally; short TTL when discovery was partial.
+    ttl: Duration,
 }
 
 impl SkillManager {
@@ -117,8 +122,7 @@ impl SkillManager {
             let cached = self.discover_cache.lock().await.clone();
             if let Some(cache) = &cached {
                 if cache.fingerprint == fingerprint
-                    && cache.generated_at.elapsed().unwrap_or(DISCOVER_CACHE_TTL)
-                        < DISCOVER_CACHE_TTL
+                    && cache.generated_at.elapsed().unwrap_or(cache.ttl) < cache.ttl
                 {
                     return Ok(cache.skills.clone());
                 }
@@ -135,19 +139,25 @@ impl SkillManager {
             let cached = self.discover_cache.lock().await.clone();
             if let Some(cache) = &cached {
                 if cache.fingerprint == fingerprint
-                    && cache.generated_at.elapsed().unwrap_or(DISCOVER_CACHE_TTL)
-                        < DISCOVER_CACHE_TTL
+                    && cache.generated_at.elapsed().unwrap_or(cache.ttl) < cache.ttl
                 {
                     return Ok(cache.skills.clone());
                 }
             }
         }
 
-        let skills = discover::discover_skills(&self.http, &enabled).await?;
+        let (skills, any_errored) = discover::discover_skills(&self.http, &enabled).await?;
+        // SK-5: use a short TTL when any repo errored so the next refresh retries.
+        let ttl = if any_errored {
+            DISCOVER_CACHE_TTL_PARTIAL
+        } else {
+            DISCOVER_CACHE_TTL
+        };
         *self.discover_cache.lock().await = Some(DiscoverCache {
             fingerprint,
             generated_at: SystemTime::now(),
             skills: skills.clone(),
+            ttl,
         });
         Ok(skills)
     }
@@ -242,23 +252,35 @@ impl SkillManager {
         // SK-2: root-level skill — all blob entries are included directly,
         // with their tree path used as the relative install path.
         let (files, source_dir) = if is_root {
+            // Root installs pull ALL files with no cap — the SKILL.md at the
+            // repo root implies the whole repo is the skill.
             let all_blobs = tree
                 .entries
                 .into_iter()
                 .filter(|e| e.kind == discover::EntryKind::Blob)
-                .take(DOWNLOAD_FILES_PER_SKILL_LIMIT)
                 .collect::<Vec<_>>();
             (all_blobs, String::new())
         } else {
             let source_dir = sanitize_relative(&candidate.directory)
                 .ok_or_else(|| SkillError::InvalidPath(candidate.directory.clone()))?;
-            let filtered = tree
+            let all_matching = tree
                 .entries
                 .into_iter()
                 .filter(|e| {
                     e.kind == discover::EntryKind::Blob
                         && (e.path == source_dir || e.path.starts_with(&format!("{source_dir}/")))
                 })
+                .collect::<Vec<_>>();
+            if all_matching.len() > DOWNLOAD_FILES_PER_SKILL_LIMIT {
+                tracing::warn!(
+                    directory = %source_dir,
+                    total = all_matching.len(),
+                    limit = DOWNLOAD_FILES_PER_SKILL_LIMIT,
+                    "skill has more files than the per-skill download limit; some files will be skipped"
+                );
+            }
+            let filtered = all_matching
+                .into_iter()
                 .take(DOWNLOAD_FILES_PER_SKILL_LIMIT)
                 .collect::<Vec<_>>();
             (filtered, source_dir)
@@ -345,11 +367,30 @@ impl SkillManager {
             return Err(e);
         }
 
-        let _ignored = tokio::fs::remove_dir_all(&dest).await;
+        // SK-9: delete-last swap — rename old dest aside first so that if the
+        // rename of tmp fails we still have the original content. Only delete
+        // the old dir after the new content is in place.
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::rename(&tmp, &dest).await?;
+        let old_aside = dest
+            .parent()
+            .map(|p| p.join(format!(".{install_name}.old-{}", now_unix_nanos())));
+        if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+            if let Some(ref aside) = old_aside {
+                let _ignored = tokio::fs::rename(&dest, aside).await;
+            }
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
+            // Rename failed: clean up tmp, leave the aside in place so the user
+            // can manually recover; the aside will be swept next startup purge_tmp.
+            let _ignored = tokio::fs::remove_dir_all(&tmp).await;
+            return Err(SkillError::Io(e));
+        }
+        // New content is live — safe to drop the old dir.
+        if let Some(aside) = old_aside {
+            let _ignored = tokio::fs::remove_dir_all(&aside).await;
+        }
 
         let metadata = load_skill_metadata_from_dir(&dest, &install_name).await?;
 
@@ -752,11 +793,15 @@ async fn locate_skill_md(dir: &std::path::Path) -> Result<PathBuf, SkillError> {
     })
 }
 
+// SK-14: use read_dir with a case-insensitive filename compare so that a repo
+// with e.g. "SKILL.MD" is found on case-sensitive filesystems (Linux).
 async fn first_existing_skill_md(dir: &std::path::Path) -> Option<PathBuf> {
-    for name in ["SKILL.md", "Skill.md", "skill.md"] {
-        let candidate = dir.join(name);
-        if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
-            return Some(candidate);
+    let mut reader = tokio::fs::read_dir(dir).await.ok()?;
+    while let Ok(Some(entry)) = reader.next_entry().await {
+        let fname = entry.file_name();
+        let lower = fname.to_string_lossy().to_ascii_lowercase();
+        if lower == "skill.md" {
+            return Some(entry.path());
         }
     }
     None

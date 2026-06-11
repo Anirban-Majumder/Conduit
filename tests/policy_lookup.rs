@@ -50,7 +50,7 @@ async fn seed_server(db: &Db, name: &str, tools: &[&str]) {
 async fn tier1_per_tool_decision_wins_with_user_source() {
     let db = Db::spawn_in_memory().unwrap();
     seed_server(&db, "gmail", &["send"]).await;
-    db.set_tool_decision("gmail", "send", Decision::Allow, DecisionSource::User)
+    db.set_tool_decision("gmail", "send", Decision::Allow)
         .await
         .unwrap();
 
@@ -94,7 +94,7 @@ async fn tier2_falls_through_to_supplied_default() {
 async fn reprobe_drops_decision_for_vanished_tool() {
     let db = Db::spawn_in_memory().unwrap();
     seed_server(&db, "gmail", &["send", "read"]).await;
-    db.set_tool_decision("gmail", "send", Decision::Allow, DecisionSource::User)
+    db.set_tool_decision("gmail", "send", Decision::Allow)
         .await
         .unwrap();
 
@@ -120,7 +120,7 @@ async fn reprobe_preserves_decision_for_surviving_tool() {
     // query_upsert_server_with_tools from regressing to `decision = excluded.decision`.)
     let db = Db::spawn_in_memory().unwrap();
     seed_server(&db, "gmail", &["send", "read"]).await;
-    db.set_tool_decision("gmail", "send", Decision::Allow, DecisionSource::User)
+    db.set_tool_decision("gmail", "send", Decision::Allow)
         .await
         .unwrap();
 

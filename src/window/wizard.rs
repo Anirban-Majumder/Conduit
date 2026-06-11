@@ -17,8 +17,7 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
 use conduit::daemon::db::types::{
-    Decision, DecisionSource, EnvEntry, EnvValue, McpServer, McpTool as DbMcpTool, TRANSPORT_HTTP,
-    TRANSPORT_STDIO,
+    Decision, EnvEntry, EnvValue, McpServer, McpTool as DbMcpTool, TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
 use conduit::daemon::events::Event;
 use conduit::daemon::onboarding::mark_first_run_completed;
@@ -397,10 +396,7 @@ pub(crate) fn install_wizard_callbacks(
             let outcome: Result<usize, String> = match result {
                 Ok(()) => {
                     for (tool, decision) in &policy_overrides {
-                        if let Err(e) = db
-                            .set_tool_decision(&name, tool, *decision, DecisionSource::User)
-                            .await
-                        {
+                        if let Err(e) = db.set_tool_decision(&name, tool, *decision).await {
                             tracing::warn!(error = %e, tool = %tool, "policy override failed");
                         }
                     }

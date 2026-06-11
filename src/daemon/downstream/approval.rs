@@ -59,15 +59,17 @@ pub struct ApprovalCenter {
     bus: Bus,
     settings: SharedSettings,
     waiters: WaiterMap,
+    cancel: CancellationToken,
 }
 
 impl ApprovalCenter {
-    pub fn new(db: Db, bus: Bus, settings: SharedSettings) -> Self {
+    pub fn new(db: Db, bus: Bus, settings: SharedSettings, cancel: CancellationToken) -> Self {
         Self {
             db,
             bus,
             settings,
             waiters: Arc::new(Mutex::new(HashMap::new())),
+            cancel,
         }
     }
 
@@ -142,6 +144,8 @@ impl ApprovalCenter {
                 }
                 Err(_dropped) => ApprovalOutcome::Timeout,
             },
+            // DS-12: clean shutdown path — cancel token fires before the approval timeout.
+            () = self.cancel.cancelled() => ApprovalOutcome::Timeout,
             () = tokio::time::sleep(self.timeout()) => {
                 // Conditional update — only this caller wins if the row is still pending.
                 match self

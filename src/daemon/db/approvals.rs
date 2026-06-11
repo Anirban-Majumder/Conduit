@@ -98,21 +98,13 @@ pub(super) fn query_sweep_stale_pending_approvals(
     older_than_ts: i64,
 ) -> Result<Vec<String>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id FROM pending_approvals
-         WHERE status = 'pending' AND created_at < ?1",
+        "UPDATE pending_approvals SET status = 'timeout'
+         WHERE status = 'pending' AND created_at < ?1
+         RETURNING id",
     )?;
-    let ids: Vec<String> = stmt
+    let ids = stmt
         .query_map(params![older_than_ts], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(stmt);
-    if ids.is_empty() {
-        return Ok(ids);
-    }
-    let mut update =
-        conn.prepare_cached("UPDATE pending_approvals SET status = 'timeout' WHERE id = ?1")?;
-    for id in &ids {
-        update.execute(params![id])?;
-    }
     Ok(ids)
 }
 

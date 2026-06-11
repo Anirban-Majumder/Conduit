@@ -277,7 +277,15 @@ pub(crate) fn reveal_in_file_manager(path: &std::path::Path) {
         let dir = path.parent().unwrap_or(path);
         std::process::Command::new("xdg-open").arg(dir).spawn()
     };
-    if let Err(e) = result {
-        tracing::warn!(path = %path.display(), error = %e, "reveal in file manager failed");
+    match result {
+        Ok(mut child) => {
+            // Reap the child on a background thread to avoid a zombie on Unix.
+            std::thread::spawn(move || {
+                child.wait().ok();
+            });
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "reveal in file manager failed")
+        }
     }
 }

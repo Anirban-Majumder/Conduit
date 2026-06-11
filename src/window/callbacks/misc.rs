@@ -1,15 +1,13 @@
-//! Miscellaneous Slint callbacks: per-tool policy edits and paste parsing.
+//! Miscellaneous Slint callbacks: paste parsing.
 //!
-//! Covers per-tool policy changes and the add-server JSON paste parser.
+//! Covers the add-server JSON paste parser.
 //! Settings-tab edits live in `callbacks::settings`. Like the other callback
-//! modules, DB work runs on the tokio worker and UI writes go through the
-//! Slint event loop.
+//! modules, UI writes go through the Slint event loop.
 
 use std::rc::Rc;
 
 use slint::{ComponentHandle, SharedString, VecModel};
 
-use conduit::daemon::db::types::{Decision, DecisionSource};
 use conduit::daemon::wizard_input;
 
 use crate::window::view::{EnvVarRow, MainWindow};
@@ -18,35 +16,9 @@ use crate::window::CallbackContext;
 
 pub(crate) fn install_misc_callbacks(
     window: &MainWindow,
-    ctx: &CallbackContext,
+    _ctx: &CallbackContext,
     env_rows: &Rc<VecModel<EnvVarRow>>,
 ) {
-    let db = &ctx.db;
-    let rt = &ctx.rt;
-
-    let db_for_policy = db.clone();
-    let rt_for_policy = rt.clone();
-    window.on_change_policy(move |server, tool, decision_str| {
-        let db = db_for_policy.clone();
-        let Some(decision) = Decision::from_db_str(decision_str.as_str()) else {
-            tracing::warn!(decision = %decision_str.as_str(), "unknown decision");
-            return;
-        };
-        rt_for_policy.spawn(async move {
-            if let Err(e) = db
-                .set_tool_decision(
-                    server.as_str(),
-                    tool.as_str(),
-                    decision,
-                    DecisionSource::User,
-                )
-                .await
-            {
-                tracing::warn!(error = %e, "set policy failed");
-            }
-        });
-    });
-
     // The Args field doubles as a paste-to-autofill input: when it holds a full
     // MCP JSON config (starts with '{' or '['), parse it and fill the form;
     // otherwise it's just plain arguments and we leave it alone.

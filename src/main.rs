@@ -163,6 +163,7 @@ fn main() -> Result<()> {
         db.clone(),
         bus.clone(),
         settings.clone(),
+        cancel.clone(),
     ));
     let upstream = {
         let _guard = worker.handle().enter();

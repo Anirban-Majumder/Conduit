@@ -13,7 +13,7 @@ export component ScopePopover inherits ModalShell {
     in property <string> editor-label;
     in property <string> item-label;
     in property <[ScopeRow]> scopes;
-    in property <string> add-path;
+    in-out property <string> add-path;
     in property <string> add-error;
     callback toggle-scope(string, bool);   // scope-key, on
     callback add-repo(string);             // typed path
@@ -89,7 +89,7 @@ export component ScopePopover inherits ModalShell {
                     x: 10px;
                     width: parent.width - 20px;
                     y: (parent.height - self.preferred-height) / 2;
-                    text: root.add-path;
+                    text <=> root.add-path;
                     color: Theme.text-primary;
                     font-size: Theme.font-body-sm;
                     font-family: "Space Mono";

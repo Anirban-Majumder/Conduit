@@ -15,7 +15,8 @@ use super::approvals::{
     query_resolve_pending_approval, query_sweep_stale_pending_approvals,
 };
 use super::audit::{
-    query_insert_audit_entry, query_purge_old_audit_entries, query_query_audit_log,
+    query_count_audit_entries, query_insert_audit_entry, query_purge_old_audit_entries,
+    query_query_audit_log,
 };
 use super::clients::{
     query_add_managed_server, query_client_manages_server, query_get_client, query_list_clients,
@@ -119,13 +120,10 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
             server,
             tool,
             decision,
-            source,
             reply,
         } => {
             reply
-                .send(query_set_tool_decision(
-                    conn, &server, &tool, decision, source,
-                ))
+                .send(query_set_tool_decision(conn, &server, &tool, decision))
                 .ok();
         }
         DbCmd::GetToolDecision {
@@ -318,6 +316,9 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
         }
         DbCmd::QueryAuditLog { filter, reply } => {
             reply.send(query_query_audit_log(conn, &filter)).ok();
+        }
+        DbCmd::CountAuditEntries { filter, reply } => {
+            reply.send(query_count_audit_entries(conn, &filter)).ok();
         }
         DbCmd::PurgeOldAuditEntries {
             older_than_ts,

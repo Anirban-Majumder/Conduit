@@ -59,6 +59,7 @@ fn make_state(db: Db, port: u16) -> (AppState, CancellationToken) {
         db.clone(),
         bus.clone(),
         settings.clone(),
+        cancel.clone(),
     ));
     let dir = std::env::temp_dir().join(format!("mcp-scope-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

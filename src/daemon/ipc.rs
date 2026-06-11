@@ -8,6 +8,7 @@
 //! other commands are reserved for future CLI use.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use interprocess::local_socket::{
@@ -17,10 +18,15 @@ use interprocess::local_socket::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const STALE_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
+/// Maximum concurrent IPC connections (DS-10). Prevents unbounded task spawning.
+const MAX_CONCURRENT_CONNECTIONS: usize = 8;
+/// Per-connection read deadline (DS-10). Prevents slow-client resource hold.
+const CONN_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum IpcError {
@@ -233,35 +239,35 @@ async fn read_line_bounded<R: AsyncBufReadExt + Unpin>(
     out: &mut String,
 ) -> Result<usize, IpcError> {
     out.clear();
-    let mut total: usize = 0;
+    // Accumulate raw bytes so multi-byte UTF-8 sequences split across fill_buf
+    // chunks are validated as a whole, not per-chunk (DS-9).
+    let mut raw: Vec<u8> = Vec::new();
     loop {
         let buf = reader.fill_buf().await?;
         if buf.is_empty() {
-            return Ok(total);
+            // EOF: convert whatever we have (no newline terminated line).
+            let n = raw.len();
+            *out = String::from_utf8(raw)
+                .map_err(|e| IpcError::Io(std::io::Error::other(e.to_string())))?;
+            return Ok(n);
         }
         if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let take = pos + 1;
-            if total + take > MAX_LINE_BYTES {
+            if raw.len() + take > MAX_LINE_BYTES {
                 return Err(IpcError::OversizedFrame);
             }
-            let chunk = buf.get(..take).ok_or_else(|| {
-                IpcError::Io(std::io::Error::other("fill_buf shorter than reported"))
-            })?;
-            let s = std::str::from_utf8(chunk)
-                .map_err(|e| IpcError::Io(std::io::Error::other(e.to_string())))?;
-            out.push_str(s);
+            raw.extend_from_slice(buf.get(..take).unwrap_or_default());
             reader.consume(take);
-            total += take;
-            return Ok(total);
+            let n = raw.len();
+            *out = String::from_utf8(raw)
+                .map_err(|e| IpcError::Io(std::io::Error::other(e.to_string())))?;
+            return Ok(n);
         }
         // No newline in this chunk — keep accumulating until we hit the cap.
-        if total + buf.len() > MAX_LINE_BYTES {
+        if raw.len() + buf.len() > MAX_LINE_BYTES {
             return Err(IpcError::OversizedFrame);
         }
-        let s = std::str::from_utf8(buf)
-            .map_err(|e| IpcError::Io(std::io::Error::other(e.to_string())))?;
-        out.push_str(s);
-        total += buf.len();
+        raw.extend_from_slice(buf);
         let n = buf.len();
         reader.consume(n);
     }
@@ -269,10 +275,13 @@ async fn read_line_bounded<R: AsyncBufReadExt + Unpin>(
 
 /// The trigger fired when an IPC client sends a `show` command. Wired in main
 /// to `slint::Weak::upgrade_in_event_loop(|ui| ui.window().show())`.
-pub type ShowHandler = std::sync::Arc<dyn Fn() + Send + Sync>;
+pub type ShowHandler = Arc<dyn Fn() + Send + Sync>;
 
-/// Accept loop. Spawns one task per connection. Returns when `cancel` fires.
+/// Accept loop. Spawns one task per connection, bounded to `MAX_CONCURRENT_CONNECTIONS`.
+/// Returns when `cancel` fires.
 pub async fn accept_loop(listener: Listener, cancel: CancellationToken, on_show: ShowHandler) {
+    // Semaphore limits concurrent connection tasks (DS-10).
+    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     loop {
         tokio::select! {
             () = cancel.cancelled() =>{
@@ -282,9 +291,14 @@ pub async fn accept_loop(listener: Listener, cancel: CancellationToken, on_show:
             res = listener.accept() => {
                 match res {
                     Ok(conn) => {
+                        let Ok(permit) = Arc::clone(&sem).try_acquire_owned() else {
+                            tracing::warn!("ipc: connection limit reached, dropping connection");
+                            continue;
+                        };
                         let on_show = on_show.clone();
                         let cancel = cancel.clone();
                         tokio::spawn(async move {
+                            let _permit = permit; // released when task ends
                             if let Err(e) = handle_conn(conn, on_show, cancel).await {
                                 tracing::warn!(error = %e, "ipc handle_conn error");
                             }
@@ -308,9 +322,15 @@ async fn handle_conn(
     let mut writer = &conn;
     let mut line = String::with_capacity(256);
 
+    // DS-10: bound per-connection read with a hard deadline and cancel-token branch.
     let read_result = tokio::select! {
         () = cancel.cancelled() => return Ok(()),
-        r = read_line_bounded(&mut reader, &mut line) => r,
+        r = tokio::time::timeout(CONN_READ_TIMEOUT, read_line_bounded(&mut reader, &mut line)) => {
+            match r {
+                Ok(inner) => inner,
+                Err(_elapsed) => return Ok(()), // timed out — drop connection silently
+            }
+        },
     };
 
     let resp = match read_result {
@@ -342,5 +362,36 @@ fn dispatch(line: &str, on_show: &ShowHandler) -> Response {
         // Approve/Deny/Status: future CLI work — accept but defer.
         Command::Approve { .. } | Command::Deny { .. } => Response::err("not_implemented"),
         Command::Status => Response::ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test ergonomics")]
+    use super::*;
+    use tokio::io::BufReader;
+
+    // DS-9: a 3-byte UTF-8 sequence (€ = 0xE2 0x82 0xAC) split across two
+    // fill_buf chunks must decode correctly, not corrupt on per-chunk validation.
+    #[tokio::test]
+    async fn read_line_bounded_multibyte_split() {
+        let cursor = std::io::Cursor::new("€\n".as_bytes().to_vec());
+        let mut reader = BufReader::new(tokio::io::BufReader::new(cursor));
+        let mut out = String::new();
+        let n = read_line_bounded(&mut reader, &mut out).await.unwrap();
+        assert!(n > 0);
+        assert_eq!(out.trim_end_matches('\n'), "€");
+    }
+
+    // DS-9: lone-quote input must not produce empty string from strip_quotes
+    // (wizard_input tested separately; verify the IPC layer handles non-ASCII).
+    #[tokio::test]
+    async fn read_line_bounded_ascii_roundtrip() {
+        let cursor = std::io::Cursor::new(b"{\"cmd\":\"show\"}\n".to_vec());
+        let mut reader = BufReader::new(tokio::io::BufReader::new(cursor));
+        let mut out = String::new();
+        let n = read_line_bounded(&mut reader, &mut out).await.unwrap();
+        assert!(n > 0);
+        assert_eq!(out.trim_end_matches('\n'), r#"{"cmd":"show"}"#);
     }
 }

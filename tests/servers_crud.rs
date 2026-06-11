@@ -173,7 +173,7 @@ fn lifecycle_idle_clamped_to_1_to_86400() {
 /// that replaced the denormalized IDE blob) AND to `mcp_tool` decisions.
 #[tokio::test]
 async fn rename_server_cascades_to_managed_mcp_and_tool_decisions() {
-    use conduit::daemon::db::types::{Decision, DecisionSource, McpTool};
+    use conduit::daemon::db::types::{Decision, McpTool};
 
     let db = Db::spawn_in_memory().unwrap();
     seed_client(&db, "Cursor").await;
@@ -190,14 +190,9 @@ async fn rename_server_cascades_to_managed_mcp_and_tool_decisions() {
     )
     .await
     .unwrap();
-    db.set_tool_decision(
-        "github",
-        "create_issue",
-        Decision::Allow,
-        DecisionSource::User,
-    )
-    .await
-    .unwrap();
+    db.set_tool_decision("github", "create_issue", Decision::Allow)
+        .await
+        .unwrap();
     db.set_managed_servers("Cursor", "global", vec!["github".to_string()])
         .await
         .unwrap();

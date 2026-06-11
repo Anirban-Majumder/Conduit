@@ -7,7 +7,7 @@ repository = "https://github.com/ahmed/conduit"  # TODO: replace with actual rep
 license = "Apache-2.0"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process", "net", "fs", "io-util"] }
 tokio-util = "0.7"
 
 slint = { version = "1", features = ["backend-winit", "renderer-skia"] }

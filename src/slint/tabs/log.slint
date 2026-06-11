@@ -49,15 +49,23 @@ export component LogTab inherits Rectangle {
                     x: 10px;
                     width: parent.width - 20px;
                     height: parent.height;
-                    text: root.search-query;
+                    text <=> root.search-query;
                     color: Theme.text-primary;
                     font-size: Theme.font-body-sm;
                     vertical-alignment: center;
                     single-line: true;
                     edited => {
-                        root.search-query = self.text;
                         root.expanded-id = "";
-                        root.search-changed(self.text);
+                        search-debounce.running = false;
+                        search-debounce.running = true;
+                    }
+                }
+                search-debounce := Timer {
+                    interval: 500ms;
+                    running: false;
+                    triggered => {
+                        self.running = false;
+                        root.search-changed(root.search-query);
                     }
                 }
             }

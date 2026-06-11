@@ -10,8 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::cascade;
 use conduit::daemon::db::types::{
-    ApprovalStatus, Decision, DecisionSource, EnvValue, McpTool as DbMcpTool, TRANSPORT_HTTP,
-    TRANSPORT_STDIO,
+    ApprovalStatus, Decision, EnvValue, McpTool as DbMcpTool, TRANSPORT_HTTP, TRANSPORT_STDIO,
 };
 use conduit::daemon::events::Event;
 use conduit::daemon::upstream::http;
@@ -20,7 +19,7 @@ use conduit::daemon::upstream::probe::{
 };
 use zeroize::Zeroizing;
 
-use crate::window::refresh::{refresh_server_detail, refresh_servers, toggle_server_for_ide};
+use crate::window::refresh::{refresh_server_detail, refresh_servers};
 use crate::window::util::unix_now;
 use crate::window::view::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
 use crate::window::wizard::{bearer_from_headers, env_field_from_server, picker_from_lifecycle};
@@ -72,7 +71,7 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 return;
             }
             if let Err(e) = db
-                .set_tool_decision(&server, &tool, Decision::Allow, DecisionSource::User)
+                .set_tool_decision(&server, &tool, Decision::Allow)
                 .await
             {
                 tracing::warn!(error = %e, server = %server, tool = %tool, "approve always policy upgrade failed");
@@ -355,35 +354,14 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
             if tool == "*" {
                 if let Ok(tools) = db.list_server_tools(&server).await {
                     for t in tools {
-                        if let Err(e) = db
-                            .set_tool_decision(&server, &t.name, decision, DecisionSource::User)
-                            .await
-                        {
+                        if let Err(e) = db.set_tool_decision(&server, &t.name, decision).await {
                             tracing::warn!(error = %e, "set tool decision failed");
                         }
                     }
                 }
-            } else if let Err(e) = db
-                .set_tool_decision(&server, &tool, decision, DecisionSource::User)
-                .await
-            {
+            } else if let Err(e) = db.set_tool_decision(&server, &tool, decision).await {
                 tracing::warn!(error = %e, "set tool decision failed");
             }
-            refresh_server_detail(&weak, &db, &server).await;
-        });
-    });
-
-    let db_for_toggle_target = db.clone();
-    let rt_for_toggle_target = rt.clone();
-    let weak_for_toggle_target = window.as_weak();
-    let port_for_toggle_target = port;
-    window.on_toggle_server_target(move |server, ide_kind, enable| {
-        let db = db_for_toggle_target.clone();
-        let weak = weak_for_toggle_target.clone();
-        let server = server.to_string();
-        let ide_kind = ide_kind.to_string();
-        rt_for_toggle_target.spawn(async move {
-            toggle_server_for_ide(&db, port_for_toggle_target, &server, &ide_kind, enable).await;
             refresh_server_detail(&weak, &db, &server).await;
         });
     });

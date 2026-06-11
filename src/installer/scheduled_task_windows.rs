@@ -19,22 +19,30 @@ pub fn install(exe: &Path) -> Result<PathBuf, InstallError> {
 }
 
 pub fn uninstall() -> Result<(), InstallError> {
-    let status = Command::new("schtasks")
-        .args(["/Delete", "/TN", TASK_NAME, "/F"])
-        .output()?;
-    // schtasks /Delete returns non-zero if the task doesn't exist; treat as idempotent.
-    if status.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        if stderr.contains("cannot find") || stderr.contains("does not exist") {
-            Ok(())
-        } else {
-            Err(InstallError::CommandFailed {
-                stderr: stderr.into_owned(),
-            })
+    // Query first: exit 0 means the task exists; non-zero means absent.
+    // This avoids matching localised error text from /Delete.
+    let present = Command::new("schtasks")
+        .args(["/Query", "/TN", TASK_NAME])
+        .output()
+        .is_ok_and(|o| o.status.success());
+
+    if present {
+        let out = Command::new("schtasks")
+            .args(["/Delete", "/TN", TASK_NAME, "/F"])
+            .output()?;
+        if !out.status.success() {
+            return Err(InstallError::CommandFailed {
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
         }
     }
+
+    // Best-effort: remove the rendered XML regardless of locale / task presence.
+    if let Ok(dir) = task_xml_dir() {
+        let _ = std::fs::remove_file(dir.join(XML_FILE_NAME));
+    }
+
+    Ok(())
 }
 
 pub fn is_installed() -> bool {

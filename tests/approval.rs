@@ -62,7 +62,7 @@ async fn first_pending_id(center: &ApprovalCenter) -> String {
 async fn request_returns_approved_when_resolved_approve() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -82,7 +82,7 @@ async fn request_returns_approved_when_resolved_approve() {
 async fn request_returns_denied_when_resolved_deny() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -102,7 +102,7 @@ async fn request_returns_denied_when_resolved_deny() {
 async fn request_returns_timeout_when_no_resolution() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(1));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(1), CancellationToken::new());
 
     let outcome = wait_for(Duration::from_secs(3), center.request(sample_req()))
         .await
@@ -122,7 +122,7 @@ async fn request_returns_timeout_when_no_resolution() {
 async fn request_persists_pending_row_before_resolution() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -151,7 +151,7 @@ async fn request_persists_pending_row_before_resolution() {
 async fn resolve_unknown_id_is_ok() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     center
         .resolve("does-not-exist", ApprovalStatus::Approved)
@@ -164,7 +164,7 @@ async fn approval_pending_event_published_before_waiting() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -202,7 +202,7 @@ async fn approval_resolved_event_fires_on_resolve() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -248,7 +248,7 @@ async fn approval_resolved_event_fires_on_resolve() {
 async fn resolve_to_pending_rejected() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
     let err = center
         .resolve("whatever", ApprovalStatus::Pending)
         .await
@@ -376,7 +376,12 @@ async fn concurrent_resolve_exactly_one_winner() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = Arc::new(ApprovalCenter::new(db, bus, settings_with_timeout(30)));
+    let center = Arc::new(ApprovalCenter::new(
+        db,
+        bus,
+        settings_with_timeout(30),
+        CancellationToken::new(),
+    ));
 
     let req_fut = {
         let c = Arc::clone(&center);
@@ -438,7 +443,12 @@ async fn approve_racing_timeout_returns_approved_not_timeout() {
     // Use a very short timeout so the sleep fires almost immediately.
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = Arc::new(ApprovalCenter::new(db, bus, settings_with_timeout(1)));
+    let center = Arc::new(ApprovalCenter::new(
+        db,
+        bus,
+        settings_with_timeout(1),
+        CancellationToken::new(),
+    ));
 
     let req_fut = {
         let c = Arc::clone(&center);

@@ -168,7 +168,7 @@ async fn managed_servers_round_trip_and_reverse_lookup() {
 
 #[tokio::test]
 async fn tool_decision_set_then_get_round_trip() {
-    use conduit::daemon::db::types::{Decision, DecisionSource, McpTool};
+    use conduit::daemon::db::types::{Decision, McpTool};
 
     let db = Db::spawn_in_memory().expect("spawn");
     db.upsert_server_with_tools(
@@ -185,7 +185,7 @@ async fn tool_decision_set_then_get_round_trip() {
     .await
     .unwrap();
 
-    db.set_tool_decision("gmail", "send_email", Decision::Allow, DecisionSource::User)
+    db.set_tool_decision("gmail", "send_email", Decision::Allow)
         .await
         .unwrap();
     assert_eq!(

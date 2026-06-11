@@ -163,6 +163,13 @@ pub struct AuditEntry {
     pub error_code: Option<String>,
 }
 
+/// Summary counts returned by `Db::count_audit_entries`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditCounts {
+    pub total: u64,
+    pub denied: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AuditFilter {
     pub client_key: Option<String>,

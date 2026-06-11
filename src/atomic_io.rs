@@ -63,14 +63,42 @@ pub fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()
 
 #[cfg(not(windows))]
 pub fn atomic_rename_or_replace(tmp: &Path, target: &Path) -> std::io::Result<()> {
-    fs::rename(tmp, target)?;
+    // CC-5: if `target` is a symlink (stow/chezmoi), resolve it so we rename
+    // onto the real file and avoid replacing the symlink with a regular file.
+    // When the resolved path is in a different directory we relocate the temp
+    // file there first so that the final rename stays same-filesystem.
+    symlink_aware_rename(tmp, target)?;
     // Best-effort parent-dir fsync so the rename itself is durable.
-    if let Some(parent) = target.parent() {
-        if let Ok(dir) = fs::File::open(parent) {
+    let fsync_dir = fs::canonicalize(target)
+        .unwrap_or_else(|_| target.to_owned())
+        .parent()
+        .map(Path::to_owned);
+    if let Some(parent) = fsync_dir {
+        if let Ok(dir) = fs::File::open(&parent) {
             if let Err(e) = dir.sync_all() {
                 tracing::trace!("parent dir fsync failed (non-fatal): {e}");
             }
         }
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn symlink_aware_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    let real_target = fs::canonicalize(target).unwrap_or_else(|_| target.to_owned());
+    if real_target == target {
+        return fs::rename(tmp, target);
+    }
+    // Symlink target is in a different dir; move the temp there first.
+    let real_parent = real_target.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = tmp
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new(".conduit.tmp"));
+    let moved_tmp = real_parent.join(file_name);
+    if fs::rename(tmp, &moved_tmp).is_ok() {
+        fs::rename(&moved_tmp, &real_target)
+    } else {
+        // Fallback: rename directly to the symlink (best effort).
+        fs::rename(tmp, target)
+    }
 }
