@@ -17,10 +17,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use jsonc_parser::common::Ranged as _;
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
-use super::io::{atomic_write_json, atomic_write_toml_str};
+use super::io::{atomic_write_json, atomic_write_jsonc_str, atomic_write_toml_str};
 use super::types::{ConfigFormat, ConfigSchema};
 use super::types::{ResolvedClient, Scope};
 use super::ClientError;
@@ -302,8 +303,126 @@ fn render_exact_json(
     if original.as_ref() == Some(&root) {
         return Ok(had_ours);
     }
+    // CC-1: for JSONC files that already have the key_path, use the splice
+    // path to preserve comments and formatting outside the managed subtree.
+    // Falls back to full serialize on any splice failure.
+    if format == ConfigFormat::Jsonc {
+        if let Some(spliced) = try_splice_jsonc(path, key_path, &root) {
+            atomic_write_jsonc_str(path, &spliced)?;
+            return Ok(had_ours);
+        }
+    }
     atomic_write_json(path, &Value::Object(root))?;
     Ok(had_ours)
+}
+
+/// CC-1: attempt to splice the updated `key_path` subtree into the original JSONC
+/// file text, preserving all bytes outside that subtree (comments, sibling keys,
+/// indentation). Returns `None` on any failure so the caller can fall back.
+///
+/// Strategy: parse the original file to an AST to obtain the byte `Range` of the
+/// object at `key_path`. Serialize the new value for that subtree as JSON (using
+/// the surrounding indentation). Splice: original[..span.start] + new + original[span.end..].
+fn try_splice_jsonc(
+    path: &Path,
+    key_path: &[String],
+    new_root: &Map<String, Value>,
+) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    // Strip BOM if present, same as read_json.
+    let payload = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    let text = std::str::from_utf8(payload).ok()?;
+
+    let parse_result = jsonc_parser::parse_to_ast(
+        text,
+        &jsonc_parser::CollectOptions::default(),
+        &jsonc_parser::ParseOptions::default(),
+    )
+    .ok()?;
+    let root_obj = parse_result.value.as_ref()?.as_object()?;
+
+    // Walk key_path through the AST to find the target object.
+    let target_obj = descend_ast_object(root_obj, key_path)?;
+    let span = target_obj.range();
+
+    // Build the replacement text: serialize the new subtree value from new_root.
+    let new_subtree = descend_existing_json_ref(new_root, key_path)?;
+    let indent = detect_indent(text);
+    let replacement = serialize_object_indented(new_subtree, indent);
+
+    // Splice: keep everything outside the span byte-for-byte.
+    let before = text.get(..span.start)?;
+    let after = text.get(span.end..)?;
+    Some(format!("{before}{replacement}{after}"))
+}
+
+/// Walk the AST `Object` tree following `key_path`, returning the `Object` at the leaf.
+fn descend_ast_object<'a>(
+    root: &'a jsonc_parser::ast::Object<'a>,
+    key_path: &[String],
+) -> Option<&'a jsonc_parser::ast::Object<'a>> {
+    let mut cur = root;
+    for seg in key_path {
+        cur = cur.get_object(seg)?;
+    }
+    Some(cur)
+}
+
+/// Detect the predominant indentation unit from the file text.
+/// Looks at the first line that starts with whitespace and uses that.
+/// Falls back to 2 spaces if no indented line is found.
+fn detect_indent(text: &str) -> &str {
+    for line in text.lines() {
+        let trimmed = line.trim_start_matches([' ', '\t']);
+        if !trimmed.is_empty() && trimmed != line {
+            // The leading whitespace is all ASCII (' '/'\\t'), so every char is
+            // one byte. Splitting at char boundaries is always correct here.
+            let ws_byte_len = line.len() - trimmed.len();
+            // SAFETY: ws_byte_len is the count of ASCII space/tab bytes; those
+            // are always valid UTF-8 boundaries.
+            if let Some(s) = line.get(..ws_byte_len) {
+                return s;
+            }
+        }
+    }
+    "  "
+}
+
+/// Serialize a JSON object map as a `{…}` block using `indent` per level.
+/// This is a minimal pretty-printer: one entry per line, trailing comma on
+/// each entry, no trailing comma on the last. Only needs to handle the shapes
+/// our entry templates can produce (objects, arrays, strings, numbers, bools, null).
+fn serialize_object_indented(map: &Map<String, Value>, indent: &str) -> String {
+    serialize_value_indented(&Value::Object(map.clone()), indent, 0)
+}
+
+fn serialize_value_indented(v: &Value, indent: &str, depth: usize) -> String {
+    match v {
+        Value::Object(m) => {
+            if m.is_empty() {
+                return "{}".to_owned();
+            }
+            let inner_indent = indent.repeat(depth + 1);
+            let close_indent = indent.repeat(depth);
+            let mut out = String::from("{\n");
+            let count = m.len();
+            for (i, (k, val)) in m.iter().enumerate() {
+                let comma = if i + 1 < count { "," } else { "" };
+                let key_str = serde_json::to_string(k).unwrap_or_default();
+                let val_str = serialize_value_indented(val, indent, depth + 1);
+                out.push_str(&inner_indent);
+                out.push_str(&key_str);
+                out.push_str(": ");
+                out.push_str(&val_str);
+                out.push_str(comma);
+                out.push('\n');
+            }
+            out.push_str(&close_indent);
+            out.push('}');
+            out
+        }
+        other => serde_json::to_string(other).unwrap_or_else(|_| "null".to_owned()),
+    }
 }
 
 fn render_exact_toml(
@@ -874,7 +993,9 @@ mod tests {
         );
         render_servers(&s, &path, "vsc00001", &["gmail".to_string()], 9876).unwrap();
 
-        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        // The output is JSONC (comments preserved) — read via JSONC reader.
+        let root = read_json(&path, ConfigFormat::Jsonc).unwrap().unwrap();
+        let v = Value::Object(root);
         assert_eq!(v["userSetting"], "keep me");
         assert_eq!(v["servers"]["mine"]["url"], "http://x");
         assert_eq!(v["servers"]["gmail"]["type"], "http");

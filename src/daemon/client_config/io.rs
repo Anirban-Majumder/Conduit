@@ -29,6 +29,15 @@ pub(super) fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), 
     write_atomic(path, &serialized)
 }
 
+/// Write an already-edited JSONC string (comment-preserving splice output) atomically.
+pub(super) fn atomic_write_jsonc_str(path: &Path, text: &str) -> Result<(), ClientError> {
+    let mut bytes = text.as_bytes().to_vec();
+    if !bytes.ends_with(b"\n") {
+        bytes.push(b'\n');
+    }
+    write_atomic(path, &bytes)
+}
+
 /// Write already-serialized TOML (from `toml_edit::DocumentMut::to_string()`) atomically.
 pub(super) fn atomic_write_toml_str(path: &Path, text: &str) -> Result<(), ClientError> {
     let mut bytes = text.as_bytes().to_vec();
