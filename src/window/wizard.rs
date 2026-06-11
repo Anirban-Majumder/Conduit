@@ -276,21 +276,32 @@ pub(crate) fn install_wizard_callbacks(
                     updated_server.last_probed_at = Some(now);
                     updated_server.last_probe_error = None;
                     // Only commit results if this is still the current probe
-                    // (generation hasn't been bumped by Back / re-probe / dismiss).
-                    let still_current = pending
-                        .lock()
-                        .map(|g| g.generation == this_generation)
-                        .unwrap_or(false);
-                    if !still_current {
-                        return;
-                    }
-                    if let Ok(mut guard) = pending.lock() {
+                    // (generation hasn't been bumped by Back / re-probe /
+                    // dismiss). Check and write under ONE lock acquisition so a
+                    // bump can't slip in between them.
+                    {
+                        let Ok(mut guard) = pending.lock() else {
+                            return;
+                        };
+                        if guard.generation != this_generation {
+                            return;
+                        }
                         guard.server = Some(updated_server);
                         guard.tools = tools;
                         guard.descriptions = descriptions;
                         guard.oauth_credentials = probed.oauth_credentials;
                     }
+                    let pending_ui = pending.clone();
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        // Re-check on the UI thread: a Back/dismiss click queued
+                        // ahead of this closure may have bumped the generation.
+                        let still_current = pending_ui
+                            .lock()
+                            .map(|g| g.generation == this_generation)
+                            .unwrap_or(false);
+                        if !still_current {
+                            return;
+                        }
                         ui.set_add_server_busy(false);
                         ui.set_wizard_step(3);
                         ui.set_wizard_phase_status(SharedString::from(""));
@@ -306,15 +317,18 @@ pub(crate) fn install_wizard_callbacks(
                     let _ = name;
                 }
                 Err(e) => {
-                    // Only update the UI for the current probe generation.
-                    let still_current = pending
-                        .lock()
-                        .map(|g| g.generation == this_generation)
-                        .unwrap_or(false);
-                    if !still_current {
-                        return;
-                    }
+                    // Only update the UI for the current probe generation; the
+                    // closure re-checks on the UI thread for the same reason as
+                    // the success path.
+                    let pending_ui = pending.clone();
                     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                        let still_current = pending_ui
+                            .lock()
+                            .map(|g| g.generation == this_generation)
+                            .unwrap_or(false);
+                        if !still_current {
+                            return;
+                        }
                         ui.set_add_server_busy(false);
                         ui.set_wizard_step(1);
                         ui.set_wizard_phase_status(SharedString::from(""));

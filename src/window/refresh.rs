@@ -423,12 +423,18 @@ pub(crate) async fn refresh_server_targets(
 
 /// Populate the scope popover for `(item, kind, editor)` and open it. Called on
 /// open and re-called after each mutation so the toggle states stay live.
+///
+/// `initial_open` is true only for the open-popover path. Mutation refreshes
+/// pass false: their paint is guarded — if the user dismissed the popover or
+/// re-opened it for a different (item, editor) while the DB work ran, the
+/// stale result is dropped instead of re-opening or hijacking the popover.
 pub(crate) async fn refresh_scope_popover(
     weak: &slint::Weak<MainWindow>,
     db: &Db,
     item: &str,
     kind: &str,
     editor: &str,
+    initial_open: bool,
 ) {
     let editor_label = db
         .get_client(editor)
@@ -477,6 +483,13 @@ pub(crate) async fn refresh_scope_popover(
 
     let (item, kind, editor) = (item.to_string(), kind.to_string(), editor.to_string());
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        if !initial_open
+            && (!ui.get_scope_popover_open()
+                || ui.get_scope_popover_item().as_str() != item
+                || ui.get_scope_popover_editor().as_str() != editor)
+        {
+            return;
+        }
         ui.set_scope_popover_editor(SharedString::from(editor));
         ui.set_scope_popover_editor_label(SharedString::from(editor_label));
         ui.set_scope_popover_item(SharedString::from(item.clone()));
@@ -489,7 +502,9 @@ pub(crate) async fn refresh_scope_popover(
         {
             m.set_vec(rows);
         }
-        ui.set_scope_popover_open(true);
+        if initial_open {
+            ui.set_scope_popover_open(true);
+        }
     });
 }
 
@@ -520,7 +535,16 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
     .ok();
 }
 
+/// Generation counter shared by EVERY audit refresh path — user filter/search
+/// changes (callbacks/log.rs) AND the event bridge's coalesced `AuditAppended`
+/// refresh. Each refresh bumps it at start and discards its result if a newer
+/// refresh started meanwhile, so a slow query can never overwrite a fresher
+/// paint (the bridge path was the unguarded hole: a pre-search query landing
+/// after the search painted would repaint unfiltered rows).
+static AUDIT_GEN: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
+    let my_gen = AUDIT_GEN.fetch_add(1, Ordering::Relaxed) + 1;
     // Read the live filter state from the UI thread before querying.
     let (search, decision_str) = read_ui_state(weak, |ui| {
         (
@@ -553,83 +577,8 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         ..Default::default()
     };
     let entries = db.query_audit_log(filter).await.unwrap_or_default();
-    let now = unix_now();
-    let rows: Vec<AuditRow> = entries
-        .into_iter()
-        .map(|e| AuditRow {
-            id: SharedString::from(e.id.map(|n| n.to_string()).unwrap_or_default()),
-            ts_label: SharedString::from(relative_time(now - e.ts)),
-            ts_full: SharedString::from(clock_full(e.ts)),
-            ide_name: SharedString::from(e.client_name.unwrap_or_else(|| "?".to_string())),
-            server: SharedString::from(e.mcp_server),
-            tool: SharedString::from(e.tool.unwrap_or_default()),
-            decision: SharedString::from(e.decision.as_db_str()),
-            decision_source: SharedString::from(
-                e.decision_source
-                    .map(|s| s.as_db_str().to_string())
-                    .unwrap_or_default(),
-            ),
-            latency_label: SharedString::from(
-                e.latency_ms.map(|n| format!("{n}ms")).unwrap_or_default(),
-            ),
-            request_args: SharedString::from(e.request_args.unwrap_or_default()),
-            response_status: SharedString::from(e.response_status.unwrap_or_default()),
-            response_length: SharedString::from(
-                e.response_length.map(|n| n.to_string()).unwrap_or_default(),
-            ),
-            error_code: SharedString::from(e.error_code.unwrap_or_default()),
-        })
-        .collect();
-    weak.upgrade_in_event_loop(move |ui| {
-        if let Some(m) = ui.get_audit().as_any().downcast_ref::<VecModel<AuditRow>>() {
-            m.set_vec(rows);
-        }
-    })
-    .ok();
-}
-
-/// Like `refresh_audit` but guards the UI write with a generation counter so
-/// out-of-order completions don't overwrite a fresher result. `my_gen` is the
-/// value captured at spawn time; `current` is the shared counter.
-pub(crate) async fn refresh_audit_gen(
-    weak: &slint::Weak<MainWindow>,
-    db: &Db,
-    my_gen: u64,
-    current: &Arc<AtomicU64>,
-) {
-    let (search, decision_str) = read_ui_state(weak, |ui| {
-        (
-            ui.get_audit_search_query().to_string(),
-            ui.get_audit_decision_filter().to_string(),
-        )
-    })
-    .await
-    .unwrap_or_default();
-
-    let decision = if decision_str.is_empty() {
-        None
-    } else {
-        let d = AuditDecision::from_db_str(&decision_str);
-        if d.is_none() {
-            tracing::warn!(value = %decision_str, "unknown audit decision filter; showing all");
-        }
-        d
-    };
-    let text = if search.is_empty() {
-        None
-    } else {
-        Some(search)
-    };
-
-    let filter = AuditFilter {
-        limit: Some(25),
-        decision,
-        text,
-        ..Default::default()
-    };
-    let entries = db.query_audit_log(filter).await.unwrap_or_default();
-    // Stale guard: if a newer query has been issued since we started, discard.
-    if current.load(Ordering::Relaxed) != my_gen {
+    // Stale guard: if a newer refresh started since this one, discard.
+    if AUDIT_GEN.load(Ordering::Relaxed) != my_gen {
         return;
     }
     let now = unix_now();

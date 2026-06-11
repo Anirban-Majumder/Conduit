@@ -50,8 +50,12 @@ enum TrayCmd {
     SetPaused(bool),
 }
 
-/// Handle to the tray thread. Dropping it closes `cmd_tx`, which causes the
-/// tray thread to exit its loop and join cleanly (≤ one `POLL_INTERVAL`).
+/// Handle to the tray thread.
+///
+/// Dropping it closes this sender; the badge updater task holds another clone
+/// and releases it when `cancel` fires, so the tray thread sees `Disconnected`
+/// (or its own cancel check) and joins cleanly — main drops `_tray` only after
+/// `cancel.cancel()`.
 #[derive(Debug)]
 pub struct TrayHandle {
     cmd_tx: Option<mpsc::Sender<TrayCmd>>,

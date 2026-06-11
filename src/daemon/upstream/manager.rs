@@ -2,7 +2,7 @@
 //!
 //! `UpstreamManager` owns the map of live `rmcp` clients keyed by server name
 //! and forwards `tools/call` / `tools/list` to them, spawning lazily on first
-//! use (`ensure_running`). A background reaper kills entries past their idle
+//! use (`acquire_peer`). A background reaper kills entries past their idle
 //! TTL; `lifecycle_seconds` is `0` = ephemeral (killed right after the call),
 //! `-1` = persistent, `N > 0` = idle TTL seconds. `record()` publishes
 //! debounced `ServerHealthChanged` events. `UpstreamError` is the typed error
@@ -215,12 +215,7 @@ impl UpstreamManager {
         }
 
         let request = parse_tool_call_params(params)?;
-        if let Err(e) = self.ensure_running(config).await {
-            self.record(&config.name, Some(e.to_string())).await;
-            return Err(e);
-        }
-
-        let (peer, generation) = match self.get_peer_for_call(&config.name).await {
+        let (peer, generation) = match self.acquire_peer(config).await {
             Ok(p) => p,
             Err(e) => {
                 self.record(&config.name, Some(e.to_string())).await;
@@ -259,9 +254,7 @@ impl UpstreamManager {
 
     /// Fetch upstream's tools/list. Spawns lazily if needed.
     pub async fn list_tools(&self, config: &ServerConfig) -> Result<Value, UpstreamError> {
-        self.ensure_running(config).await?;
-
-        let (peer, generation) = self.get_peer_for_call(&config.name).await?;
+        let (peer, generation) = self.acquire_peer(config).await?;
 
         let result = tokio::time::timeout(LIST_TOOLS_TIMEOUT, peer.list_tools(None)).await;
 
@@ -328,38 +321,30 @@ impl UpstreamManager {
         }
     }
 
-    async fn get_peer_for_call(
+    /// Find-or-spawn the upstream and atomically reserve an in-flight slot on
+    /// it. The reservation happens under the SAME lock acquisition that finds
+    /// (or inserts) the entry — a separate find-then-increment would leave a
+    /// window where the reaper or a concurrent ephemeral post-call kill sees
+    /// `in_flight == 0` and removes the entry out from under this caller.
+    /// Pair the returned generation with `decrement_in_flight` /
+    /// `kill_generation`.
+    async fn acquire_peer(
         &self,
-        server_name: &str,
+        config: &ServerConfig,
     ) -> Result<(rmcp::service::Peer<RoleClient>, u64), UpstreamError> {
-        let mut state = self.state.lock().await;
-        let Some(entry) = state.get_mut(server_name) else {
-            return Err(UpstreamError::Crashed);
-        };
-        if entry.client.peer().is_transport_closed() {
-            state.remove(server_name);
-            return Err(UpstreamError::Crashed);
-        }
-        entry.last_use = Instant::now();
-        entry.in_flight += 1;
-        let peer = entry.client.peer().clone();
-        let generation = entry.generation;
-        drop(state);
-        Ok((peer, generation))
-    }
-
-    async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {
         let fingerprint = ConfigFingerprint::from_config(config);
-        // Live entry: same transport → refresh lifecycle in place and reuse it
-        // (a TTL-only edit must not kill a healthy child); changed transport →
-        // kill stale entry and fall through to respawn.
+        // Live entry: same transport → refresh lifecycle in place, reserve, and
+        // reuse it (a TTL-only edit must not kill a healthy child); changed
+        // transport → kill stale entry and fall through to respawn.
         let stale: Option<Entry> = {
             let mut state = self.state.lock().await;
             let transport_changed = match state.get_mut(config.name.as_str()) {
                 Some(e) if !e.client.peer().is_transport_closed() => {
                     if e.fingerprint == fingerprint {
                         e.lifecycle_seconds = config.lifecycle_seconds;
-                        return Ok(());
+                        e.last_use = Instant::now();
+                        e.in_flight += 1;
+                        return Ok((e.client.peer().clone(), e.generation));
                     }
                     true
                 }
@@ -395,15 +380,27 @@ impl UpstreamManager {
             next
         };
 
-        // Insert atomically OR detect a race; cancel any duplicate OUTSIDE the lock.
-        let duplicate: Option<RunningService<RoleClient, ()>> = {
+        // Insert with the reservation pre-taken (`in_flight: 1`) OR join a
+        // raced live entry; cancel any duplicate client OUTSIDE the lock.
+        let mut duplicate: Option<RunningService<RoleClient, ()>> = None;
+        let (peer, generation) = {
             let mut state = self.state.lock().await;
-            let raced = state
-                .get(&config.name)
-                .is_some_and(|e| !e.client.peer().is_transport_closed());
-            if raced {
-                Some(client)
+            let raced: Option<(rmcp::service::Peer<RoleClient>, u64)> =
+                state.get_mut(&config.name).and_then(|e| {
+                    if e.client.peer().is_transport_closed() {
+                        None
+                    } else {
+                        e.last_use = Instant::now();
+                        e.in_flight += 1;
+                        Some((e.client.peer().clone(), e.generation))
+                    }
+                });
+            if let Some(joined) = raced {
+                drop(state);
+                duplicate = Some(client);
+                joined
             } else {
+                let peer = client.peer().clone();
                 state.insert(
                     config.name.clone(),
                     Entry {
@@ -411,11 +408,12 @@ impl UpstreamManager {
                         last_use: Instant::now(),
                         lifecycle_seconds: config.lifecycle_seconds,
                         fingerprint,
-                        in_flight: 0,
+                        in_flight: 1,
                         generation,
                     },
                 );
-                None
+                drop(state);
+                (peer, generation)
             }
         };
 
@@ -424,7 +422,7 @@ impl UpstreamManager {
                 tracing::warn!(error = %e, server = %config.name, "duplicate-spawn cancel failed");
             }
         }
-        Ok(())
+        Ok((peer, generation))
     }
 }
 

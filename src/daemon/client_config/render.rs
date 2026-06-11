@@ -377,12 +377,25 @@ fn try_splice_jsonc(
 }
 
 /// Walk the AST `Object` tree following `key_path`, returning the `Object` at the leaf.
+///
+/// Bails (forcing the full-serialize fallback) when a path segment appears more
+/// than once at its level: the AST walk picks the FIRST occurrence while the
+/// serde read kept the LAST, so splicing would edit one duplicate while parsers
+/// keep reading the other — the write would silently never take effect.
 fn descend_ast_object<'a>(
     root: &'a jsonc_parser::ast::Object<'a>,
     key_path: &[String],
 ) -> Option<&'a jsonc_parser::ast::Object<'a>> {
     let mut cur = root;
     for seg in key_path {
+        let matches = cur
+            .properties
+            .iter()
+            .filter(|p| p.name.as_str() == seg.as_str())
+            .count();
+        if matches > 1 {
+            return None;
+        }
         cur = cur.get_object(seg)?;
     }
     Some(cur)

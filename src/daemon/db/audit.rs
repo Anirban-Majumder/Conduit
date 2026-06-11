@@ -199,9 +199,11 @@ pub(super) fn query_count_audit_entries(
         let (decision_str, n) = row?;
         let n = n.cast_unsigned();
         counts.total += n;
+        // Denied = explicit deny, user-denied ask, AND timed-out ask — a
+        // timeout denies the call (matches the old dashboard computation).
         if matches!(
             AuditDecision::from_db_str(&decision_str),
-            Some(AuditDecision::Deny | AuditDecision::AskDenied)
+            Some(AuditDecision::Deny | AuditDecision::AskDenied | AuditDecision::AskTimeout)
         ) {
             counts.denied += n;
         }
@@ -321,11 +323,12 @@ mod tests {
         insert_entry(&conn, AuditDecision::Deny, 1001);
         insert_entry(&conn, AuditDecision::Deny, 1002);
         insert_entry(&conn, AuditDecision::AskDenied, 1003);
+        insert_entry(&conn, AuditDecision::AskTimeout, 1004);
 
         let counts = query_count_audit_entries(&conn, &AuditFilter::default()).unwrap();
-        assert_eq!(counts.total, 4);
-        // Deny + AskDenied = 3 denied
-        assert_eq!(counts.denied, 3);
+        assert_eq!(counts.total, 5);
+        // Deny + AskDenied + AskTimeout = 4 denied
+        assert_eq!(counts.denied, 4);
 
         // Filter by since_ts excludes first two rows.
         let counts_filtered = query_count_audit_entries(
@@ -336,7 +339,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(counts_filtered.total, 2);
-        assert_eq!(counts_filtered.denied, 2); // Deny at ts=1002 and AskDenied at ts=1003
+        assert_eq!(counts_filtered.total, 3);
+        // Deny at ts=1002, AskDenied at ts=1003, AskTimeout at ts=1004
+        assert_eq!(counts_filtered.denied, 3);
     }
 }

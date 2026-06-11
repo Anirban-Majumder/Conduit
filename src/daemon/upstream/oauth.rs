@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -70,21 +70,18 @@ pub async fn wait_for_callback(
         // state across the await points that would be lost on cancellation.
         let conn_result = tokio::time::timeout(PER_CONNECTION_TIMEOUT, async {
             let (rd, mut wr) = stream.split();
-            let mut reader = BufReader::new(rd);
+            // Hard-cap the bytes the reader will ever produce: `read_line`
+            // internally loops until newline/EOF, so a length check between
+            // calls alone would not bound a newline-free byte stream.
+            let mut reader = BufReader::new(rd).take(MAX_REQUEST_LINE_BYTES as u64);
             let mut request_line = String::new();
 
-            // Bounded read: stop at the first newline OR the byte cap.
+            // Stops at the first newline, EOF, or the `take` cap.
             loop {
-                if request_line.len() >= MAX_REQUEST_LINE_BYTES {
-                    break;
-                }
                 let prev_len = request_line.len();
                 reader.read_line(&mut request_line).await?;
-                // read_line appended nothing → EOF before newline
-                if request_line.len() == prev_len {
-                    break;
-                }
-                if request_line.ends_with('\n') {
+                // Nothing appended → EOF or cap reached before a newline.
+                if request_line.len() == prev_len || request_line.ends_with('\n') {
                     break;
                 }
             }
@@ -134,7 +131,12 @@ pub async fn wait_for_callback(
                     "oauth callback: per-connection timeout; waiting for next connection"
                 );
             }
-            Ok(Err(e)) => return Err(OauthError::Io(e)),
+            Ok(Err(e)) => {
+                // A reset/aborted connection (browsers tear down speculative
+                // pre-connect sockets with RST) must not kill the whole login
+                // wait — only the deadline or cancel token ends the loop.
+                tracing::debug!(error = %e, "oauth callback: connection error; waiting for next connection");
+            }
             Ok(Ok((false, _, _))) => {
                 // Not a callback request (e.g. prefetch / favicon); keep waiting.
             }

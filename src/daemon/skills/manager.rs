@@ -386,22 +386,33 @@ impl SkillManager {
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let old_aside = dest
-            .parent()
-            .map(|p| p.join(format!(".{install_name}.old-{}", now_unix_nanos())));
+        let mut moved_aside: Option<PathBuf> = None;
         if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
-            if let Some(ref aside) = old_aside {
-                let _ignored = tokio::fs::rename(&dest, aside).await;
+            if let Some(parent) = dest.parent() {
+                let aside = parent.join(format!(".{install_name}.old-{}", now_unix_nanos()));
+                if tokio::fs::rename(&dest, &aside).await.is_ok() {
+                    moved_aside = Some(aside);
+                }
             }
         }
         if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
-            // Rename failed: clean up tmp, leave the aside in place so the user
-            // can manually recover; the aside will be swept next startup purge_tmp.
+            // Rename failed: restore the previous install from the aside so
+            // the skill's managed source dir (which the DB row still points
+            // at) doesn't vanish, then clean up tmp.
+            if let Some(ref aside) = moved_aside {
+                if let Err(restore_err) = tokio::fs::rename(aside, &dest).await {
+                    tracing::warn!(
+                        error = %restore_err,
+                        aside = %aside.display(),
+                        "failed to restore previous skill content after swap failure"
+                    );
+                }
+            }
             let _ignored = tokio::fs::remove_dir_all(&tmp).await;
             return Err(SkillError::Io(e));
         }
         // New content is live — safe to drop the old dir.
-        if let Some(aside) = old_aside {
+        if let Some(aside) = moved_aside {
             let _ignored = tokio::fs::remove_dir_all(&aside).await;
         }
 
@@ -434,15 +445,25 @@ impl SkillManager {
         // rows yet → we_manage=false → TargetExists guard fires for user-owned
         // dirs. A re-install already has rows → we_manage=true → overwrite ok.
         // (mirrors the ordering in `set_targets`)
-        self.reconcile_global_targets(&install_name, &normalized_targets)
+        let failed = self
+            .reconcile_global_targets(&install_name, &normalized_targets)
             .await?;
 
+        // Record rows for the targets that actually synced. Conflicted targets
+        // (TargetExists: a user-authored dir we refused to overwrite) are
+        // excluded — claiming them would let a later reconcile delete the
+        // user's dir. Other failures keep their row: the dir is ours (or
+        // absent), and the next sync self-heals.
+        let recorded = exclude_conflicted(&normalized_targets, &failed);
         self.db
-            .set_skill_targets(&install_name, "global", normalized_targets.clone())
+            .set_skill_targets(&install_name, "global", recorded)
             .await?;
         self.remirror_repo_scopes(&install_name).await?;
 
         self.bus.publish(Event::SkillsChanged);
+        if let Some((_, e)) = failed.into_iter().next() {
+            return Err(e);
+        }
         Ok(skill)
     }
 
@@ -458,12 +479,17 @@ impl SkillManager {
         if !tokio::fs::try_exists(&dest).await.unwrap_or(false) {
             return Err(SkillError::InvalidPath(directory.to_string()));
         }
-        self.reconcile_global_targets(directory, &normalized)
+        let failed = self
+            .reconcile_global_targets(directory, &normalized)
             .await?;
+        let recorded = exclude_conflicted(&normalized, &failed);
         self.db
-            .set_skill_targets(directory, "global", normalized)
+            .set_skill_targets(directory, "global", recorded)
             .await?;
         self.bus.publish(Event::SkillsChanged);
+        if let Some((_, e)) = failed.into_iter().next() {
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -638,11 +664,17 @@ impl SkillManager {
     /// Reconcile every built-in's GLOBAL skills dir to match `new_targets`:
     /// mirror the chosen ones, remove the rest. Removals are DB-gated: a dir is
     /// only removed when Conduit has a `managed_skill` row for it (SK-1 fix).
+    ///
+    /// A per-target failure does NOT abort the rest of the plan — aborting
+    /// mid-plan leaves already-synced dirs with no `managed_skill` row, which
+    /// permanently bricks retries (`we_manage=false` → `TargetExists` on a dir
+    /// Conduit itself wrote). Failures are returned as `(client_id, error)` so
+    /// the caller can exclude conflicted targets from the rows it records.
     async fn reconcile_global_targets(
         &self,
         directory: &str,
         new_targets: &[String],
-    ) -> Result<(), SkillError> {
+    ) -> Result<Vec<(String, SkillError)>, SkillError> {
         let source = self.paths.skills_managed_dir().join(directory);
         let want: std::collections::HashSet<&str> =
             new_targets.iter().map(String::as_str).collect();
@@ -658,7 +690,8 @@ impl SkillManager {
             .map(|(client_id, _)| client_id)
             .collect();
 
-        let mut plan: Vec<(PathBuf, bool, bool)> = Vec::new(); // (dir, want_it, we_manage_it)
+        // (client_id, dir, want_it, we_manage_it)
+        let mut plan: Vec<(String, PathBuf, bool, bool)> = Vec::new();
         for row in self.db.list_clients().await? {
             let client = ResolvedClient::from_row(row);
             if !client.is_builtin {
@@ -667,26 +700,37 @@ impl SkillManager {
             if let Some(dir) = client.skills_target(&Scope::Global) {
                 let want_it = want.contains(client.id.as_str());
                 let we_manage = currently_managed_global.contains(&client.id);
-                plan.push((dir, want_it, we_manage));
+                plan.push((client.id, dir, want_it, we_manage));
             }
         }
         let install_name = directory.to_string();
         let cfg = self.paths.config_toml();
-        tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
+        tokio::task::spawn_blocking(move || -> Vec<(String, SkillError)> {
             let mode = Settings::load_or_default(&cfg).skills.sync_mode;
-            for (dest_dir, want_it, we_manage) in plan {
+            let mut failed = Vec::new();
+            for (client_id, dest_dir, want_it, we_manage) in plan {
                 if want_it {
-                    sync::sync_to_target(&source, &dest_dir, &install_name, mode, we_manage)?;
+                    if let Err(e) =
+                        sync::sync_to_target(&source, &dest_dir, &install_name, mode, we_manage)
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            client = %client_id,
+                            skill = %install_name,
+                            "skill sync failed; continuing with remaining targets"
+                        );
+                        failed.push((client_id, e));
+                    }
                 } else if we_manage {
                     // Only remove what Conduit wrote.
                     sync::remove_from_target(&dest_dir, &install_name);
                 }
                 // Not wanted, not managed → skip; don't touch the user's dir.
             }
-            Ok(())
+            failed
         })
         .await
-        .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))?
+        .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))
     }
 
     /// Re-mirror the skill into every REPO scope it's already in — a re-install
@@ -745,6 +789,21 @@ fn normalize_targets(targets: Vec<String>) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Drop targets whose sync failed with `TargetExists` (user-owned dir we must
+/// not claim). Targets that failed for other reasons keep their row — the dir
+/// is ours or absent, and the next sync self-heals.
+fn exclude_conflicted(targets: &[String], failed: &[(String, SkillError)]) -> Vec<String> {
+    targets
+        .iter()
+        .filter(|t| {
+            !failed
+                .iter()
+                .any(|(id, e)| id == *t && matches!(e, SkillError::TargetExists(_)))
+        })
+        .cloned()
+        .collect()
 }
 
 fn sanitize_segment(segment: &str) -> Option<String> {

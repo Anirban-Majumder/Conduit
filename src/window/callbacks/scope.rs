@@ -122,7 +122,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
                 ui.set_scope_popover_add_error(SharedString::default());
             });
             rt.spawn(async move {
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, true).await;
             });
         });
     }
@@ -162,7 +162,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
             rt.spawn(async move {
                 let kind = read_item_kind(&weak).await;
                 apply_scope(&db, &skills, port, &kind, &item, &editor, &scope_key, on).await;
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, false).await;
                 repaint_detail(&weak, &db, &skills, &kind, &item).await;
             });
         });
@@ -182,7 +182,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
             rt.spawn(async move {
                 let kind = read_item_kind(&weak).await;
                 apply_scope(&db, &skills, port, &kind, &item, &editor, &scope_key, false).await;
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, false).await;
                 repaint_detail(&weak, &db, &skills, &kind, &item).await;
             });
         });
@@ -251,7 +251,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
                     ui.set_scope_popover_add_path(SharedString::default());
                     ui.set_scope_popover_add_error(SharedString::default());
                 });
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, false).await;
                 repaint_detail(&weak, &db, &skills, &kind, &item).await;
             });
         });

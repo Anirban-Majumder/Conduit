@@ -100,10 +100,12 @@ fn symlink_aware_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new(".conduit.tmp"));
     let moved_tmp = real_parent.join(file_name);
-    if fs::rename(tmp, &moved_tmp).is_ok() {
-        fs::rename(&moved_tmp, &real_target)
-    } else {
-        // Fallback: rename directly to the symlink (best effort).
-        fs::rename(tmp, target)
+    if fs::rename(tmp, &moved_tmp).is_err() {
+        // Cross-filesystem symlink target (EXDEV): copy into the resolved
+        // parent instead — renaming over the symlink itself would replace the
+        // user's symlink with a regular file (the CC-5 bug).
+        fs::copy(tmp, &moved_tmp)?;
+        let _ignored = fs::remove_file(tmp);
     }
+    fs::rename(&moved_tmp, &real_target)
 }

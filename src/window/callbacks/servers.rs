@@ -5,7 +5,7 @@
 //! wizard. Handlers offload to the tokio worker and repaint through
 //! `crate::window::refresh`; UI mutation only via `upgrade_in_event_loop`.
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::cascade;
@@ -115,10 +115,14 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
             let _ignored = weak.upgrade_in_event_loop(move |ui| {
                 if ui.get_selected_server().as_str() == name {
                     ui.set_selected_server(SharedString::from(""));
-                    ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<
-                        ToolPolicyUiRow,
-                    >::new(
-                    ))));
+                    // Mutate the seeded model in place — never replace identity.
+                    if let Some(m) = ui
+                        .get_selected_server_tools()
+                        .as_any()
+                        .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+                    {
+                        m.set_vec(vec![]);
+                    }
                 }
             });
             refresh_servers(&weak, &db).await;
@@ -173,22 +177,23 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
             let cancel = CancellationToken::new();
             let now = unix_now();
 
-            // For HTTP OAuth servers (env holds no plain bearer token), connect
-            // via the keyring-backed store instead of starting a new OAuth login.
-            // This avoids opening the browser and discarding fresh tokens.
-            let is_oauth_http = server.transport == TRANSPORT_HTTP && {
-                // If there is no plain bearer value, treat as OAuth.
-                let has_bearer = server.env.iter().any(|e| {
+            // For HTTP servers without a plain bearer token, first try stored
+            // OAuth credentials via the keyring-backed store (avoids opening a
+            // browser and discarding fresh tokens). `Ok(None)` means no stored
+            // creds — that is NOT an error: a no-auth HTTP server looks exactly
+            // the same here, so fall through to the plain probe below (mirrors
+            // `connect_transport` in upstream/manager.rs). A genuine OAuth
+            // server with lost creds then fails the plain probe with a real
+            // auth error anyway.
+            let maybe_oauth_http = server.transport == TRANSPORT_HTTP
+                && !server.env.iter().any(|e| {
                     e.name == http::BEARER_TOKEN_ENV
                         && matches!(e.value, EnvValue::Plain(_))
                 });
-                !has_bearer
-            };
 
-            if is_oauth_http {
+            if maybe_oauth_http {
                 let url = server.url.clone().unwrap_or_default();
-                let probe_result = http::connect_oauth(&url, &name, cancel.clone()).await;
-                match probe_result {
+                match http::connect_oauth(&url, &name, cancel.clone()).await {
                     Ok(Some(_client)) => {
                         // OAuth connection succeeded; record a successful probe
                         // timestamp (no tools re-enumerated on retest via OAuth to
@@ -204,14 +209,13 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                             Ok(false) => {}
                             Err(e) => tracing::warn!(error = %e, "clear_server_auth_error after oauth retest failed"),
                         }
+                        refresh_server_detail(&weak, &db, &name).await;
+                        refresh_servers(&weak, &db).await;
+                        return;
                     }
                     Ok(None) => {
-                        // No stored credentials — mark as needing auth.
-                        server.last_probed_at = Some(now);
-                        server.last_probe_error = Some("No OAuth credentials stored; re-add the server to sign in.".to_string());
-                        if let Err(e) = db.upsert_server(server).await {
-                            tracing::warn!(error = %e, "re-test no-oauth upsert failed");
-                        }
+                        // No stored credentials — likely a no-auth server; fall
+                        // through to the plain probe.
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, server = %name, "re-test oauth probe failed");
@@ -220,11 +224,11 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                         if let Err(e) = db.upsert_server(server).await {
                             tracing::warn!(error = %e, "re-test oauth error upsert failed");
                         }
+                        refresh_server_detail(&weak, &db, &name).await;
+                        refresh_servers(&weak, &db).await;
+                        return;
                     }
                 }
-                refresh_server_detail(&weak, &db, &name).await;
-                refresh_servers(&weak, &db).await;
-                return;
             }
 
             // Non-OAuth path: reconstruct the env/headers from the stored server row.
