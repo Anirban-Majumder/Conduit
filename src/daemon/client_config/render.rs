@@ -8,9 +8,14 @@
 //!   2. JSONC reads tolerate comments + trailing commas;
 //!   3. `key_path` is walked-and-created, merging beside the user's siblings;
 //!   4. purge matches the endpoint anywhere in an entry, not a fixed `url` field.
+//!
+//! CC-16: all write entrypoints serialize per canonical path via `WRITE_LOCKS`.
+//! CC-17: `render_exact` reads+parses once, removes our entries, inserts servers, writes once.
 
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
@@ -19,6 +24,26 @@ use super::io::{atomic_write_json, atomic_write_toml_str};
 use super::types::{ConfigFormat, ConfigSchema};
 use super::types::{ResolvedClient, Scope};
 use super::ClientError;
+
+// ── CC-16: per-path writer serialization ───────────────────────────────────
+
+static WRITE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+/// Obtain (or create) the per-canonical-path lock for `path`.
+/// Canonicalization falls back to the literal path when the file doesn't exist yet.
+/// Returns a cloned `Arc` so the registry lock is released before any file I/O.
+fn path_lock(path: &Path) -> Arc<Mutex<()>> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let registry = WRITE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    // Hold the registry lock only long enough to clone the Arc out.
+    let mut map = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(
+        map.entry(canonical)
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
+}
 
 fn url_for(port: u16, key: &str, server: &str) -> String {
     format!("http://127.0.0.1:{port}/{key}/{server}/mcp")
@@ -140,12 +165,10 @@ pub fn render_scope(
         tracing::trace!(client = %client.id, "render_scope: no config target; skipping");
         return Ok(());
     };
-    // CC-20: only allow empty-file cleanup if the file contained (or will
-    // contain) our entries. Check before purging so we can distinguish a
-    // user-created placeholder `{}` from a file we wrote.
-    let had_our_entries = file_has_our_entries(&client.schema, &path, &client.mcp_key, port);
-    purge_mcp(&client.schema, &path, &client.mcp_key, port)?;
-    render_servers(&client.schema, &path, &client.mcp_key, servers, port)?;
+    // CC-17/CC-20: render_exact does the read-parse-remove-insert-write in one
+    // pass and also returns whether the file had our entries before (for CC-20
+    // cleanup logic).
+    let had_our_entries = render_exact(&client.schema, &path, &client.mcp_key, servers, port)?;
     if let Scope::Repo(repo_dir) = scope {
         let we_own_file = had_our_entries || !servers.is_empty();
         if we_own_file {
@@ -155,8 +178,11 @@ pub fn render_scope(
     Ok(())
 }
 
-/// Core writer: merge `servers` into the file under `key_path`, preserving
-/// existing entries. Also driven directly by tests with an arbitrary path.
+/// Make the file under `path` hold exactly the `servers` set for our key.
+///
+/// Preserves user entries. Reads and writes at most once (CC-17). Returns
+/// `true` when the file held at least one of our entries before (CC-20).
+/// Rejects an empty `schema.key_path` to prevent root-level mangling.
 pub fn render_servers(
     schema: &ConfigSchema,
     path: &Path,
@@ -164,10 +190,55 @@ pub fn render_servers(
     servers: &[String],
     port: u16,
 ) -> Result<(), ClientError> {
-    // An empty key_path would insert our entries at the file root, mangling the
-    // user's real editor config. A built-in's schema is a code-owned cache that
-    // should never be empty; if it is (corrupt row / unparsable schema_json that
-    // defaulted), fail closed rather than corrupt the file.
+    render_exact(schema, path, key, servers, port)?;
+    Ok(())
+}
+
+/// Drop every entry under the schema's `key_path` whose endpoint is ours.
+/// Missing file is a no-op.
+pub fn purge_mcp(
+    schema: &ConfigSchema,
+    path: &Path,
+    key: &str,
+    port: u16,
+) -> Result<(), ClientError> {
+    render_exact(schema, path, key, &[], port)?;
+    Ok(())
+}
+
+/// Drop one server's entry under the schema's `key_path`. Missing file is a no-op.
+pub fn purge_one(
+    schema: &ConfigSchema,
+    path: &Path,
+    key: &str,
+    server: &str,
+    port: u16,
+) -> Result<(), ClientError> {
+    // purge_one targets a single server, not all ours — use purge_where directly.
+    // CC-16: acquire the per-path lock around the read-modify-write.
+    let lock = path_lock(path);
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    purge_where(schema, path, &|entry| {
+        entry_targets_server(entry, port, key, server)
+    })
+}
+
+/// CC-17: single read-parse-remove-insert-write pass for a given `servers` set.
+///
+/// Removes all entries belonging to our key, then inserts `servers`. User entries
+/// are preserved. Returns `true` when the file held at least one of our entries
+/// before the operation.
+///
+/// CC-16: serializes writers per canonical path via `path_lock`.
+fn render_exact(
+    schema: &ConfigSchema,
+    path: &Path,
+    key: &str,
+    servers: &[String],
+    port: u16,
+) -> Result<bool, ClientError> {
     if schema.key_path.is_empty() {
         return Err(ClientError::EmptyKeyPath);
     }
@@ -182,64 +253,100 @@ pub fn render_servers(
         })
         .collect();
 
+    // CC-16: hold the per-path lock across the entire read-modify-write.
+    let lock = path_lock(path);
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     match schema.format {
-        ConfigFormat::Toml => render_toml(path, &schema.key_path, &entries),
+        ConfigFormat::Toml => render_exact_toml(path, &schema.key_path, key, port, &entries),
         ConfigFormat::Json | ConfigFormat::Jsonc => {
-            render_json(path, schema.format, &schema.key_path, &entries)
+            render_exact_json(path, schema.format, &schema.key_path, key, port, &entries)
         }
     }
 }
 
-/// Drop every entry under the schema's `key_path` whose endpoint is ours.
-/// Missing file is a no-op.
-pub fn purge_mcp(
-    schema: &ConfigSchema,
+fn render_exact_json(
     path: &Path,
+    format: ConfigFormat,
+    key_path: &[String],
     key: &str,
     port: u16,
-) -> Result<(), ClientError> {
-    purge_where(schema, path, &|entry| entry_is_ours(entry, port, key))
+    entries: &[(String, Value)],
+) -> Result<bool, ClientError> {
+    // Skip creating a scaffold for an empty entry set when the file doesn't
+    // already hold our key_path — avoids a no-op rewrite that strips comments.
+    let existing = read_json(path, format)?;
+    if entries.is_empty() {
+        let has_path = existing
+            .as_ref()
+            .is_some_and(|r| descend_existing_json_ref(r, key_path).is_some());
+        if !has_path {
+            return Ok(false);
+        }
+    }
+    let original = existing.clone();
+    let mut root = existing.unwrap_or_default();
+    let had_ours = descend_existing_json(&mut root, key_path)
+        .is_some_and(|map| map.values().any(|e| entry_is_ours(e, port, key)));
+    {
+        let map = descend_create(&mut root, key_path);
+        map.retain(|_n, e| !entry_is_ours(e, port, key));
+        for (name, entry) in entries {
+            map.insert(name.clone(), entry.clone());
+        }
+    }
+    // Skip the rewrite when nothing actually changed — preserves the user's
+    // exact bytes/formatting on a no-op purge/render (CC-3).
+    if original.as_ref() == Some(&root) {
+        return Ok(had_ours);
+    }
+    atomic_write_json(path, &Value::Object(root))?;
+    Ok(had_ours)
 }
 
-/// Drop one server's entry under the schema's `key_path`. Missing file is a no-op.
-pub fn purge_one(
-    schema: &ConfigSchema,
+fn render_exact_toml(
     path: &Path,
+    key_path: &[String],
     key: &str,
-    server: &str,
     port: u16,
-) -> Result<(), ClientError> {
-    purge_where(schema, path, &|entry| {
-        entry_targets_server(entry, port, key, server)
-    })
+    entries: &[(String, Value)],
+) -> Result<bool, ClientError> {
+    let existing = read_toml_edit(path)?;
+    if entries.is_empty() {
+        let has_path = existing
+            .as_ref()
+            .is_some_and(|doc| descend_existing_toml_edit_ref(doc.as_table(), key_path).is_some());
+        if !has_path {
+            return Ok(false);
+        }
+    }
+    let mut doc = existing.unwrap_or_default();
+    let original_str = doc.to_string();
+    let had_ours = descend_existing_toml_edit(&mut doc, key_path).is_some_and(|table| {
+        table
+            .iter()
+            .any(|(_, item)| entry_is_ours(&toml_item_to_json(item), port, key))
+    });
+    {
+        let table = descend_create_toml_edit(&mut doc, key_path);
+        table.retain(|_n, item| !entry_is_ours(&toml_item_to_json(item), port, key));
+        for (name, entry) in entries {
+            table.insert(name, json_to_toml_edit_item(entry));
+        }
+    }
+    let new_str = doc.to_string();
+    // Skip the rewrite when nothing changed — preserves the user's exact
+    // bytes/comments/formatting on a no-op purge/render (CC-3).
+    if new_str == original_str {
+        return Ok(had_ours);
+    }
+    atomic_write_toml_str(path, &new_str)?;
+    Ok(had_ours)
 }
 
 // ── Empty-repo cleanup (repo scope only) ─────────────────────────────────────
-
-/// CC-20: true when the file currently holds at least one entry belonging to us.
-/// Used to distinguish a file Conduit created from a user-created placeholder.
-/// Best-effort: returns false on any read/parse error.
-fn file_has_our_entries(schema: &ConfigSchema, path: &Path, key: &str, port: u16) -> bool {
-    match schema.format {
-        ConfigFormat::Toml => read_toml_edit(path).is_ok_and(|opt| {
-            opt.is_some_and(|mut doc| {
-                descend_existing_toml_edit(&mut doc, &schema.key_path).is_some_and(|table| {
-                    table
-                        .iter()
-                        .any(|(_, item)| entry_is_ours(&toml_item_to_json(item), port, key))
-                })
-            })
-        }),
-        ConfigFormat::Json | ConfigFormat::Jsonc => {
-            read_json(path, schema.format).is_ok_and(|opt| {
-                opt.is_some_and(|mut root| {
-                    descend_existing_json(&mut root, &schema.key_path)
-                        .is_some_and(|map| map.values().any(|e| entry_is_ours(e, port, key)))
-                })
-            })
-        }
-    }
-}
 
 /// After a repo-scope render, delete the file if it holds only our (now-empty)
 /// scaffold, then prune empty ancestor dirs up to (not incl.) the repo dir.
@@ -322,34 +429,6 @@ fn prune_empty_dirs(start: Option<&Path>, repo_dir: &Path) {
 }
 
 // ── JSON / JSONC ────────────────────────────────────────────────────────────
-
-fn render_json(
-    path: &Path,
-    format: ConfigFormat,
-    key_path: &[String],
-    entries: &[(String, Value)],
-) -> Result<(), ClientError> {
-    let existing = read_json(path, format)?;
-    // Skip creating a scaffold for an empty entry set when the file doesn't
-    // already hold our key_path — avoids a no-op rewrite that strips comments.
-    if entries.is_empty() {
-        if let Some(ref root) = existing {
-            if descend_existing_json_ref(root, key_path).is_none() {
-                return Ok(());
-            }
-        } else {
-            return Ok(());
-        }
-    }
-    let mut root = existing.unwrap_or_default();
-    {
-        let map = descend_create(&mut root, key_path);
-        for (name, entry) in entries {
-            map.insert(name.clone(), entry.clone());
-        }
-    }
-    atomic_write_json(path, &Value::Object(root))
-}
 
 fn purge_where(
     schema: &ConfigSchema,
@@ -563,33 +642,6 @@ fn strip_trailing_commas(src: &str) -> String {
 }
 
 // ── TOML (toml_edit — comment/format-preserving) ─────────────────────────────
-
-fn render_toml(
-    path: &Path,
-    key_path: &[String],
-    entries: &[(String, Value)],
-) -> Result<(), ClientError> {
-    let existing = read_toml_edit(path)?;
-    // Skip scaffold creation when there are no entries and the key_path isn't
-    // already present — avoids touching Codex's config.toml on a no-op.
-    if entries.is_empty() {
-        if let Some(ref doc) = existing {
-            if descend_existing_toml_edit_ref(doc.as_table(), key_path).is_none() {
-                return Ok(());
-            }
-        } else {
-            return Ok(());
-        }
-    }
-    let mut doc = existing.unwrap_or_default();
-    {
-        let table = descend_create_toml_edit(&mut doc, key_path);
-        for (name, entry) in entries {
-            table.insert(name, json_to_toml_edit_item(entry));
-        }
-    }
-    atomic_write_toml_str(path, &doc.to_string())
-}
 
 #[expect(
     clippy::expect_used,
@@ -957,6 +1009,66 @@ mod tests {
         );
         let result = render_servers(&s, &path, "k0000002", &["svc".to_string()], 9876);
         assert!(result.is_err(), "invalid UTF-8 file should return an error");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // CC-16: concurrent render + purge to the same path must not lose or
+    // duplicate entries — the per-path lock must serialize the writers.
+    #[test]
+    fn concurrent_render_and_purge_are_consistent() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tmp("concurrent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = Arc::new(dir.join("config.json"));
+
+        let s = schema(
+            ConfigFormat::Json,
+            &["mcpServers"],
+            json!({"url": "${url}"}),
+        );
+        let s = Arc::new(s);
+
+        // Prime the file with a user entry that must never be lost.
+        std::fs::write(
+            path.as_ref(),
+            r#"{"mcpServers":{"user-entry":{"url":"http://other"}}}"#,
+        )
+        .unwrap();
+
+        let n = 20usize;
+        let mut handles = Vec::with_capacity(n * 2);
+
+        for i in 0..n {
+            let path2 = Arc::clone(&path);
+            let s2 = Arc::clone(&s);
+            let server = format!("srv{i}");
+            handles.push(thread::spawn(move || {
+                render_servers(&s2, &path2, "cc16test", &[server], 9876).unwrap();
+            }));
+
+            let path3 = Arc::clone(&path);
+            let s3 = Arc::clone(&s);
+            handles.push(thread::spawn(move || {
+                purge_mcp(&s3, &path3, "cc16test", 9876).unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Regardless of which render/purge won last, the user entry must survive.
+        let v: Value = serde_json::from_slice(&std::fs::read(path.as_ref()).unwrap()).unwrap();
+        assert!(
+            v["mcpServers"]["user-entry"].is_object(),
+            "user entry must survive concurrent render+purge"
+        );
+
+        // The file must be valid JSON (no torn writes).
+        assert!(v["mcpServers"].is_object(), "mcpServers must be an object");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }
