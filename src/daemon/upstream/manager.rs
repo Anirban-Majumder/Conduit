@@ -446,6 +446,16 @@ impl UpstreamManager {
             }
         };
 
+        // Construct the guard BEFORE awaiting the cancels below: if this
+        // future is dropped at one of those awaits, the guard's Drop must
+        // release the reservation taken above — otherwise the entry's
+        // in_flight stays positive forever and the reaper never reaps it.
+        let guard = InFlightGuard {
+            state: Arc::clone(&self.state),
+            name: config.name.clone(),
+            generation,
+        };
+
         if let Some(old) = replaced {
             cancel_entry(&config.name, old).await;
         }
@@ -454,11 +464,6 @@ impl UpstreamManager {
                 tracing::warn!(error = %e, server = %config.name, "duplicate-spawn cancel failed");
             }
         }
-        let guard = InFlightGuard {
-            state: Arc::clone(&self.state),
-            name: config.name.clone(),
-            generation,
-        };
         Ok((peer, generation, guard))
     }
 }

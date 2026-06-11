@@ -523,15 +523,26 @@ impl SkillManager {
         if enabled {
             // Sync FIRST, row after — recording the row before a TargetExists
             // conflict would claim a user-authored dir for later removal.
+            let dest_for_rollback = dest_dir.clone();
+            let name_for_rollback = install_name.clone();
             tokio::task::spawn_blocking(move || -> Result<(), SkillError> {
                 let mode = Settings::load_or_default(&cfg).skills.sync_mode;
                 sync::sync_to_target(&source, &dest_dir, &install_name, mode, we_manage)
             })
             .await
             .map_err(|e| SkillError::InvalidPath(format!("join: {e}")))??;
-            self.db
-                .add_skill_target(directory, client_id, scope)
-                .await?;
+            if let Err(e) = self.db.add_skill_target(directory, client_id, scope).await {
+                // The dir is provably ours (sync just succeeded) but no row
+                // records that; leaving it would brick every retry with
+                // TargetExists. Best-effort roll the sync back.
+                if !we_manage {
+                    let _ignored = tokio::task::spawn_blocking(move || {
+                        sync::remove_from_target(&dest_for_rollback, &name_for_rollback);
+                    })
+                    .await;
+                }
+                return Err(e.into());
+            }
         } else {
             self.db
                 .remove_skill_target(directory, client_id, scope)
