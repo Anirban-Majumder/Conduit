@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::client_config;
@@ -20,7 +20,7 @@ use conduit::daemon::skills::SkillManager;
 
 use crate::window::view::{
     ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, ScopeRow, ServerDetail,
-    ServerRow, ToolPolicyRow as ToolPolicyUiRow,
+    ServerRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 use crate::window::skills::{installed_skills_to_rows, refresh_skills};
@@ -46,6 +46,19 @@ pub(crate) fn push_initial_models(
     skills: Arc<SkillManager>,
 ) {
     window.set_settings(settings_to_row(settings));
+
+    // Seed every list property with an empty VecModel once so that subsequent
+    // refresh calls can downcast and call set_vec in place instead of replacing
+    // the model identity (which would destroy per-row expanded state, etc.).
+    window.set_approvals(ModelRc::new(VecModel::<ApprovalRow>::default()));
+    window.set_servers(ModelRc::new(VecModel::<ServerRow>::default()));
+    window.set_ides(ModelRc::new(VecModel::<IdeRow>::default()));
+    window.set_audit(ModelRc::new(VecModel::<AuditRow>::default()));
+    window.set_dashboard_skills(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_selected_server_tools(ModelRc::new(VecModel::<ToolPolicyUiRow>::default()));
+    window.set_selected_server_targets(ModelRc::new(VecModel::<IdeTarget>::default()));
+    window.set_scope_popover_scopes(ModelRc::new(VecModel::<ScopeRow>::default()));
+    window.set_wizard_tools(ModelRc::new(VecModel::<ToolPolicyUiRow>::default()));
 
     let weak = window.as_weak();
     let db_for_refresh = db.clone();
@@ -215,7 +228,13 @@ pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
         let still_pending = rows.iter().any(|r| r.id == ui.get_selected_approval().id);
-        ui.set_approvals(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_approvals()
+            .as_any()
+            .downcast_ref::<VecModel<ApprovalRow>>()
+        {
+            m.set_vec(rows);
+        }
         // Close the detail modal if the approval it showed is no longer pending.
         if ui.get_show_approval_detail() && !still_pending {
             ui.set_show_approval_detail(false);
@@ -250,7 +269,13 @@ pub(crate) async fn refresh_servers(weak: &slint::Weak<MainWindow>, db: &Db) {
         });
     }
     weak.upgrade_in_event_loop(move |ui| {
-        ui.set_servers(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_servers()
+            .as_any()
+            .downcast_ref::<VecModel<ServerRow>>()
+        {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
@@ -261,9 +286,13 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         let _ignored = weak.upgrade_in_event_loop(move |ui| {
             if ui.get_selected_server().as_str() == n {
                 ui.set_selected_server(SharedString::from(""));
-                ui.set_selected_server_tools(ModelRc::new(VecModel::from(
-                    Vec::<ToolPolicyUiRow>::new(),
-                )));
+                if let Some(m) = ui
+                    .get_selected_server_tools()
+                    .as_any()
+                    .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+                {
+                    m.set_vec(vec![]);
+                }
             }
         });
         return;
@@ -328,7 +357,13 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
         ui.set_selected_server(SharedString::from(name_owned));
         ui.set_selected_server_detail(detail);
-        ui.set_selected_server_tools(ModelRc::new(VecModel::from(tool_rows)));
+        if let Some(m) = ui
+            .get_selected_server_tools()
+            .as_any()
+            .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+        {
+            m.set_vec(tool_rows);
+        }
     });
 
     refresh_server_targets(weak, db, name).await;
@@ -363,7 +398,13 @@ pub(crate) async fn refresh_server_targets(
                 active: managing.contains(&client.id),
             })
             .collect();
-        ui.set_selected_server_targets(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_selected_server_targets()
+            .as_any()
+            .downcast_ref::<VecModel<IdeTarget>>()
+        {
+            m.set_vec(rows);
+        }
     });
 }
 
@@ -428,7 +469,13 @@ pub(crate) async fn refresh_scope_popover(
         ui.set_scope_popover_item(SharedString::from(item.clone()));
         ui.set_scope_popover_item_label(SharedString::from(item));
         ui.set_scope_popover_item_kind(SharedString::from(kind));
-        ui.set_scope_popover_scopes(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_scope_popover_scopes()
+            .as_any()
+            .downcast_ref::<VecModel<ScopeRow>>()
+        {
+            m.set_vec(rows);
+        }
         ui.set_scope_popover_open(true);
     });
 }
@@ -453,7 +500,9 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
                 }
             })
             .collect();
-        ui.set_ides(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui.get_ides().as_any().downcast_ref::<VecModel<IdeRow>>() {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
@@ -519,7 +568,9 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
-        ui.set_audit(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui.get_audit().as_any().downcast_ref::<VecModel<AuditRow>>() {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
@@ -596,7 +647,9 @@ pub(crate) async fn refresh_audit_gen(
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
-        ui.set_audit(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui.get_audit().as_any().downcast_ref::<VecModel<AuditRow>>() {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
@@ -649,7 +702,13 @@ pub(crate) async fn refresh_dashboard(
         ui.set_dashboard_stats(stats);
         // Dashboard skill cards don't render IDE toggles, so no active kinds.
         let skill_rows = installed_skills_to_rows(&installed_skills, &[]);
-        ui.set_dashboard_skills(ModelRc::new(VecModel::from(skill_rows)));
+        if let Some(m) = ui
+            .get_dashboard_skills()
+            .as_any()
+            .downcast_ref::<VecModel<SkillRow>>()
+        {
+            m.set_vec(skill_rows);
+        }
     })
     .ok();
 }

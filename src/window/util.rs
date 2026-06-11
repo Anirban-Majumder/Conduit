@@ -285,7 +285,7 @@ pub(crate) fn reveal_in_file_manager(path: &std::path::Path) {
             });
         }
         Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "reveal in file manager failed")
+            tracing::warn!(path = %path.display(), error = %e, "reveal in file manager failed");
         }
     }
 }

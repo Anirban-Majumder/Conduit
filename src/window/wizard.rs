@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use rmcp::transport::auth::StoredCredentials;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -295,7 +295,13 @@ pub(crate) fn install_wizard_callbacks(
                         ui.set_wizard_step(3);
                         ui.set_wizard_phase_status(SharedString::from(""));
                         ui.set_wizard_oauth_url(SharedString::from(""));
-                        ui.set_wizard_tools(ModelRc::new(VecModel::from(tool_rows)));
+                        if let Some(m) = ui
+                            .get_wizard_tools()
+                            .as_any()
+                            .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+                        {
+                            m.set_vec(tool_rows);
+                        }
                     });
                     let _ = name;
                 }
@@ -471,18 +477,17 @@ pub(crate) fn install_wizard_callbacks(
     window.on_wizard_change_tool_policy(move |tool, decision| {
         let Some(ui) = weak.upgrade() else { return };
         let model = ui.get_wizard_tools();
-        let tool = tool.to_string();
-        let decision = decision.to_string();
-        let mut updated: Vec<ToolPolicyUiRow> = Vec::with_capacity(model.row_count());
-        for i in 0..model.row_count() {
-            if let Some(mut row) = model.row_data(i) {
-                if tool == "*" || row.name.as_str() == tool {
-                    row.decision = SharedString::from(decision.clone());
+        let Some(m) = model.as_any().downcast_ref::<VecModel<ToolPolicyUiRow>>() else {
+            return;
+        };
+        for i in 0..m.row_count() {
+            if let Some(mut row) = m.row_data(i) {
+                if tool == "*" || row.name == tool {
+                    row.decision = decision.clone();
+                    m.set_row_data(i, row);
                 }
-                updated.push(row);
             }
         }
-        ui.set_wizard_tools(ModelRc::new(VecModel::from(updated)));
     });
 }
 
