@@ -36,6 +36,17 @@ pub(crate) fn install_settings_callbacks(window: &MainWindow, ctx: &CallbackCont
                 return;
             }
             let result = config.set(&key, &value).await;
+            // After a successful autostart toggle, sync the OS service.
+            if result.is_ok() && key == "daemon.autostart_at_login" {
+                let autostart = settings.load().daemon.autostart_at_login;
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    conduit::installer::reconcile_autostart(autostart);
+                })
+                .await
+                {
+                    tracing::warn!(error = %e, "autostart reconcile task failed");
+                }
+            }
             // Success or rejection, repaint from the shared settings: success
             // shows the new value, rejection reverts the field to last-good.
             let row_settings = settings.load_full();

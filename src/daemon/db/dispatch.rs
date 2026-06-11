@@ -18,7 +18,7 @@ use super::audit::{
     query_insert_audit_entry, query_purge_old_audit_entries, query_query_audit_log,
 };
 use super::clients::{
-    query_add_managed_server, query_get_client, query_list_clients,
+    query_add_managed_server, query_client_manages_server, query_get_client, query_list_clients,
     query_list_clients_managing_server, query_list_known_repos, query_list_managed_servers,
     query_list_scopes_for_client, query_list_tracked_clients, query_lookup_client_key,
     query_project_builtin, query_remove_managed_server, query_remove_server_all_scopes,
@@ -262,6 +262,15 @@ pub(super) fn dispatch(conn: &Connection, cmd: DbCmd) {
         DbCmd::ListClientsManagingServer { server_name, reply } => {
             reply
                 .send(query_list_clients_managing_server(conn, &server_name))
+                .ok();
+        }
+        DbCmd::ClientManagesServer {
+            client_id,
+            server_name,
+            reply,
+        } => {
+            reply
+                .send(query_client_manages_server(conn, &client_id, &server_name))
                 .ok();
         }
         DbCmd::ListKnownRepos { reply } => {

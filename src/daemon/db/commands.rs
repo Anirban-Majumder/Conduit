@@ -163,6 +163,11 @@ pub enum DbCmd {
         server_name: String,
         reply: oneshot::Sender<Result<Vec<(String, String)>, DbError>>,
     },
+    ClientManagesServer {
+        client_id: String,
+        server_name: String,
+        reply: oneshot::Sender<Result<bool, DbError>>,
+    },
     ListKnownRepos {
         reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },

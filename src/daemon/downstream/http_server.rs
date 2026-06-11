@@ -127,6 +127,12 @@ async fn handle_mcp(
         return rpc_error_response(id, SERVER_NOT_FOUND, "server_not_found");
     };
 
+    match state.db.client_manages_server(&client.id, &server).await {
+        Ok(true) => {}
+        Ok(false) => return rpc_error_response(id, SERVER_NOT_FOUND, "server_not_found"),
+        Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
+    }
+
     match route_tool_call(
         &state,
         &client.mcp_key,

@@ -111,6 +111,11 @@ fn main() -> Result<()> {
         Err(e) => return Err(anyhow::Error::new(e).context("ipc bind")),
     };
 
+    // Reconcile autostart: bring the OS service in line with the user setting.
+    // Runs synchronously here (std fs / process work); never blocks startup on
+    // failure.
+    conduit::installer::reconcile_autostart(settings.load().daemon.autostart_at_login);
+
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
 
