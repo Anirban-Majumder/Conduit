@@ -80,8 +80,15 @@ pub(super) fn query_delete_server(conn: &Connection, name: &str) -> Result<(), D
 }
 
 pub(super) fn query_rename_server(conn: &Connection, old: &str, new: &str) -> Result<(), DbError> {
-    conn.prepare_cached("UPDATE mcp_server SET name = ?1 WHERE name = ?2")?
+    let tx = conn.unchecked_transaction()?;
+    tx.prepare_cached("UPDATE mcp_server SET name = ?1 WHERE name = ?2")?
         .execute(params![new, old])?;
+    // FK ON UPDATE CASCADE covers mcp_tool and managed_mcp but not pending_approvals.
+    tx.prepare_cached(
+        "UPDATE pending_approvals SET mcp_server = ?1 WHERE mcp_server = ?2 AND status = 'pending'",
+    )?
+    .execute(params![new, old])?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -164,7 +171,6 @@ pub(super) fn query_set_tool_decision(
     server: &str,
     tool: &str,
     decision: Decision,
-    _source: DecisionSource,
 ) -> Result<(), DbError> {
     conn.prepare_cached("UPDATE mcp_tool SET decision = ?1 WHERE mcp_server = ?2 AND name = ?3")?
         .execute(params![decision.as_db_str(), server, tool])?;
@@ -422,13 +428,11 @@ impl Db {
         server: &str,
         tool: &str,
         decision: Decision,
-        source: DecisionSource,
     ) -> Result<(), DbError> {
         self.send_cmd(|reply| DbCmd::SetToolDecision {
             server: server.to_string(),
             tool: tool.to_string(),
             decision,
-            source,
             reply,
         })
         .await

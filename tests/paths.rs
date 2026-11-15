@@ -12,14 +12,6 @@ fn under_composes_paths_from_root() {
     assert_eq!(paths.config_toml(), PathBuf::from("/var/test/config.toml"));
     assert_eq!(paths.installs_dir(), PathBuf::from("/var/test/installs"));
     assert_eq!(paths.logs_dir(), PathBuf::from("/var/test/logs"));
-    assert_eq!(
-        paths.daemon_log(),
-        PathBuf::from("/var/test/logs/daemon.log")
-    );
-    assert_eq!(
-        paths.server_log("gmail"),
-        PathBuf::from("/var/test/logs/server-gmail.log")
-    );
 }
 
 #[test]

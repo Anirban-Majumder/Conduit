@@ -24,7 +24,8 @@ const EVENT_CHANNEL_DEPTH: usize = 32;
 ///
 /// Spawns a tokio task that debounces inbound events. After `DEBOUNCE`
 /// quiet seconds following any change touching `config_path`, the task
-/// reloads via [`Settings::load_or_default`] and publishes on `bus`.
+/// reloads via [`Settings::load_from_file`] and publishes on `bus`.
+/// On parse error the last-good settings are kept and no event is published.
 ///
 /// The returned [`RecommendedWatcher`] must be held alive — dropping it
 /// detaches all watches. Firing `cancel` ends the debounce task; the
@@ -97,13 +98,35 @@ async fn debounce_loop(
 
             () = sleep_until_opt(next_fire), if next_fire.is_some() => {
                 pending_since = None;
-                let settings = Settings::load_or_default(&target);
-                tracing::info!(
-                    path = %target.display(),
-                    "config.toml reloaded; publishing ConfigReloaded"
-                );
-                shared.store(std::sync::Arc::new(settings.clone()));
-                bus.publish(Event::ConfigReloaded { settings });
+                let path = target.clone();
+                let load_result = tokio::task::spawn_blocking(move || {
+                    Settings::load_from_file(&path)
+                })
+                .await;
+                match load_result {
+                    Ok(Ok(settings)) => {
+                        tracing::info!(
+                            path = %target.display(),
+                            "config.toml reloaded; publishing ConfigReloaded"
+                        );
+                        shared.store(std::sync::Arc::new(settings.clone()));
+                        bus.publish(Event::ConfigReloaded { settings });
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            path = %target.display(),
+                            error = %e,
+                            "config.toml parse error; keeping last-good settings"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %target.display(),
+                            error = %e,
+                            "config reload task failed; keeping last-good settings"
+                        );
+                    }
+                }
             }
         }
     }

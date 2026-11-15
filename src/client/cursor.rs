@@ -12,10 +12,7 @@ pub static DEF: ClientDef = ClientDef {
     id: "Cursor",
     display_name: "Cursor",
     icon_svg: include_bytes!("../../assets/client/cursor.svg"),
-    config: PathSpec::PlatformSplit {
-        unix: ".cursor/mcp.json",
-        windows: "Cursor/mcp.json",
-    },
+    config: PathSpec::Home(".cursor/mcp.json"),
     skills: Some(PathSpec::Home(".cursor/skills")),
     project_config_rel: Some(".cursor/mcp.json"),
     project_skills_rel: Some(".cursor/skills"),

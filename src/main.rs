@@ -68,7 +68,12 @@ fn main() -> Result<()> {
     // keyring v4 / keyring-core requires registering a backend before any
     // Entry::new(); `true` picks Secret Service over kernel keyutils on Linux,
     // and is a no-op selector on macOS (Keychain) and Windows (Cred Manager).
-    keyring::use_native_store(true).context("activate OS keyring backend")?;
+    // On headless Linux / some WSL2 setups the D-Bus Secret Service may be
+    // unavailable; degrade gracefully — secret-dependent servers will fail at
+    // use-time, but the router core continues running.
+    if let Err(e) = keyring::use_native_store(true) {
+        tracing::warn!(error = %e, "OS keyring backend unavailable; secret-dependent servers will fail");
+    }
 
     let paths = Paths::from_user_dirs().context("resolve conduit config dir")?;
     paths.ensure_created().context("create state dirs")?;
@@ -105,6 +110,11 @@ fn main() -> Result<()> {
         }
         Err(e) => return Err(anyhow::Error::new(e).context("ipc bind")),
     };
+
+    // Reconcile autostart: bring the OS service in line with the user setting.
+    // Runs synchronously here (std fs / process work); never blocks startup on
+    // failure.
+    conduit::installer::reconcile_autostart(settings.load().daemon.autostart_at_login);
 
     let db = Db::spawn_at(&paths.state_db()).context("spawn db actor")?;
     let bus = Bus::new();
@@ -153,6 +163,7 @@ fn main() -> Result<()> {
         db.clone(),
         bus.clone(),
         settings.clone(),
+        cancel.clone(),
     ));
     let upstream = {
         let _guard = worker.handle().enter();
@@ -171,20 +182,29 @@ fn main() -> Result<()> {
     let app_state = AppState {
         db: db.clone(),
         approvals: approvals.clone(),
-        upstream,
+        upstream: upstream.clone(),
         bus: bus.clone(),
         port,
         settings: settings.clone(),
     };
+
+    let window = MainWindow::new().context("build slint main window")?;
 
     {
         let _guard = worker.handle().enter();
         let _sweeper =
             spawn_timeout_sweeper(db.clone(), bus.clone(), settings.clone(), cancel.clone());
         let http_cancel = cancel.clone();
+        let weak_for_http = window.as_weak();
         tokio::spawn(async move {
             if let Err(e) = http_server::serve(app_state, http_cancel).await {
                 tracing::error!(error = %e, "axum server exited with error");
+                weak_for_http
+                    .upgrade_in_event_loop(|ui| {
+                        ui.set_daemon_healthy(false);
+                        ui.set_status_message("HTTP server stopped unexpectedly".into());
+                    })
+                    .ok();
             }
         });
     }
@@ -193,12 +213,11 @@ fn main() -> Result<()> {
         let _guard = worker.handle().enter();
         conduit::daemon::retention::spawn(db.clone(), settings.clone(), cancel.clone());
     }
-
-    let window = MainWindow::new().context("build slint main window")?;
     install_callbacks(
         &window,
         &db,
         &approvals,
+        &upstream,
         &bus,
         port,
         worker.handle().clone(),
@@ -273,6 +292,26 @@ fn main() -> Result<()> {
         tokio::spawn(ipc::accept_loop(listener, cancel.clone(), on_show));
     }
 
+    // Graceful shutdown on SIGTERM/SIGINT (Unix) or Ctrl-C (Windows). Without it,
+    // a headless launch whose tray failed to install (no SNI host) has no
+    // quit_event_loop() path, and even `kill -TERM` would terminate abruptly,
+    // leaking the bound IPC socket. This drives the same orderly shutdown as the
+    // tray's Quit: fire the cancel token, then quit the Slint loop so main()
+    // runs its cleanup tail.
+    {
+        let _guard = worker.handle().enter();
+        let cancel_for_signal = cancel.clone();
+        tokio::spawn(async move {
+            wait_for_shutdown_signal().await;
+            tracing::info!("shutdown signal received; quitting");
+            cancel_for_signal.cancel();
+            slint::invoke_from_event_loop(|| {
+                slint::quit_event_loop().ok();
+            })
+            .ok();
+        });
+    }
+
     // Tray icon on a dedicated thread; nil if SNI host or libxdo absent.
     let _tray = install_tray(&db, &bus, &cancel, &window, worker.handle().clone());
 
@@ -321,7 +360,9 @@ fn main() -> Result<()> {
     });
 
     tracing::info!("entering slint event loop");
-    window.run().context("slint event loop")?;
+    // Use run_event_loop_until_quit so hiding the last window (close_to_tray=true)
+    // does NOT quit the loop — only explicit quit_event_loop() calls do.
+    slint::run_event_loop_until_quit().context("slint event loop")?;
 
     cancel.cancel();
     tracing::info!("conduit stopped");
@@ -397,6 +438,41 @@ fn focus_window(weak: &slint::Weak<MainWindow>) {
         }
     })
     .ok();
+}
+
+/// Resolve when the OS asks the process to terminate. On Unix that is SIGTERM
+/// (systemd `stop`, `kill`) or SIGINT (Ctrl-C); on other platforms, Ctrl-C.
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to install SIGTERM handler");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    let mut int = match signal(SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to install SIGINT handler");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = int.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::warn!(error = %e, "failed to await Ctrl-C");
+        std::future::pending::<()>().await;
+    }
 }
 
 fn init_tracing() {

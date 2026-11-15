@@ -7,6 +7,7 @@
 //! it both here and to `client_config::BUILTINS`.
 
 pub mod claude_code;
+pub mod claude_desktop;
 pub mod codex;
 pub mod cursor;
 pub mod openclaude;

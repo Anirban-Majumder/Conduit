@@ -242,6 +242,21 @@ pub(super) fn query_list_clients_managing_server(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Return `true` if `client_id` manages `server_name` in any scope.
+pub(super) fn query_client_manages_server(
+    conn: &Connection,
+    client_id: &str,
+    server_name: &str,
+) -> Result<bool, DbError> {
+    let count: i64 = conn
+        .prepare_cached(
+            "SELECT COUNT(*) FROM managed_mcp
+             WHERE client_id = ?1 AND server_name = ?2 LIMIT 1",
+        )?
+        .query_row(params![client_id, server_name], |row| row.get(0))?;
+    Ok(count > 0)
+}
+
 fn decode_client_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClientRow> {
     Ok(ClientRow {
         id: row.get(0)?,
@@ -401,6 +416,19 @@ impl Db {
         server_name: &str,
     ) -> Result<Vec<(String, String)>, DbError> {
         self.send_cmd(|reply| DbCmd::ListClientsManagingServer {
+            server_name: server_name.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn client_manages_server(
+        &self,
+        client_id: &str,
+        server_name: &str,
+    ) -> Result<bool, DbError> {
+        self.send_cmd(|reply| DbCmd::ClientManagesServer {
+            client_id: client_id.to_string(),
             server_name: server_name.to_string(),
             reply,
         })

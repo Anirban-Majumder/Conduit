@@ -1,11 +1,11 @@
-//! Add-Server wizard input: the "paste-magic" import parser (below) plus the
-//! name/lifecycle validators (bottom). Spec §Add MCP server flow > Import modal.
+//! Add-Server wizard input: paste-magic import parser plus name/lifecycle validators.
+//! Spec §Add MCP server flow > Import modal.
 //!
-//! `parse` sniffs the format and returns a `ParsedServer`: full MCP JSON
-//! (`{ "mcpServers": {...} }`), a bare command/url fragment, a plain env-var JSON
-//! object, dotenv lines, or `KEY: value`/`KEY=value` pairs. Env/header names
-//! matching `SECRET_KEYWORDS` are flagged `is_secret` so the wizard routes them
-//! to the keyring.
+//! `parse` sniffs the pasted text format and returns a `ParsedServer`. Recognised
+//! formats: full MCP JSON (`{ "mcpServers": {...} }`), a JSON object with
+//! `command`/`args`/`url` fields, a plain env-var JSON object, dotenv (`KEY=value`)
+//! lines, or `KEY: value` YAML-style pairs. Env/header names matching
+//! `SECRET_KEYWORDS` are flagged `is_secret` so the wizard routes them to the keyring.
 
 use serde_json::Value;
 use thiserror::Error;
@@ -75,7 +75,10 @@ fn make_env(name: String, value: String) -> ParsedEnv {
 
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    // Require at least 2 chars so a lone `"` or `'` is returned as-is.
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         // Safety: we just confirmed the string starts and ends with a 1-byte ASCII char.
         let mut chars = s.chars();
         chars.next();

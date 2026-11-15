@@ -103,6 +103,44 @@ pub fn is_installed() -> bool {
     false
 }
 
+/// Action required to bring the autostart state in line with the setting.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AutostartAction {
+    Install,
+    Uninstall,
+    Noop,
+}
+
+/// Decide what action is needed to reconcile the desired setting against the
+/// current OS state. Pure: takes both booleans, returns the action.
+pub const fn reconcile_decision(
+    autostart_at_login: bool,
+    currently_installed: bool,
+) -> AutostartAction {
+    match (autostart_at_login, currently_installed) {
+        (true, false) => AutostartAction::Install,
+        (false, true) => AutostartAction::Uninstall,
+        _ => AutostartAction::Noop,
+    }
+}
+
+/// Reconcile the autostart service against `autostart_at_login`. Installs or
+/// removes the service as needed; warns and continues on error.
+pub fn reconcile_autostart(autostart_at_login: bool) {
+    match reconcile_decision(autostart_at_login, is_installed()) {
+        AutostartAction::Install => match install() {
+            Ok(path) => tracing::info!(path = %path.display(), "autostart service installed"),
+            Err(e) => tracing::warn!(error = %e, "autostart install failed; continuing"),
+        },
+        AutostartAction::Uninstall => {
+            if let Err(e) = uninstall() {
+                tracing::warn!(error = %e, "autostart uninstall failed; continuing");
+            }
+        }
+        AutostartAction::Noop => {}
+    }
+}
+
 /// Escape XML special characters for use in plist/Task-Scheduler XML bodies.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) fn xml_escape(s: &str) -> String {
@@ -146,5 +184,26 @@ pub(super) fn atomic_write(
             let _ignored = fs::remove_file(&tmp);
             Err(InstallError::Io(e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reconcile_decision, AutostartAction};
+
+    #[test]
+    fn install_when_enabled_and_missing() {
+        assert_eq!(reconcile_decision(true, false), AutostartAction::Install);
+    }
+
+    #[test]
+    fn uninstall_when_disabled_and_present() {
+        assert_eq!(reconcile_decision(false, true), AutostartAction::Uninstall);
+    }
+
+    #[test]
+    fn noop_when_already_in_sync() {
+        assert_eq!(reconcile_decision(true, true), AutostartAction::Noop);
+        assert_eq!(reconcile_decision(false, false), AutostartAction::Noop);
     }
 }

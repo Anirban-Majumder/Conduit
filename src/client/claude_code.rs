@@ -23,7 +23,7 @@ pub static DEF: ClientDef = ClientDef {
     },
     binaries: &["claude"],
     #[cfg(target_os = "macos")]
-    mac_app: Some("Claude.app"),
+    mac_app: None,
     #[cfg(target_os = "windows")]
     win_paths: &["$APPDATA\\npm\\claude.cmd"],
 };

@@ -13,32 +13,53 @@ use super::InstallError;
 const TASK_NAME: &str = "MCP Router";
 const XML_FILE_NAME: &str = "autostart.xml";
 
+/// `schtasks` invoked without flashing a console window. CLAUDE.md requires
+/// Windows subprocess spawns to set CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+/// `reconcile_autostart` runs `/Query` on every launch, so a bare spawn would
+/// flash a console on each start.
+fn schtasks_command() -> Command {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    let mut cmd = Command::new("schtasks");
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    cmd
+}
+
 pub fn install(exe: &Path) -> Result<PathBuf, InstallError> {
     let dir = task_xml_dir()?;
     install_into(&dir, exe)
 }
 
 pub fn uninstall() -> Result<(), InstallError> {
-    let status = Command::new("schtasks")
-        .args(["/Delete", "/TN", TASK_NAME, "/F"])
-        .output()?;
-    // schtasks /Delete returns non-zero if the task doesn't exist; treat as idempotent.
-    if status.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        if stderr.contains("cannot find") || stderr.contains("does not exist") {
-            Ok(())
-        } else {
-            Err(InstallError::CommandFailed {
-                stderr: stderr.into_owned(),
-            })
+    // Query first: exit 0 means the task exists; non-zero means absent.
+    // This avoids matching localised error text from /Delete.
+    let present = schtasks_command()
+        .args(["/Query", "/TN", TASK_NAME])
+        .output()
+        .is_ok_and(|o| o.status.success());
+
+    if present {
+        let out = schtasks_command()
+            .args(["/Delete", "/TN", TASK_NAME, "/F"])
+            .output()?;
+        if !out.status.success() {
+            return Err(InstallError::CommandFailed {
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
         }
     }
+
+    // Best-effort: remove the rendered XML regardless of locale / task presence.
+    if let Ok(dir) = task_xml_dir() {
+        let _ = std::fs::remove_file(dir.join(XML_FILE_NAME));
+    }
+
+    Ok(())
 }
 
 pub fn is_installed() -> bool {
-    Command::new("schtasks")
+    schtasks_command()
         .args(["/Query", "/TN", TASK_NAME])
         .output()
         .is_ok_and(|o| o.status.success())
@@ -50,7 +71,7 @@ pub fn install_into(dir: &Path, exe: &Path) -> Result<PathBuf, InstallError> {
     let body = render_task_xml(exe);
     super::atomic_write(&xml_path, XML_FILE_NAME, body.as_bytes())?;
 
-    let output = Command::new("schtasks")
+    let output = schtasks_command()
         .args(["/Create", "/TN", TASK_NAME, "/XML"])
         .arg(&xml_path)
         .arg("/F")
@@ -87,6 +108,9 @@ pub fn render_task_xml(exe: &Path) -> String {
          \x20     <Interval>PT1M</Interval>\n\
          \x20     <Count>5</Count>\n\
          \x20   </RestartOnFailure>\n\
+         \x20   <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n\
+         \x20   <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n\
+         \x20   <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n\
          \x20   <Enabled>true</Enabled>\n\
          \x20 </Settings>\n\
          \x20 <Actions Context=\"Author\">\n\

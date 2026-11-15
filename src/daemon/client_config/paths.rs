@@ -18,6 +18,16 @@ pub enum PathSpec {
         windows: &'static str,
     },
     /// `$ENV/suffix`, fallback to `home_dir().join(fallback)` — Codex.
+    ///
+    /// NOTE (CC-15): `resolve()` re-reads the environment variable on every call,
+    /// so paths are re-resolved at each detect/projection run rather than being
+    /// frozen from first startup. However, the resolved path IS frozen in the DB
+    /// by `project_builtins` and is only rewritten on a version bump. A service-
+    /// launched daemon with no `$CODEX_HOME` in its environment will project the
+    /// fallback path; if the user later sets `$CODEX_HOME` and Conduit is still
+    /// running without a restart, the DB will retain the old path until the next
+    /// version bump or fresh projection. To fully fix this a re-projection on every
+    /// startup (ignoring `version_changed`) would be needed for `EnvOrHome` clients.
     EnvOrHome {
         env: &'static str,
         suffix: &'static str,

@@ -117,12 +117,19 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
             let db = db.clone();
             let weak = weak.clone();
             let (item, kind, editor) = (item.to_string(), kind.to_string(), editor.to_string());
-            let _ignored = weak.upgrade_in_event_loop(|ui| {
+            // Set the popover identity synchronously so a slower refresh from a
+            // previously-clicked (item, editor) can't repaint over this one —
+            // the guard in refresh_scope_popover compares against these.
+            if let Some(ui) = weak.upgrade() {
                 ui.set_scope_popover_add_path(SharedString::default());
                 ui.set_scope_popover_add_error(SharedString::default());
-            });
+                ui.set_scope_popover_item(SharedString::from(item.clone()));
+                ui.set_scope_popover_item_label(SharedString::from(item.clone()));
+                ui.set_scope_popover_item_kind(SharedString::from(kind.clone()));
+                ui.set_scope_popover_editor(SharedString::from(editor.clone()));
+            }
             rt.spawn(async move {
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, true).await;
             });
         });
     }
@@ -162,7 +169,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
             rt.spawn(async move {
                 let kind = read_item_kind(&weak).await;
                 apply_scope(&db, &skills, port, &kind, &item, &editor, &scope_key, on).await;
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, false).await;
                 repaint_detail(&weak, &db, &skills, &kind, &item).await;
             });
         });
@@ -182,7 +189,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
             rt.spawn(async move {
                 let kind = read_item_kind(&weak).await;
                 apply_scope(&db, &skills, port, &kind, &item, &editor, &scope_key, false).await;
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, false).await;
                 repaint_detail(&weak, &db, &skills, &kind, &item).await;
             });
         });
@@ -251,7 +258,7 @@ pub(crate) fn install_scope_callbacks(window: &MainWindow, ctx: &CallbackContext
                     ui.set_scope_popover_add_path(SharedString::default());
                     ui.set_scope_popover_add_error(SharedString::default());
                 });
-                refresh_scope_popover(&weak, &db, &item, &kind, &editor).await;
+                refresh_scope_popover(&weak, &db, &item, &kind, &editor, false).await;
                 repaint_detail(&weak, &db, &skills, &kind, &item).await;
             });
         });

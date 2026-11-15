@@ -61,14 +61,6 @@ impl Paths {
         self.root.join("logs")
     }
 
-    pub fn daemon_log(&self) -> PathBuf {
-        self.logs_dir().join("daemon.log")
-    }
-
-    pub fn server_log(&self, server_name: &str) -> PathBuf {
-        self.logs_dir().join(format!("server-{server_name}.log"))
-    }
-
     pub fn ensure_created(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(self.installs_dir())?;

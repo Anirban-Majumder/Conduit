@@ -62,7 +62,7 @@ async fn first_pending_id(center: &ApprovalCenter) -> String {
 async fn request_returns_approved_when_resolved_approve() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -82,7 +82,7 @@ async fn request_returns_approved_when_resolved_approve() {
 async fn request_returns_denied_when_resolved_deny() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -102,7 +102,7 @@ async fn request_returns_denied_when_resolved_deny() {
 async fn request_returns_timeout_when_no_resolution() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(1));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(1), CancellationToken::new());
 
     let outcome = wait_for(Duration::from_secs(3), center.request(sample_req()))
         .await
@@ -122,7 +122,7 @@ async fn request_returns_timeout_when_no_resolution() {
 async fn request_persists_pending_row_before_resolution() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -151,7 +151,7 @@ async fn request_persists_pending_row_before_resolution() {
 async fn resolve_unknown_id_is_ok() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     center
         .resolve("does-not-exist", ApprovalStatus::Approved)
@@ -164,7 +164,7 @@ async fn approval_pending_event_published_before_waiting() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -202,7 +202,7 @@ async fn approval_resolved_event_fires_on_resolve() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
     let mut rx = bus.subscribe();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
 
     let req_fut = {
         let center_ref = &center;
@@ -248,7 +248,7 @@ async fn approval_resolved_event_fires_on_resolve() {
 async fn resolve_to_pending_rejected() {
     let db = Db::spawn_in_memory().unwrap();
     let bus = Bus::new();
-    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5));
+    let center = ApprovalCenter::new(db, bus, settings_with_timeout(5), CancellationToken::new());
     let err = center
         .resolve("whatever", ApprovalStatus::Pending)
         .await
@@ -365,4 +365,131 @@ async fn sweep_publishes_one_resolved_event_per_swept_id() {
     assert_eq!(got.len(), 2, "expected one event per id");
     assert!(got.contains("a"));
     assert!(got.contains("b"));
+}
+
+/// DS-1: concurrent resolvers — exactly one wins.
+///
+/// Two `resolve` calls race on the same approval id; only one should flip the DB
+/// row (changed-row count == 1) and only one `ApprovalResolved` event should fire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_resolve_exactly_one_winner() {
+    let db = Db::spawn_in_memory().unwrap();
+    let bus = Bus::new();
+    let mut rx = bus.subscribe();
+    let center = Arc::new(ApprovalCenter::new(
+        db,
+        bus,
+        settings_with_timeout(30),
+        CancellationToken::new(),
+    ));
+
+    let req_fut = {
+        let c = Arc::clone(&center);
+        tokio::spawn(async move { c.request(sample_req()).await.unwrap() })
+    };
+
+    // Wait until the row is visible, then fire two concurrent resolvers.
+    for _ in 0..50 {
+        let rows = center.db().list_pending_approvals().await.unwrap();
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let rows = center.db().list_pending_approvals().await.unwrap();
+    let id = rows.first().expect("pending row").id.clone();
+
+    let c1 = Arc::clone(&center);
+    let id1 = id.clone();
+    let c2 = Arc::clone(&center);
+    let id2 = id.clone();
+
+    let (r1, r2) = tokio::join!(
+        tokio::spawn(async move { c1.resolve(&id1, ApprovalStatus::Approved).await }),
+        tokio::spawn(async move { c2.resolve(&id2, ApprovalStatus::Denied).await }),
+    );
+    r1.unwrap().unwrap();
+    r2.unwrap().unwrap();
+
+    // Exactly one ApprovalResolved event should have fired.
+    let mut resolved_count = 0;
+    loop {
+        match wait_for(Duration::from_millis(200), rx.recv()).await {
+            Ok(Ok(Event::ApprovalResolved { .. })) => resolved_count += 1,
+            Ok(Ok(Event::ApprovalPending { .. })) => {}
+            _ => break,
+        }
+    }
+    assert_eq!(resolved_count, 1, "exactly one resolve event expected");
+
+    // The request future should complete (one of Approved/Denied).
+    let outcome = wait_for(Duration::from_secs(2), req_fut)
+        .await
+        .expect("request completed")
+        .unwrap();
+    assert!(
+        matches!(outcome, ApprovalOutcome::Approved | ApprovalOutcome::Denied),
+        "unexpected outcome: {outcome:?}"
+    );
+}
+
+/// DS-2: approve races the timeout boundary — `request()` must return Approved.
+///
+/// The timeout fires and its conditional UPDATE loses (changed == 0) because
+/// `resolve(Approved)` already won the row. The `request()` future must return
+/// `ApprovalOutcome::Approved`, not a spurious `Timeout`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approve_racing_timeout_returns_approved_not_timeout() {
+    // Use a very short timeout so the sleep fires almost immediately.
+    let db = Db::spawn_in_memory().unwrap();
+    let bus = Bus::new();
+    let center = Arc::new(ApprovalCenter::new(
+        db,
+        bus,
+        settings_with_timeout(1),
+        CancellationToken::new(),
+    ));
+
+    let req_fut = {
+        let c = Arc::clone(&center);
+        tokio::spawn(async move { c.request(sample_req()).await.unwrap() })
+    };
+
+    // Wait for the row to appear, then resolve Approved just before the timeout
+    // would fire.  We sleep 900ms so the resolve lands before the 1-second sleep
+    // in `request()`, but the two events are close enough to race in practice.
+    for _ in 0..50 {
+        let rows = center.db().list_pending_approvals().await.unwrap();
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let rows = center.db().list_pending_approvals().await.unwrap();
+    let id = rows.first().expect("pending row").id.clone();
+
+    // Sleep until just before the timeout fires, then approve.
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    center.resolve(&id, ApprovalStatus::Approved).await.unwrap();
+
+    // Even if the 1-second sleep in `request()` fires before the oneshot is
+    // delivered, the timeout branch must re-read the DB and return Approved.
+    let outcome = wait_for(Duration::from_secs(3), req_fut)
+        .await
+        .expect("request completed in time")
+        .unwrap();
+    assert_eq!(
+        outcome,
+        ApprovalOutcome::Approved,
+        "expected Approved but got {outcome:?}"
+    );
+
+    // DB row must reflect Approved, not Timeout.
+    let row = center
+        .db()
+        .get_pending_approval(&id)
+        .await
+        .unwrap()
+        .expect("row present");
+    assert_eq!(row.status, ApprovalStatus::Approved);
 }

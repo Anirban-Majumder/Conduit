@@ -2,6 +2,8 @@
 //!
 //! Each callback sets the corresponding UI property and triggers a filter-aware
 //! `refresh_audit` so the displayed rows always match the live filter state.
+//! `refresh_audit` itself carries the generation guard that drops out-of-order
+//! DB responses (shared with the event bridge's coalesced refresh).
 
 use slint::ComponentHandle;
 

@@ -59,6 +59,7 @@ pub struct ClientDef {
 /// All built-in client definitions. Adding an IDE = one new file + one line here.
 pub static BUILTINS: &[&ClientDef] = &[
     &crate::client::claude_code::DEF,
+    &crate::client::claude_desktop::DEF,
     &crate::client::codex::DEF,
     &crate::client::cursor::DEF,
     &crate::client::openclaude::DEF,

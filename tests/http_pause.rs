@@ -34,6 +34,21 @@ async fn paused_router_returns_daemon_paused() {
     let db = Db::spawn_in_memory().unwrap();
     db.set_settings_kv("routing_paused", "true").await.unwrap();
 
+    // Key validation now precedes the routing_paused check (DS-6 second half).
+    // Insert a real client so the key lookup succeeds and we reach the paused check.
+    let client = db
+        .project_builtin(
+            "test-ide",
+            "Test IDE",
+            "/tmp/test.json",
+            None,
+            "{}",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
     let port = pick_free_port();
     let bus = Bus::new();
     let cancel = CancellationToken::new();
@@ -42,6 +57,7 @@ async fn paused_router_returns_daemon_paused() {
         db.clone(),
         bus.clone(),
         settings.clone(),
+        cancel.clone(),
     ));
     let dir = std::env::temp_dir().join(format!("mcp-pause-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -59,9 +75,11 @@ async fn paused_router_returns_daemon_paused() {
     let serve_handle = tokio::spawn(async move { serve(state, serve_cancel).await });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let url = format!("http://127.0.0.1:{port}/whatever/whoever/mcp");
+    // Use the real mcp_key so key validation passes and we reach the paused check.
+    let url = format!("http://127.0.0.1:{port}/{}/whoever/mcp", client.mcp_key);
     let resp = reqwest::Client::new()
         .post(&url)
+        .header("host", format!("127.0.0.1:{port}"))
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
         .send()
         .await

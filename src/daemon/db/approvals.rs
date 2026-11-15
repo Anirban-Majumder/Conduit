@@ -65,14 +65,21 @@ pub(super) fn query_get_pending_approval(
     Ok(row)
 }
 
+/// Conditionally flips a `pending` row to `new_status`.
+///
+/// Returns 1 if the row existed and was `pending` (this caller wins the race),
+/// 0 if it was already resolved by a concurrent caller or never existed.
 pub(super) fn query_resolve_pending_approval(
     conn: &Connection,
     id: &str,
     new_status: ApprovalStatus,
-) -> Result<(), DbError> {
-    conn.prepare_cached("UPDATE pending_approvals SET status = ?1 WHERE id = ?2")?
+) -> Result<usize, DbError> {
+    let n = conn
+        .prepare_cached(
+            "UPDATE pending_approvals SET status = ?1 WHERE id = ?2 AND status = 'pending'",
+        )?
         .execute(params![new_status.as_db_str(), id])?;
-    Ok(())
+    Ok(n)
 }
 
 pub(super) fn query_list_pending_approvals(
@@ -91,21 +98,13 @@ pub(super) fn query_sweep_stale_pending_approvals(
     older_than_ts: i64,
 ) -> Result<Vec<String>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id FROM pending_approvals
-         WHERE status = 'pending' AND created_at < ?1",
+        "UPDATE pending_approvals SET status = 'timeout'
+         WHERE status = 'pending' AND created_at < ?1
+         RETURNING id",
     )?;
-    let ids: Vec<String> = stmt
+    let ids = stmt
         .query_map(params![older_than_ts], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(stmt);
-    if ids.is_empty() {
-        return Ok(ids);
-    }
-    let mut update =
-        conn.prepare_cached("UPDATE pending_approvals SET status = 'timeout' WHERE id = ?1")?;
-    for id in &ids {
-        update.execute(params![id])?;
-    }
     Ok(ids)
 }
 
@@ -123,11 +122,12 @@ impl Db {
         .await
     }
 
+    /// Returns 1 if this caller won the race (row was pending), 0 otherwise.
     pub async fn resolve_pending_approval(
         &self,
         id: &str,
         new_status: ApprovalStatus,
-    ) -> Result<(), DbError> {
+    ) -> Result<usize, DbError> {
         self.send_cmd(|reply| DbCmd::ResolvePendingApproval {
             id: id.to_string(),
             new_status,

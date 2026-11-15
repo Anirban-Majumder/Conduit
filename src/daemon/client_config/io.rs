@@ -6,6 +6,7 @@
 //! shared with the installer.
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as JsonValue;
@@ -28,6 +29,24 @@ pub(super) fn atomic_write_toml(path: &Path, value: &toml::Value) -> Result<(), 
     write_atomic(path, &serialized)
 }
 
+/// Write an already-edited JSONC string (comment-preserving splice output) atomically.
+pub(super) fn atomic_write_jsonc_str(path: &Path, text: &str) -> Result<(), ClientError> {
+    let mut bytes = text.as_bytes().to_vec();
+    if !bytes.ends_with(b"\n") {
+        bytes.push(b'\n');
+    }
+    write_atomic(path, &bytes)
+}
+
+/// Write already-serialized TOML (from `toml_edit::DocumentMut::to_string()`) atomically.
+pub(super) fn atomic_write_toml_str(path: &Path, text: &str) -> Result<(), ClientError> {
+    let mut bytes = text.as_bytes().to_vec();
+    if !bytes.ends_with(b"\n") {
+        bytes.push(b'\n');
+    }
+    write_atomic(path, &bytes)
+}
+
 /// Tempfile + platform-safe rename. Skips the write entirely when the file is
 /// already byte-identical — keeps the startup config reconcile idempotent (no
 /// gratuitous rewrites, no comment-stripping churn when nothing changed).
@@ -41,7 +60,11 @@ fn write_atomic(path: &Path, serialized: &[u8]) -> Result<(), ClientError> {
         }
     }
     let tmp = tmp_path_for(path)?;
-    fs::write(&tmp, serialized)?;
+    {
+        let mut f = fs::File::create(&tmp).map_err(ClientError::Io)?;
+        f.write_all(serialized).map_err(ClientError::Io)?;
+        f.sync_all().map_err(ClientError::Io)?;
+    }
     atomic_rename_or_replace(&tmp, path).map_err(|e| {
         let _ignored = fs::remove_file(&tmp);
         ClientError::Io(e)

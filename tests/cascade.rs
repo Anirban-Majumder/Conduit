@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use conduit::daemon::cascade::delete_server_with_cascade;
 use conduit::daemon::client_config::builtin_by_id;
@@ -20,11 +21,21 @@ use conduit::daemon::client_config::types::ConfigSchema;
 use conduit::daemon::db::types::{ApprovalStatus, McpServer, McpTool, PendingApproval};
 use conduit::daemon::db::Db;
 use conduit::daemon::events::{Bus, Event};
+use conduit::daemon::paths::Paths;
+use conduit::daemon::upstream::manager::UpstreamManager;
+use tokio_util::sync::CancellationToken;
 
 fn unique_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir().join(format!("mcp-cascade-{}-{tag}-{n}", std::process::id()))
+}
+
+fn test_upstream() -> Arc<UpstreamManager> {
+    Arc::new(UpstreamManager::new(
+        Paths::under(unique_dir("upstream")),
+        CancellationToken::new(),
+    ))
 }
 
 fn server(name: &str) -> McpServer {
@@ -98,7 +109,7 @@ async fn cascade_re_derives_client_config_and_deletes_server_row() {
         .unwrap();
     seed_cursor(&db, &cfg_path, &["gmail", "github"]).await;
 
-    let report = delete_server_with_cascade(&db, &bus, "gmail", 9876, false)
+    let report = delete_server_with_cascade(&db, &bus, &test_upstream(), "gmail", 9876, false)
         .await
         .unwrap();
 
@@ -190,7 +201,7 @@ async fn cascade_re_derives_global_and_repo_scopes() {
     )
     .unwrap();
 
-    delete_server_with_cascade(&db, &bus, "gmail", 9876, false)
+    delete_server_with_cascade(&db, &bus, &test_upstream(), "gmail", 9876, false)
         .await
         .unwrap();
 
@@ -234,7 +245,7 @@ async fn cascade_cancels_pending_approvals_for_deleted_server() {
     .await
     .unwrap();
 
-    let report = delete_server_with_cascade(&db, &bus, "gmail", 9876, false)
+    let report = delete_server_with_cascade(&db, &bus, &test_upstream(), "gmail", 9876, false)
         .await
         .unwrap();
     assert_eq!(report.cancelled_approvals, vec!["uuid-1".to_string()]);
@@ -282,7 +293,7 @@ async fn cascade_tolerates_missing_client_config_file() {
         .unwrap();
 
     // Re-derive writes a fresh (empty-set) file — no panic on the missing file.
-    let report = delete_server_with_cascade(&db, &bus, "gmail", 9876, false)
+    let report = delete_server_with_cascade(&db, &bus, &test_upstream(), "gmail", 9876, false)
         .await
         .unwrap();
     assert_eq!(report.rewritten_clients, vec!["Cursor".to_string()]);

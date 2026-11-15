@@ -5,9 +5,10 @@
 //! event. Every `refresh_*` is async (DB-actor calls) and writes UI state only
 //! through `upgrade_in_event_loop`, so all are safe to call from worker tasks.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::client_config;
@@ -18,8 +19,8 @@ use conduit::daemon::events::Event;
 use conduit::daemon::skills::SkillManager;
 
 use crate::window::view::{
-    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, PolicyRow, ScopeRow,
-    ServerDetail, ServerRow, ToolPolicyRow as ToolPolicyUiRow,
+    ApprovalRow, AuditRow, DashboardStats, IdeRow, IdeTarget, MainWindow, ScopeRow, ServerDetail,
+    ServerRow, SkillRepoRow, SkillRow, ToolPolicyRow as ToolPolicyUiRow,
 };
 
 use crate::window::skills::{installed_skills_to_rows, refresh_skills};
@@ -45,6 +46,22 @@ pub(crate) fn push_initial_models(
     skills: Arc<SkillManager>,
 ) {
     window.set_settings(settings_to_row(settings));
+
+    // Seed every list property with an empty VecModel once so that subsequent
+    // refresh calls can downcast and call set_vec in place instead of replacing
+    // the model identity (which would destroy per-row expanded state, etc.).
+    window.set_approvals(ModelRc::new(VecModel::<ApprovalRow>::default()));
+    window.set_servers(ModelRc::new(VecModel::<ServerRow>::default()));
+    window.set_ides(ModelRc::new(VecModel::<IdeRow>::default()));
+    window.set_audit(ModelRc::new(VecModel::<AuditRow>::default()));
+    window.set_dashboard_skills(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_skills(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_skills_all(ModelRc::new(VecModel::<SkillRow>::default()));
+    window.set_skill_repos(ModelRc::new(VecModel::<SkillRepoRow>::default()));
+    window.set_selected_server_tools(ModelRc::new(VecModel::<ToolPolicyUiRow>::default()));
+    window.set_selected_server_targets(ModelRc::new(VecModel::<IdeTarget>::default()));
+    window.set_scope_popover_scopes(ModelRc::new(VecModel::<ScopeRow>::default()));
+    window.set_wizard_tools(ModelRc::new(VecModel::<ToolPolicyUiRow>::default()));
 
     let weak = window.as_weak();
     let db_for_refresh = db.clone();
@@ -75,10 +92,14 @@ pub(crate) fn spawn_event_bridge(
     cancel: CancellationToken,
 ) {
     let weak = window.as_weak();
+    let rt_for_bridge = rt.clone();
     rt.spawn(async move {
+        let rt = rt_for_bridge;
         // Dirty flag: set when AuditAppended arrives; cleared after the coalesced
         // refresh fires. At most one audit query + UI repaint per ~300ms burst.
         let mut audit_dirty = false;
+        // Single-flight gate for the spawned SkillsChanged refresh (see below).
+        let skills_refresh_inflight = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut coalesce = tokio::time::interval(std::time::Duration::from_millis(300));
         loop {
             tokio::select! {
@@ -120,20 +141,39 @@ pub(crate) fn spawn_event_bridge(
                             .ok();
                         }
                         Ok(Event::SkillsChanged) => {
-                            refresh_skills(&weak, &skills).await;
+                            spawn_skills_refresh(&skills_refresh_inflight, &rt, &weak, &skills);
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Ok(Event::AuthFailure { server, message }) => {
                             tracing::warn!(server = %server, message = %message, "auth failure");
                             fire_auth_failure_notification(&server, &message);
                             refresh_servers(&weak, &db).await;
-                            refresh_server_detail(&weak, &db, &server).await;
+                            // Only repaint the detail pane when the event's server
+                            // is the one the user currently has selected — background
+                            // auth failures must not hijack the selection.
+                            let server_for_check = server.clone();
+                            let is_selected = read_ui_state(&weak, move |ui| {
+                                ui.get_selected_server().as_str() == server_for_check
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if is_selected {
+                                refresh_server_detail(&weak, &db, &server).await;
+                            }
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Ok(Event::AuthCleared { server }) => {
                             tracing::info!(server = %server, "auth cleared");
                             refresh_servers(&weak, &db).await;
-                            refresh_server_detail(&weak, &db, &server).await;
+                            let server_for_check2 = server.clone();
+                            let is_selected = read_ui_state(&weak, move |ui| {
+                                ui.get_selected_server().as_str() == server_for_check2
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if is_selected {
+                                refresh_server_detail(&weak, &db, &server).await;
+                            }
                             refresh_dashboard(&weak, &db, &skills).await;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -154,11 +194,36 @@ pub(crate) fn spawn_event_bridge(
     });
 }
 
+/// Spawn the `SkillsChanged` backstop refresh off the bridge loop (network
+/// skill discovery can take 20s+ per fetch). Single-flight: skipped while a
+/// previous refresh runs — tasks would otherwise pile up behind the manager's
+/// discover lock during event bursts; skill callbacks also refresh directly,
+/// so a skipped backstop self-heals.
+fn spawn_skills_refresh(
+    inflight: &Arc<std::sync::atomic::AtomicBool>,
+    rt: &tokio::runtime::Handle,
+    weak: &slint::Weak<MainWindow>,
+    skills: &Arc<SkillManager>,
+) {
+    if inflight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let weak = weak.clone();
+    let skills = skills.clone();
+    let inflight = Arc::clone(inflight);
+    rt.spawn(async move {
+        refresh_skills(&weak, &skills).await;
+        inflight.store(false, Ordering::Release);
+    });
+}
+
 pub(crate) async fn refresh_all(weak: &slint::Weak<MainWindow>, db: &Db) {
     refresh_pending(weak, db).await;
     refresh_servers(weak, db).await;
     refresh_ides(weak, db).await;
-    refresh_policies(weak, db).await;
     refresh_audit(weak, db).await;
 }
 
@@ -185,7 +250,13 @@ pub(crate) async fn refresh_pending(weak: &slint::Weak<MainWindow>, db: &Db) {
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
         let still_pending = rows.iter().any(|r| r.id == ui.get_selected_approval().id);
-        ui.set_approvals(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_approvals()
+            .as_any()
+            .downcast_ref::<VecModel<ApprovalRow>>()
+        {
+            m.set_vec(rows);
+        }
         // Close the detail modal if the approval it showed is no longer pending.
         if ui.get_show_approval_detail() && !still_pending {
             ui.set_show_approval_detail(false);
@@ -220,7 +291,13 @@ pub(crate) async fn refresh_servers(weak: &slint::Weak<MainWindow>, db: &Db) {
         });
     }
     weak.upgrade_in_event_loop(move |ui| {
-        ui.set_servers(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_servers()
+            .as_any()
+            .downcast_ref::<VecModel<ServerRow>>()
+        {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
@@ -231,9 +308,13 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
         let _ignored = weak.upgrade_in_event_loop(move |ui| {
             if ui.get_selected_server().as_str() == n {
                 ui.set_selected_server(SharedString::from(""));
-                ui.set_selected_server_tools(ModelRc::new(VecModel::from(
-                    Vec::<ToolPolicyUiRow>::new(),
-                )));
+                if let Some(m) = ui
+                    .get_selected_server_tools()
+                    .as_any()
+                    .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+                {
+                    m.set_vec(vec![]);
+                }
             }
         });
         return;
@@ -296,9 +377,19 @@ pub(crate) async fn refresh_server_detail(weak: &slint::Weak<MainWindow>, db: &D
 
     let name_owned = name.to_string();
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
-        ui.set_selected_server(SharedString::from(name_owned));
+        // Drop stale paints: if the user clicked a different server while DB
+        // queries were in flight, don't overwrite the newer selection.
+        if ui.get_selected_server().as_str() != name_owned {
+            return;
+        }
         ui.set_selected_server_detail(detail);
-        ui.set_selected_server_tools(ModelRc::new(VecModel::from(tool_rows)));
+        if let Some(m) = ui
+            .get_selected_server_tools()
+            .as_any()
+            .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+        {
+            m.set_vec(tool_rows);
+        }
     });
 
     refresh_server_targets(weak, db, name).await;
@@ -323,7 +414,13 @@ pub(crate) async fn refresh_server_targets(
 
     // Build `IdeTarget`s (incl. brand-icon `Image`s) on the UI thread — `Image`
     // is !Send.
+    let name_owned = server_name.to_string();
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        // Drop stale paints: same guard as refresh_server_detail (UI-15) — the
+        // user may have selected a different server while the DB calls ran.
+        if ui.get_selected_server().as_str() != name_owned {
+            return;
+        }
         let rows: Vec<IdeTarget> = actives
             .iter()
             .map(|client| IdeTarget {
@@ -333,18 +430,30 @@ pub(crate) async fn refresh_server_targets(
                 active: managing.contains(&client.id),
             })
             .collect();
-        ui.set_selected_server_targets(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui
+            .get_selected_server_targets()
+            .as_any()
+            .downcast_ref::<VecModel<IdeTarget>>()
+        {
+            m.set_vec(rows);
+        }
     });
 }
 
 /// Populate the scope popover for `(item, kind, editor)` and open it. Called on
 /// open and re-called after each mutation so the toggle states stay live.
+///
+/// `initial_open` is true only for the open-popover path. Mutation refreshes
+/// pass false: their paint is guarded — if the user dismissed the popover or
+/// re-opened it for a different (item, editor) while the DB work ran, the
+/// stale result is dropped instead of re-opening or hijacking the popover.
 pub(crate) async fn refresh_scope_popover(
     weak: &slint::Weak<MainWindow>,
     db: &Db,
     item: &str,
     kind: &str,
     editor: &str,
+    initial_open: bool,
 ) {
     let editor_label = db
         .get_client(editor)
@@ -393,66 +502,32 @@ pub(crate) async fn refresh_scope_popover(
 
     let (item, kind, editor) = (item.to_string(), kind.to_string(), editor.to_string());
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
+        // The open callback sets item/editor synchronously, so even an
+        // initial-open paint must still match — a slower open for a
+        // previously-clicked row is stale. Mutation refreshes additionally
+        // require the popover to still be open (no re-open after dismiss).
+        if ui.get_scope_popover_item().as_str() != item
+            || ui.get_scope_popover_editor().as_str() != editor
+            || (!initial_open && !ui.get_scope_popover_open())
+        {
+            return;
+        }
         ui.set_scope_popover_editor(SharedString::from(editor));
         ui.set_scope_popover_editor_label(SharedString::from(editor_label));
         ui.set_scope_popover_item(SharedString::from(item.clone()));
         ui.set_scope_popover_item_label(SharedString::from(item));
         ui.set_scope_popover_item_kind(SharedString::from(kind));
-        ui.set_scope_popover_scopes(ModelRc::new(VecModel::from(rows)));
-        ui.set_scope_popover_open(true);
+        if let Some(m) = ui
+            .get_scope_popover_scopes()
+            .as_any()
+            .downcast_ref::<VecModel<ScopeRow>>()
+        {
+            m.set_vec(rows);
+        }
+        if initial_open {
+            ui.set_scope_popover_open(true);
+        }
     });
-}
-
-/// Add/remove a server from a client's managed set, then re-derive its config
-/// file from the resulting set (the one renderer, no per-IDE branching).
-pub(crate) async fn toggle_server_for_ide(
-    db: &Db,
-    port: u16,
-    server_name: &str,
-    client_id: &str,
-    enable: bool,
-) {
-    let Some(client) = client_config::resolve_client(db, client_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        tracing::warn!(client_id = %client_id, "no client row for id");
-        return;
-    };
-    if !client.is_builtin {
-        tracing::warn!(client_id = %client_id, "custom client config is user-authored; ignoring toggle");
-        return;
-    }
-
-    let mut entries = db
-        .list_managed_servers(client_id, "global")
-        .await
-        .unwrap_or_default();
-    let present = entries.iter().any(|n| n == server_name);
-    if enable && !present {
-        entries.push(server_name.to_string());
-    } else if !enable && present {
-        entries.retain(|n| n != server_name);
-    }
-
-    if let Err(e) = db
-        .set_managed_servers(client_id, "global", entries.clone())
-        .await
-    {
-        tracing::warn!(error = %e, "set_managed_servers failed");
-        return;
-    }
-
-    // render_mcp makes the file hold exactly `entries` (purge ours + render).
-    let render =
-        tokio::task::spawn_blocking(move || client_config::render_mcp(&client, &entries, port))
-            .await;
-    match render {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::warn!(error = %e, client_id, "render failed"),
-        Err(e) => tracing::warn!(error = %e, client_id, "render join failed"),
-    }
 }
 
 pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
@@ -475,32 +550,23 @@ pub(crate) async fn refresh_ides(weak: &slint::Weak<MainWindow>, db: &Db) {
                 }
             })
             .collect();
-        ui.set_ides(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui.get_ides().as_any().downcast_ref::<VecModel<IdeRow>>() {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
 
-pub(crate) async fn refresh_policies(weak: &slint::Weak<MainWindow>, db: &Db) {
-    // list_all_policies is removed; collect tool decisions in one batched query.
-    let tools = db.list_all_tools().await.unwrap_or_default();
-    let mut rows: Vec<PolicyRow> = Vec::new();
-    for t in tools {
-        if let Some(decision) = t.decision {
-            rows.push(PolicyRow {
-                server: SharedString::from(t.server.clone()),
-                tool: SharedString::from(t.name),
-                decision: SharedString::from(decision.as_db_str()),
-                source: SharedString::from(""), // decision source not tracked per-tool anymore
-            });
-        }
-    }
-    weak.upgrade_in_event_loop(move |ui| {
-        ui.set_policies(ModelRc::new(VecModel::from(rows)));
-    })
-    .ok();
-}
+/// Generation counter shared by EVERY audit refresh path — user filter/search
+/// changes (callbacks/log.rs) AND the event bridge's coalesced `AuditAppended`
+/// refresh. Each refresh bumps it at start and discards its result if a newer
+/// refresh started meanwhile, so a slow query can never overwrite a fresher
+/// paint (the bridge path was the unguarded hole: a pre-search query landing
+/// after the search painted would repaint unfiltered rows).
+static AUDIT_GEN: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
+    let my_gen = AUDIT_GEN.fetch_add(1, Ordering::Relaxed) + 1;
     // Read the live filter state from the UI thread before querying.
     let (search, decision_str) = read_ui_state(weak, |ui| {
         (
@@ -533,6 +599,10 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         ..Default::default()
     };
     let entries = db.query_audit_log(filter).await.unwrap_or_default();
+    // Stale guard: if a newer refresh started since this one, discard.
+    if AUDIT_GEN.load(Ordering::Relaxed) != my_gen {
+        return;
+    }
     let now = unix_now();
     let rows: Vec<AuditRow> = entries
         .into_iter()
@@ -561,7 +631,9 @@ pub(crate) async fn refresh_audit(weak: &slint::Weak<MainWindow>, db: &Db) {
         })
         .collect();
     weak.upgrade_in_event_loop(move |ui| {
-        ui.set_audit(ModelRc::new(VecModel::from(rows)));
+        if let Some(m) = ui.get_audit().as_any().downcast_ref::<VecModel<AuditRow>>() {
+            m.set_vec(rows);
+        }
     })
     .ok();
 }
@@ -591,40 +663,36 @@ pub(crate) async fn refresh_dashboard(
     let skill_count = installed_skills.len();
 
     let since = unix_now() - 86_400;
-    let recent = db
-        .query_audit_log(AuditFilter {
+    let counts = db
+        .count_audit_entries(AuditFilter {
             since_ts: Some(since),
-            limit: Some(10_000),
             ..Default::default()
         })
         .await
         .unwrap_or_default();
-    let calls_24h = recent.len();
-    let denied_24h = recent
-        .iter()
-        .filter(|e| {
-            matches!(
-                e.decision,
-                AuditDecision::Deny | AuditDecision::AskDenied | AuditDecision::AskTimeout
-            )
-        })
-        .count();
 
     let to_i32 = |n: usize| i32::try_from(n).unwrap_or(i32::MAX);
+    let count_to_i32 = |n: u64| i32::try_from(n).unwrap_or(i32::MAX);
     let stats = DashboardStats {
         server_count: to_i32(server_count),
         server_live: to_i32(server_live),
         server_auth_failures: to_i32(server_auth_failures),
         skill_count: to_i32(skill_count),
         editor_count: to_i32(editor_count),
-        calls_24h: to_i32(calls_24h),
-        denied_24h: to_i32(denied_24h),
+        calls_24h: count_to_i32(counts.total),
+        denied_24h: count_to_i32(counts.denied),
     };
     weak.upgrade_in_event_loop(move |ui| {
         ui.set_dashboard_stats(stats);
         // Dashboard skill cards don't render IDE toggles, so no active kinds.
         let skill_rows = installed_skills_to_rows(&installed_skills, &[]);
-        ui.set_dashboard_skills(ModelRc::new(VecModel::from(skill_rows)));
+        if let Some(m) = ui
+            .get_dashboard_skills()
+            .as_any()
+            .downcast_ref::<VecModel<SkillRow>>()
+        {
+            m.set_vec(skill_rows);
+        }
     })
     .ok();
 }

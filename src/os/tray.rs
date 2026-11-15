@@ -6,10 +6,7 @@
 //! driving the attention-dot icon swap. Returns `None` when no SNI host is
 //! present (Linux without a tray daemon); the caller keeps the handle alive.
 
-use std::sync::{
-    atomic::{AtomicI64, Ordering},
-    mpsc, Arc,
-};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use tokio::sync::broadcast::Receiver;
@@ -53,31 +50,42 @@ enum TrayCmd {
     SetPaused(bool),
 }
 
-/// Handle to the tray thread. Drop it to ask the tray to shut down (the
-/// thread also exits when its `cancel` token fires).
+/// Handle to the tray thread.
+///
+/// Dropping it closes this sender; the badge updater task holds another clone
+/// and releases it when `cancel` fires, so the tray thread sees `Disconnected`
+/// (or its own cancel check) and joins cleanly — main drops `_tray` only after
+/// `cancel.cancel()`.
 #[derive(Debug)]
 pub struct TrayHandle {
-    cmd_tx: mpsc::Sender<TrayCmd>,
+    cmd_tx: Option<mpsc::Sender<TrayCmd>>,
     join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl TrayHandle {
     pub fn set_pending_count(&self, n: i64) {
-        let _ignored = self.cmd_tx.send(TrayCmd::SetPendingCount(n));
+        if let Some(tx) = &self.cmd_tx {
+            let _ignored = tx.send(TrayCmd::SetPendingCount(n));
+        }
     }
     pub fn set_auth_failure_count(&self, n: i64) {
-        let _ignored = self.cmd_tx.send(TrayCmd::SetAuthFailureCount(n));
+        if let Some(tx) = &self.cmd_tx {
+            let _ignored = tx.send(TrayCmd::SetAuthFailureCount(n));
+        }
     }
     pub fn set_paused(&self, paused: bool) {
-        let _ignored = self.cmd_tx.send(TrayCmd::SetPaused(paused));
+        if let Some(tx) = &self.cmd_tx {
+            let _ignored = tx.send(TrayCmd::SetPaused(paused));
+        }
     }
 }
 
 impl Drop for TrayHandle {
     fn drop(&mut self) {
-        drop(self.cmd_tx.clone());
+        // Dropping the sender disconnects cmd_rx in the tray thread, causing
+        // its loop to exit on the next cmd_rx.try_recv() returning Disconnected.
+        drop(self.cmd_tx.take());
         if let Some(j) = self.join.take() {
-            // Tray thread polls cancel every POLL_INTERVAL; ~100ms upper bound.
             j.join().ok();
         }
     }
@@ -113,7 +121,7 @@ pub fn install(
     spawn_badge_updater(db, rt, bus_rx, cancel, cmd_tx.clone());
 
     Some(TrayHandle {
-        cmd_tx,
+        cmd_tx: Some(cmd_tx),
         join: Some(join),
     })
 }
@@ -193,9 +201,9 @@ fn tray_thread(
     let pause_id = pause_item.id().clone();
     let quit_id = quit_item.id().clone();
 
-    let last_pending = AtomicI64::new(0);
-    let last_auth = AtomicI64::new(0);
-    let last_attention = AtomicI64::new(0);
+    let mut last_pending: i64 = 0;
+    let mut last_auth: i64 = 0;
+    let mut last_attention: i64 = 0;
     let mut paused_local = false;
     let menu_rx = MenuEvent::receiver();
 
@@ -221,35 +229,45 @@ fn tray_thread(
                 (callbacks.on_quit)();
             }
         }
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                TrayCmd::SetPendingCount(n) => {
-                    last_pending.store(n, Ordering::SeqCst);
+        loop {
+            match cmd_rx.try_recv() {
+                Ok(TrayCmd::SetPendingCount(n)) => {
+                    last_pending = n;
                     pending_item.set_text(format!("Pending approvals ({n})"));
                     pending_item.set_enabled(n > 0);
                     refresh_attention(
-                        &last_pending,
-                        &last_auth,
-                        &last_attention,
+                        last_pending,
+                        last_auth,
+                        &mut last_attention,
                         &tray,
                         &icon_idle,
                         &icon_attention,
                     );
                 }
-                TrayCmd::SetAuthFailureCount(n) => {
-                    last_auth.store(n, Ordering::SeqCst);
+                Ok(TrayCmd::SetAuthFailureCount(n)) => {
+                    last_auth = n;
                     refresh_attention(
-                        &last_pending,
-                        &last_auth,
-                        &last_attention,
+                        last_pending,
+                        last_auth,
+                        &mut last_attention,
                         &tray,
                         &icon_idle,
                         &icon_attention,
                     );
                 }
-                TrayCmd::SetPaused(p) => {
+                Ok(TrayCmd::SetPaused(p)) => {
                     paused_local = p;
                     update_pause_label(&pause_item, p);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // All TrayHandle senders dropped — shut down.
+                    drop(tray);
+                    drop(pending_item);
+                    drop(pause_item);
+                    drop(show_item);
+                    drop(quit_item);
+                    return;
                 }
             }
         }
@@ -320,18 +338,16 @@ async fn count_auth_failures(db: &Db) -> i64 {
 }
 
 fn refresh_attention(
-    last_pending: &AtomicI64,
-    last_auth: &AtomicI64,
-    last_attention: &AtomicI64,
+    last_pending: i64,
+    last_auth: i64,
+    last_attention: &mut i64,
     tray: &tray_icon::TrayIcon,
     icon_idle: &Icon,
     icon_attention: &Icon,
 ) {
-    let pending = last_pending.load(Ordering::SeqCst);
-    let auth = last_auth.load(Ordering::SeqCst);
-    let want = i64::from(pending > 0 || auth > 0);
-    let prev = last_attention.swap(want, Ordering::SeqCst);
-    if prev != want {
+    let want = i64::from(last_pending > 0 || last_auth > 0);
+    if *last_attention != want {
+        *last_attention = want;
         let icon = if want == 1 { icon_attention } else { icon_idle };
         if let Err(e) = tray.set_icon(Some(icon.clone())) {
             tracing::warn!(error = %e, "tray set_icon failed");
@@ -411,16 +427,12 @@ mod tests {
     }
 
     #[test]
-    fn pending_count_threshold_logic() {
-        // 0 → N>0 must trigger a swap; N>0 → N>0 must not; N>0 → 0 must trigger.
-        let last = AtomicI64::new(0);
-        let prev = last.swap(3, Ordering::SeqCst);
-        assert!((prev == 0) != (3 == 0));
-
-        let prev = last.swap(5, Ordering::SeqCst);
-        assert!((prev == 0) == (5 == 0));
-
-        let prev = last.swap(0, Ordering::SeqCst);
-        assert!((prev == 0) != (0 == 0));
+    fn attention_want_logic() {
+        // want = (pending > 0 || auth > 0): verify boundary cases.
+        let want = |p: i64, a: i64| i64::from(p > 0 || a > 0);
+        assert_eq!(want(0, 0), 0);
+        assert_eq!(want(3, 0), 1);
+        assert_eq!(want(0, 2), 1);
+        assert_eq!(want(3, 2), 1);
     }
 }

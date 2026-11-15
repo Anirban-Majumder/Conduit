@@ -90,13 +90,8 @@ CREATE TABLE IF NOT EXISTS skills (
 );
 CREATE INDEX IF NOT EXISTS idx_skills_repo ON skills(repo_owner, repo_name);
 
-INSERT INTO skill_repos (owner, name, branch, enabled)
-SELECT 'anthropics', 'skills', 'main', 1
-WHERE NOT EXISTS (SELECT 1 FROM settings_kv WHERE key = 'skill_repos_seeded');
-INSERT INTO skill_repos (owner, name, branch, enabled)
-SELECT 'mattpocock', 'skills', 'main', 1
-WHERE NOT EXISTS (SELECT 1 FROM settings_kv WHERE key = 'skill_repos_seeded');
-INSERT OR IGNORE INTO settings_kv (key, value) VALUES ('skill_repos_seeded', '1');
+INSERT OR IGNORE INTO skill_repos (owner, name, branch, enabled) VALUES ('anthropics', 'skills', 'main', 1);
+INSERT OR IGNORE INTO skill_repos (owner, name, branch, enabled) VALUES ('mattpocock', 'skills', 'main', 1);
 
 -- ── Clients (editors) — single merged table ───────────────────────────
 CREATE TABLE IF NOT EXISTS client (

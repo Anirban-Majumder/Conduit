@@ -354,7 +354,7 @@ export component ServersTab inherits Rectangle {
                                     for t in targets : IconToggle {
                                         source: t.icon;
                                         active: t.active;
-                                        label: t.ide-kind;
+                                        label: t.label;
                                         toggle => {
                                             root.open-scope(root.selected, t.ide-kind);
                                         }

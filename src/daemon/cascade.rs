@@ -7,12 +7,15 @@
 //! entry disappears from every editor that was managing it — no denormalized
 //! blob, no per-IDE branching: `resolve_client` + the one renderer.
 
+use std::sync::Arc;
+
 use crate::daemon::client_config::{render_scope, resolve_client, Scope};
 use crate::daemon::db::types::ApprovalStatus;
 use crate::daemon::db::Db;
 use crate::daemon::errors::DbError;
 use crate::daemon::events::{Bus, Event};
 use crate::daemon::secrets;
+use crate::daemon::upstream::manager::UpstreamManager;
 
 #[derive(Debug, Default)]
 pub struct CascadeReport {
@@ -24,6 +27,7 @@ pub struct CascadeReport {
 pub async fn delete_server_with_cascade(
     db: &Db,
     bus: &Bus,
+    upstream: &Arc<UpstreamManager>,
     server_name: &str,
     port: u16,
     delete_audit_history: bool,
@@ -46,6 +50,9 @@ pub async fn delete_server_with_cascade(
     if let Err(e) = secrets::delete_oauth_tokens(server_name) {
         tracing::warn!(server = %server_name, error = %e, "cascade: failed to delete OAuth tokens");
     }
+
+    // Kill the upstream client so a deleted server's process stops immediately.
+    upstream.kill(server_name).await;
 
     // Re-derive each affected (client, scope) from its SURVIVING managed servers.
     // De-dup on the (client, scope) PAIR — NOT the client id — so a server

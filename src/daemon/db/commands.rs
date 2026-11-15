@@ -8,8 +8,8 @@
 use tokio::sync::oneshot;
 
 use crate::daemon::db::types::{
-    ApprovalStatus, AuditEntry, AuditFilter, ClientRow, Decision, DecisionSource, McpServer,
-    McpTool, PendingApproval, Skill, SkillRepo,
+    ApprovalStatus, AuditCounts, AuditEntry, AuditFilter, ClientRow, Decision, DecisionSource,
+    McpServer, McpTool, PendingApproval, Skill, SkillRepo,
 };
 use crate::daemon::errors::DbError;
 
@@ -82,7 +82,6 @@ pub enum DbCmd {
         server: String,
         tool: String,
         decision: Decision,
-        source: DecisionSource,
         reply: oneshot::Sender<Result<(), DbError>>,
     },
     GetToolDecision {
@@ -163,6 +162,11 @@ pub enum DbCmd {
         server_name: String,
         reply: oneshot::Sender<Result<Vec<(String, String)>, DbError>>,
     },
+    ClientManagesServer {
+        client_id: String,
+        server_name: String,
+        reply: oneshot::Sender<Result<bool, DbError>>,
+    },
     ListKnownRepos {
         reply: oneshot::Sender<Result<Vec<String>, DbError>>,
     },
@@ -183,7 +187,7 @@ pub enum DbCmd {
     ResolvePendingApproval {
         id: String,
         new_status: ApprovalStatus,
-        reply: oneshot::Sender<Result<(), DbError>>,
+        reply: oneshot::Sender<Result<usize, DbError>>,
     },
     ListPendingApprovals {
         reply: oneshot::Sender<Result<Vec<PendingApproval>, DbError>>,
@@ -201,6 +205,10 @@ pub enum DbCmd {
     QueryAuditLog {
         filter: AuditFilter,
         reply: oneshot::Sender<Result<Vec<AuditEntry>, DbError>>,
+    },
+    CountAuditEntries {
+        filter: AuditFilter,
+        reply: oneshot::Sender<Result<AuditCounts, DbError>>,
     },
     PurgeOldAuditEntries {
         older_than_ts: i64,

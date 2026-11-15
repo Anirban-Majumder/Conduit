@@ -258,6 +258,9 @@ pub(crate) fn install_ide_callbacks(window: &MainWindow, ctx: &CallbackContext) 
                     Some(Err(e)) => format!("// read error: {e}"),
                 };
                 let _ignored = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_selected_editor_reload_nonce(
+                        ui.get_selected_editor_reload_nonce().wrapping_add(1),
+                    );
                     ui.set_selected_editor_text(SharedString::from(text));
                     ui.set_selected_editor_status(SharedString::default());
                     ui.set_selected_editor_status_is_error(false);

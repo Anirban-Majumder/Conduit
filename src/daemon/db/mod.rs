@@ -73,10 +73,20 @@ impl Db {
         conn: Connection,
         db_path: Option<std::path::PathBuf>,
     ) -> Result<Self, DbError> {
+        // Run PRAGMAs + migrations on the calling thread so that startup errors
+        // propagate as Err rather than silently killing the actor thread.
+        // `Connection` is Send, so handing it to the actor thread afterwards is safe.
+        init_conn(&conn)?;
+        #[cfg(any(all(unix, not(debug_assertions)), all(windows, not(debug_assertions))))]
+        if let Some(ref path) = db_path {
+            restrict_db_perms(path);
+        }
+        // db_path is only used in release builds for restrict_db_perms above.
+        let _ = &db_path;
         let (tx, rx) = mpsc::channel::<DbCmd>(CMD_CHANNEL_DEPTH);
         thread::Builder::new()
             .name("conduit-db".into())
-            .spawn(move || actor_loop(conn, rx, db_path))?;
+            .spawn(move || actor_loop(conn, rx))?;
         Ok(Self { tx })
     }
 
@@ -107,23 +117,8 @@ impl Db {
     }
 }
 
-fn actor_loop(
-    conn: Connection,
-    mut rx: mpsc::Receiver<DbCmd>,
-    db_path: Option<std::path::PathBuf>,
-) {
-    if let Err(e) = init_conn(&conn) {
-        tracing::error!(error = %e, "db actor init failed; refusing further commands");
-        return;
-    }
-    // Restrict perms AFTER init_conn — WAL mode + migrations create -wal/-shm
-    // sidecars that must also be locked down.
-    #[cfg(any(all(unix, not(debug_assertions)), all(windows, not(debug_assertions))))]
-    if let Some(ref path) = db_path {
-        restrict_db_perms(path);
-    }
-    // db_path is only used in release builds for restrict_db_perms above.
-    let _ = &db_path;
+fn actor_loop(conn: Connection, mut rx: mpsc::Receiver<DbCmd>) {
+    // init_conn already ran on the calling thread in spawn_with_inner.
     while let Some(cmd) = rx.blocking_recv() {
         dispatch::dispatch(&conn, cmd);
     }

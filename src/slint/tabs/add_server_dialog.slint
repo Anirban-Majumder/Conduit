@@ -48,7 +48,7 @@ component FieldLabel inherits Text {
 }
 
 component FormInput inherits Rectangle {
-    in property <string> text;
+    in-out property <string> text;
     in property <string> placeholder;
     in property <bool> read-only: false;
     callback edited(string);
@@ -61,7 +61,7 @@ component FormInput inherits Rectangle {
         padding-left: Theme.gap-md;
         padding-right: Theme.gap-md;
         input := TextInput {
-            text: root.text;
+            text <=> root.text;
             color: root.read-only ? Theme.text-tertiary : Theme.text-primary;
             font-size: Theme.font-body;
             vertical-alignment: center;
@@ -175,7 +175,7 @@ export component AddServerDialog inherits Rectangle {
                     spacing: 6px;
                     FieldLabel { text: "IDLE TTL (SECONDS)"; }
                     FormInput {
-                        text: root.lifecycle-custom;
+                        text <=> root.lifecycle-custom;
                         placeholder: "300";
                         edited(t) => { root.lifecycle-custom = t; }
                     }
@@ -187,7 +187,7 @@ export component AddServerDialog inherits Rectangle {
                         text: root.edit-mode ? "SERVER NAME (LOCKED)" : "SERVER NAME";
                     }
                     FormInput {
-                        text: root.name;
+                        text <=> root.name;
                         placeholder: "e.g. postgres-readonly";
                         read-only: root.edit-mode;
                         edited(t) => { root.name = t; }
@@ -198,7 +198,7 @@ export component AddServerDialog inherits Rectangle {
                     spacing: 6px;
                     FieldLabel { text: "COMMAND"; }
                     FormInput {
-                        text: root.command;
+                        text <=> root.command;
                         placeholder: "e.g. npx, docker, /usr/bin/python3";
                         edited(t) => { root.command = t; }
                     }
@@ -208,7 +208,7 @@ export component AddServerDialog inherits Rectangle {
                     spacing: 6px;
                     FieldLabel { text: "URL"; }
                     FormInput {
-                        text: root.url;
+                        text <=> root.url;
                         placeholder: "https://mcp.example.com/sse";
                         edited(t) => { root.url = t; }
                     }
@@ -232,14 +232,13 @@ export component AddServerDialog inherits Rectangle {
                             y: Theme.gap-sm;
                             width: parent.width - 2 * Theme.gap-md;
                             height: parent.height - 2 * Theme.gap-sm;
-                            text: root.args;
+                            text <=> root.args;
                             color: Theme.text-primary;
                             font-size: Theme.font-body-sm;
                             font-family: "Space Mono";
                             wrap: word-wrap;
                             single-line: false;
                             edited => {
-                                root.args = self.text;
                                 parse-debounce.running = false;
                                 parse-debounce.running = true;
                             }
@@ -480,10 +479,12 @@ export component AddServerDialog inherits Rectangle {
                         clicked => { root.wizard-back(); }
                     }
                     PillButton {
-                        label: "Save";
-                        bg-color: Theme.accent;
-                        fg-color: Theme.on-accent;
-                        clicked => { root.wizard-save(); }
+                        label: root.busy ? "Saving…" : "Save";
+                        bg-color: root.busy ? Theme.surface-3 : Theme.accent;
+                        fg-color: root.busy ? Theme.text-secondary : Theme.on-accent;
+                        clicked => {
+                            if (!root.busy) { root.wizard-save(); }
+                        }
                     }
                 }
             }

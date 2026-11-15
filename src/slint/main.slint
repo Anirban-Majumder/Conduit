@@ -14,7 +14,7 @@ import { ModalShell } from "components/modal.slint";
 import { PillButton, StatusDot, TabButton, Icon } from "components/primitives.slint";
 import { ApprovalsPopup } from "components/approvals_popup.slint";
 import { ApprovalDetailModal } from "components/approval_modal.slint";
-import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeTarget, PolicyRow, ScopeOption, ScopeRow, ServerDetail, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
+import { ApprovalRow, AuditRow, DashboardStats, EnvVarRow, IdeRow, IdeTarget, ScopeOption, ScopeRow, ServerDetail, ServerRow, SettingsRow, SkillRepoRow, SkillRow, ToolPolicyRow } from "structs.slint";
 import { AddServerDialog } from "tabs/add_server_dialog.slint";
 import { DashboardTab } from "tabs/dashboard.slint";
 import { EditorsTab } from "tabs/editors.slint";
@@ -24,7 +24,7 @@ import { ScopePopover } from "components/scope_popover.slint";
 import { ServersTab } from "tabs/servers.slint";
 import { SettingsTab } from "tabs/settings.slint";
 import { SkillsTab } from "tabs/skills.slint";
-export { ApprovalRow, ServerRow, IdeRow, PolicyRow, ToolPolicyRow, IdeTarget, ScopeOption, ScopeRow, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
+export { ApprovalRow, ServerRow, IdeRow, ToolPolicyRow, IdeTarget, ScopeOption, ScopeRow, ServerDetail, AuditRow, SettingsRow, SkillRow, SkillRepoRow, DashboardStats } from "structs.slint";
 
 export component MainWindow inherits Window {
     title: "MCP Router";
@@ -41,7 +41,6 @@ export component MainWindow inherits Window {
     in property <[SkillRow]> dashboard-skills;
     in property <[ServerRow]> servers;
     in property <[IdeRow]> ides;
-    in property <[PolicyRow]> policies;
     in property <[AuditRow]> audit;
     in property <SettingsRow> settings;
     in-out property <string> settings-invalid-key;
@@ -107,6 +106,7 @@ export component MainWindow inherits Window {
     in-out property <string> selected-editor-status: "";
     in-out property <bool> selected-editor-status-is-error: false;
     in-out property <bool> selected-editor-dirty: false;
+    in-out property <int> selected-editor-reload-nonce;
 
     callback approve-clicked(string);
     callback deny-clicked(string);
@@ -115,8 +115,6 @@ export component MainWindow inherits Window {
     callback remove-ide-clicked(string);
     callback retrack-ide-clicked(string);
     callback refresh-ides-clicked();
-    callback change-policy(string, string, string);
-    callback refresh-clicked();
     callback start-probe();
     callback wizard-save();
     callback wizard-back-to-form();
@@ -125,7 +123,6 @@ export component MainWindow inherits Window {
     callback retest-clicked(string);
     callback edit-server-clicked(string);
     callback change-tool-policy(string, string, string);
-    callback toggle-server-target(string, string, bool);  // server, ide_kind, enable
     callback parse-paste();
     callback env-add();
     callback env-remove(int);
@@ -139,6 +136,7 @@ export component MainWindow inherits Window {
     callback set-text-setting(string, string);
     callback open-config-folder();
     callback copy-error-clicked(string);
+    callback cancel-wizard();  // fires on dismiss to cancel any running probe
 
     callback select-ide(string);
     callback reveal-ide-config(string);
@@ -176,7 +174,6 @@ export component MainWindow inherits Window {
     callback skills-open-folder-clicked();
     callback skills-install-clicked(string, string, string, string, string, string);
     callback skills-uninstall-clicked(string);
-    callback skills-toggle-target(string, string, bool);
     callback skills-add-repo(string, string, string);
     callback skills-remove-repo(string, string);
     callback skills-toggle-repo(string, string, bool);
@@ -318,9 +315,6 @@ export component MainWindow inherits Window {
                     change-tool-policy(server, tool, decision) => {
                         root.change-tool-policy(server, tool, decision);
                     }
-                    toggle-target(server, ide-kind, enable) => {
-                        root.toggle-server-target(server, ide-kind, enable);
-                    }
                     open-scope(server, ide-kind) => {
                         root.open-scope-popover(server, "server", ide-kind);
                     }
@@ -341,6 +335,7 @@ export component MainWindow inherits Window {
                     refreshing: root.ides-refreshing;
                     scopes: root.selected-editor-scopes;
                     selected-scope: root.selected-editor-scope;
+                    editor-reload-nonce: root.selected-editor-reload-nonce;
                     config-format: root.selected-editor-format;
                     remove-clicked(kind) => { root.remove-ide-clicked(kind); }
                     retrack-clicked(kind) => { root.retrack-ide-clicked(kind); }
@@ -369,9 +364,6 @@ export component MainWindow inherits Window {
                         root.skills-install-clicked(owner, name, branch, dir, readme, candidate-name);
                     }
                     uninstall-clicked(directory) => { root.skills-uninstall-clicked(directory); }
-                    toggle-target(directory, ide, enable) => {
-                        root.skills-toggle-target(directory, ide, enable);
-                    }
                     open-scope(directory, ide) => {
                         root.open-scope-popover(directory, "skill", ide);
                     }
@@ -449,7 +441,7 @@ export component MainWindow inherits Window {
         editor-label: root.scope-popover-editor-label;
         item-label: root.scope-popover-item-label;
         scopes: root.scope-popover-scopes;
-        add-path: root.scope-popover-add-path;
+        add-path <=> root.scope-popover-add-path;
         add-error: root.scope-popover-add-error;
         dismiss => { root.close-scope-popover(); }
         toggle-scope(key, on) => {
@@ -496,6 +488,7 @@ export component MainWindow inherits Window {
         }
         copy-oauth-url => { root.copy-error-clicked(root.wizard-oauth-url); }
         dismiss => {
+            root.cancel-wizard();
             root.show-add-server-dialog = false;
             root.wizard-edit-mode = false;
             root.add-server-status = "";

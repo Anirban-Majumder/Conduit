@@ -50,6 +50,9 @@ pub fn uninstall_from(dir: &Path) -> Result<(), InstallError> {
 }
 
 pub fn render_service_unit(exe: &Path) -> String {
+    // Quote the path and escape % → %% per systemd unit-file rules so paths
+    // with spaces or percent signs don't break the unit.
+    let exec = exe.display().to_string().replace('%', "%%");
     format!(
         "[Unit]\n\
          Description=MCP Router \u{2014} MCP proxy + policy enforcer\n\
@@ -57,13 +60,12 @@ pub fn render_service_unit(exe: &Path) -> String {
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={exec}\n\
+         ExecStart=\"{exec}\"\n\
          Restart=on-failure\n\
          RestartSec=2\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
-        exec = exe.display(),
     )
 }
 

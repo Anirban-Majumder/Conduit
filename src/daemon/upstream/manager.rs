@@ -2,14 +2,14 @@
 //!
 //! `UpstreamManager` owns the map of live `rmcp` clients keyed by server name
 //! and forwards `tools/call` / `tools/list` to them, spawning lazily on first
-//! use (`ensure_running`). A background reaper kills entries past their idle
+//! use (`acquire_peer`). A background reaper kills entries past their idle
 //! TTL; `lifecycle_seconds` is `0` = ephemeral (killed right after the call),
-//! `-1` = persistent, `N > 0` = idle TTL seconds. `RuntimeStatus` tracks
-//! last-call health and publishes debounced `ServerHealthChanged` events.
-//! `UpstreamError` is the typed error surface; `Rmcp` variants pass through to
-//! the caller verbatim per the JSON-RPC pass-through rule.
+//! `-1` = persistent, `N > 0` = idle TTL seconds. `record()` publishes
+//! debounced `ServerHealthChanged` events. `UpstreamError` is the typed error
+//! surface; `Rmcp` variants pass through to the caller verbatim per the
+//! JSON-RPC pass-through rule.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,10 +26,12 @@ use crate::daemon::time_util::now_unix_secs;
 use crate::daemon::upstream::health::HEALTH_EVENT_DEBOUNCE;
 use crate::daemon::upstream::{http, stdio};
 
-const ERROR_RING_CAP: usize = 5;
-
 const EPHEMERAL: i32 = 0;
 const PERSISTENT: i32 = -1;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const LIST_TOOLS_TIMEOUT: Duration = Duration::from_secs(60);
+const CALL_TOOL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Transport descriptor for an upstream MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,12 +70,6 @@ pub enum UpstreamError {
     #[error("initialize failed: {0}")]
     InitFailed(String),
 
-    /// Upstream returned 401 Unauthorized with a parseable `WWW-Authenticate`
-    /// header. The string is the raw header value, e.g.
-    /// `Bearer realm="OAuth", resource_metadata="https://..."`.
-    #[error("auth required: {0}")]
-    AuthRequired(String),
-
     #[error("upstream process died between calls")]
     Crashed,
 
@@ -87,11 +83,34 @@ pub enum UpstreamError {
     BadArgumentType { got: &'static str },
 }
 
+/// Fingerprint of the fields that would change the transport connection.
+/// Used to detect when a config edit requires kill+respawn. Lifecycle edits
+/// are NOT part of it — a TTL-only change updates the live entry in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigFingerprint {
+    transport: Transport,
+}
+
+impl ConfigFingerprint {
+    fn from_config(config: &ServerConfig) -> Self {
+        Self {
+            transport: config.transport.clone(),
+        }
+    }
+}
+
 /// One running upstream client + last-use bookkeeping.
 struct Entry {
     client: RunningService<RoleClient, ()>,
     last_use: Instant,
     lifecycle_seconds: i32,
+    /// Config fingerprint at spawn time; used to detect stale entries on config edit.
+    fingerprint: ConfigFingerprint,
+    /// Number of calls currently in flight against this entry.
+    in_flight: usize,
+    /// Monotonically-increasing ID; ephemeral post-call kill compares this to
+    /// avoid killing a concurrently-spawned fresh entry under the same name.
+    generation: u64,
 }
 
 impl std::fmt::Debug for Entry {
@@ -100,6 +119,8 @@ impl std::fmt::Debug for Entry {
         f.debug_struct("Entry")
             .field("last_use", &self.last_use)
             .field("lifecycle_seconds", &self.lifecycle_seconds)
+            .field("in_flight", &self.in_flight)
+            .field("generation", &self.generation)
             .finish_non_exhaustive()
     }
 }
@@ -107,15 +128,52 @@ impl std::fmt::Debug for Entry {
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatus {
     pub last_call_at: Option<i64>,
-    pub last_call_error: Option<String>,
-    pub recent_errors: VecDeque<(i64, String)>,
     last_emit_at: Option<Instant>,
+}
+
+/// Shared map of running upstreams. A `std::sync::Mutex` (never held across
+/// `.await`) so that `InFlightGuard::drop` can decrement synchronously even
+/// when the owning future is dropped mid-call (IDE disconnect).
+type StateMap = Arc<std::sync::Mutex<HashMap<String, Entry>>>;
+
+fn lock_state(state: &StateMap) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// RAII reservation of one in-flight slot on an entry. Dropping it decrements
+/// the counter — including when the caller's future is dropped at an `.await`
+/// (axum handler cancelled by IDE disconnect), which would otherwise leave the
+/// entry with a permanently-positive `in_flight` and make it unreapable.
+struct InFlightGuard {
+    state: StateMap,
+    name: String,
+    generation: u64,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        let mut state = lock_state(&self.state);
+        if let Some(entry) = state.get_mut(&self.name) {
+            // Generation-checked: if the entry was replaced while the call ran
+            // (config edit kill+respawn), decrementing the new entry would
+            // release someone else's in-flight slot mid-call.
+            if entry.generation == self.generation {
+                entry.in_flight = entry.in_flight.saturating_sub(1);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct UpstreamManager {
-    state: Arc<Mutex<HashMap<String, Entry>>>,
+    state: StateMap,
     status: Arc<Mutex<HashMap<String, RuntimeStatus>>>,
+    /// Per-name generation counters that survive entry removal, so a late
+    /// `kill_generation(name, 0)` cannot match a freshly-spawned gen-0 entry
+    /// after a crash or ephemeral kill (UP-4).
+    generations: Arc<Mutex<HashMap<String, u64>>>,
     cancel: CancellationToken,
     bus: Option<Bus>,
     #[expect(
@@ -131,11 +189,13 @@ impl UpstreamManager {
     }
 
     pub fn with_bus(paths: Paths, cancel: CancellationToken, bus: Option<Bus>) -> Self {
-        let state = Arc::new(Mutex::new(HashMap::new()));
+        let state: StateMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let status = Arc::new(Mutex::new(HashMap::new()));
+        let generations = Arc::new(Mutex::new(HashMap::new()));
         let mgr = Self {
             state: state.clone(),
             status,
+            generations,
             cancel: cancel.clone(),
             bus,
             paths,
@@ -150,19 +210,9 @@ impl UpstreamManager {
 
     async fn record(&self, server: &str, error: Option<String>) {
         let now = Instant::now();
-        let unix = now_unix_secs();
         let mut map = self.status.lock().await;
         let entry = map.entry(server.to_string()).or_default();
-        entry.last_call_at = Some(unix);
-        if let Some(ref e) = error {
-            entry.last_call_error = Some(e.clone());
-            entry.recent_errors.push_back((unix, e.clone()));
-            while entry.recent_errors.len() > ERROR_RING_CAP {
-                entry.recent_errors.pop_front();
-            }
-        } else {
-            entry.last_call_error = None;
-        }
+        entry.last_call_at = Some(now_unix_secs());
         let due = error.is_some()
             || entry
                 .last_emit_at
@@ -200,12 +250,7 @@ impl UpstreamManager {
         }
 
         let request = parse_tool_call_params(params)?;
-        if let Err(e) = self.ensure_running(config).await {
-            self.record(&config.name, Some(e.to_string())).await;
-            return Err(e);
-        }
-
-        let peer = match self.get_peer_for_call(&config.name).await {
+        let (peer, generation, in_flight) = match self.acquire_peer(config).await {
             Ok(p) => p,
             Err(e) => {
                 self.record(&config.name, Some(e.to_string())).await;
@@ -213,9 +258,27 @@ impl UpstreamManager {
             }
         };
 
-        let response = match peer.call_tool(request).await {
-            Ok(call_result) => serde_json::to_value(call_result)?,
-            Err(e) => {
+        let result = tokio::time::timeout(CALL_TOOL_TIMEOUT, peer.call_tool(request)).await;
+
+        // Release the reservation before the ephemeral kill check (which
+        // requires in_flight == 0). On a dropped future the guard's Drop
+        // releases it instead, and the reaper handles the ephemeral kill.
+        drop(in_flight);
+
+        // Ephemeral upstreams die right after the call — success or failure —
+        // so a failed call doesn't leave the child lingering until the reaper.
+        if config.lifecycle_seconds == EPHEMERAL {
+            self.kill_generation(&config.name, generation).await;
+        }
+
+        let response = match result {
+            Err(_elapsed) => {
+                let msg = "call_tool timed out".to_string();
+                self.record(&config.name, Some(msg)).await;
+                return Err(UpstreamError::Timeout);
+            }
+            Ok(Ok(call_result)) => serde_json::to_value(call_result)?,
+            Ok(Err(e)) => {
                 let msg = e.to_string();
                 self.record(&config.name, Some(msg)).await;
                 return Err(UpstreamError::Rmcp(e));
@@ -223,31 +286,27 @@ impl UpstreamManager {
         };
         self.record(&config.name, None).await;
 
-        if config.lifecycle_seconds == EPHEMERAL {
-            self.kill(&config.name).await;
-        }
-
         Ok(response)
     }
 
     /// Fetch upstream's tools/list. Spawns lazily if needed.
     pub async fn list_tools(&self, config: &ServerConfig) -> Result<Value, UpstreamError> {
-        self.ensure_running(config).await?;
+        let (peer, _generation, in_flight) = self.acquire_peer(config).await?;
 
-        let peer = self.get_peer_for_call(&config.name).await?;
+        let result = tokio::time::timeout(LIST_TOOLS_TIMEOUT, peer.list_tools(None)).await;
 
-        match peer.list_tools(None).await {
-            Ok(list) => Ok(serde_json::to_value(list)?),
-            Err(e) => Err(UpstreamError::Rmcp(e)),
+        drop(in_flight);
+
+        match result {
+            Err(_elapsed) => Err(UpstreamError::Timeout),
+            Ok(Ok(list)) => Ok(serde_json::to_value(list)?),
+            Ok(Err(e)) => Err(UpstreamError::Rmcp(e)),
         }
     }
 
     /// Force-kill an upstream by server name. Idempotent.
     pub async fn kill(&self, server_name: &str) {
-        let entry = {
-            let mut state = self.state.lock().await;
-            state.remove(server_name)
-        };
+        let entry = lock_state(&self.state).remove(server_name);
         if let Some(entry) = entry {
             cancel_entry(server_name, entry).await;
         }
@@ -255,87 +314,179 @@ impl UpstreamManager {
 
     /// Force-kill every upstream. Idempotent. Shutdown path.
     pub async fn kill_all(&self) {
-        let drained: Vec<(String, Entry)> = {
-            let mut state = self.state.lock().await;
-            state.drain().collect()
-        };
+        let drained: Vec<(String, Entry)> = lock_state(&self.state).drain().collect();
         for (name, entry) in drained {
             cancel_entry(&name, entry).await;
         }
     }
 
-    async fn get_peer_for_call(
-        &self,
-        server_name: &str,
-    ) -> Result<rmcp::service::Peer<RoleClient>, UpstreamError> {
-        let mut state = self.state.lock().await;
-        let Some(entry) = state.get_mut(server_name) else {
-            return Err(UpstreamError::Crashed);
+    /// Kill the entry for `server_name` only if it still has `generation` AND
+    /// no other call is in flight. If `in_flight > 0` the reaper will clean up
+    /// once the last concurrent caller has released its reservation.
+    async fn kill_generation(&self, server_name: &str, generation: u64) {
+        let entry = {
+            let mut state = lock_state(&self.state);
+            match state.get(server_name) {
+                Some(e) if e.generation == generation && e.in_flight == 0 => {
+                    state.remove(server_name)
+                }
+                _ => None,
+            }
         };
-        if entry.client.is_closed() {
-            state.remove(server_name);
-            return Err(UpstreamError::Crashed);
+        if let Some(e) = entry {
+            cancel_entry(server_name, e).await;
         }
-        entry.last_use = Instant::now();
-        let peer = entry.client.peer().clone();
-        drop(state);
-        Ok(peer)
     }
 
-    async fn ensure_running(&self, config: &ServerConfig) -> Result<(), UpstreamError> {
-        let already_running = {
-            let state = self.state.lock().await;
-            state
-                .get(&config.name)
-                .is_some_and(|e| !e.client.is_closed())
+    /// Find-or-spawn the upstream and atomically reserve an in-flight slot on
+    /// it. The reservation happens under the SAME lock acquisition that finds
+    /// (or inserts) the entry — a separate find-then-increment would leave a
+    /// window where the reaper or a concurrent ephemeral post-call kill sees
+    /// `in_flight == 0` and removes the entry out from under this caller.
+    /// Pair the returned generation with `decrement_in_flight` /
+    /// `kill_generation`.
+    async fn acquire_peer(
+        &self,
+        config: &ServerConfig,
+    ) -> Result<(rmcp::service::Peer<RoleClient>, u64, InFlightGuard), UpstreamError> {
+        let fingerprint = ConfigFingerprint::from_config(config);
+        // Live entry: same transport → refresh lifecycle in place, reserve, and
+        // reuse it (a TTL-only edit must not kill a healthy child); changed
+        // transport → kill stale entry and fall through to respawn.
+        let stale: Option<Entry> = {
+            let mut state = lock_state(&self.state);
+            let transport_changed = match state.get_mut(config.name.as_str()) {
+                Some(e) if !e.client.peer().is_transport_closed() => {
+                    if e.fingerprint == fingerprint {
+                        e.lifecycle_seconds = config.lifecycle_seconds;
+                        e.last_use = Instant::now();
+                        e.in_flight += 1;
+                        let reserved = (e.client.peer().clone(), e.generation);
+                        drop(state);
+                        let guard = InFlightGuard {
+                            state: Arc::clone(&self.state),
+                            name: config.name.clone(),
+                            generation: reserved.1,
+                        };
+                        return Ok((reserved.0, reserved.1, guard));
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if transport_changed {
+                state.remove(config.name.as_str())
+            } else {
+                None
+            }
         };
-        if already_running {
-            return Ok(());
+        if let Some(e) = stale {
+            cancel_entry(&config.name, e).await;
         }
 
-        let client = match &config.transport {
-            Transport::Stdio { command, args, env } => {
-                stdio::connect(command, args, env, self.cancel.clone()).await?
-            }
-            Transport::Http { url, bearer_token } => {
-                // Three cases: OAuth (stored creds → AuthClient w/ auto-refresh),
-                // static bearer token, or no auth.
-                match http::connect_oauth(url, &config.name, self.cancel.clone()).await? {
-                    Some(client) => client,
-                    None => {
-                        http::connect(url, bearer_token.as_deref(), self.cancel.clone()).await?
-                    }
-                }
-            }
+        // Each spawned client gets its own child token so that rmcp's
+        // RunningService::cancel() only cancels that one client, not the
+        // daemon-global token (UP-1).
+        let child_ct = self.cancel.child_token();
+        let client = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            connect_transport(&config.transport, &config.name, child_ct),
+        )
+        .await
+        .map_err(|_elapsed| UpstreamError::Timeout)??;
+
+        // Next generation number: taken from the per-name counter that outlives
+        // entry removal, so generation 0 is never reused after a crash/kill.
+        let generation = {
+            let mut gens = self.generations.lock().await;
+            let next = gens.get(&config.name).copied().unwrap_or(0).wrapping_add(1);
+            gens.insert(config.name.clone(), next);
+            next
         };
 
-        // Insert atomically OR detect a race; cancel any duplicate OUTSIDE the lock.
-        let duplicate: Option<RunningService<RoleClient, ()>> = {
-            let mut state = self.state.lock().await;
-            let raced = state
-                .get(&config.name)
-                .is_some_and(|e| !e.client.is_closed());
-            if raced {
-                Some(client)
+        // Insert with the reservation pre-taken (`in_flight: 1`) OR join a
+        // raced live entry whose transport matches; a raced entry with a STALE
+        // fingerprint is replaced (its caller raced a config edit) — joining it
+        // would send this call to the old endpoint/process. Cancel any
+        // duplicate or replaced client OUTSIDE the lock.
+        let mut duplicate: Option<RunningService<RoleClient, ()>> = None;
+        let mut replaced: Option<Entry> = None;
+        let (peer, generation) = {
+            let mut state = lock_state(&self.state);
+            let raced: Option<(rmcp::service::Peer<RoleClient>, u64)> =
+                state.get_mut(&config.name).and_then(|e| {
+                    if e.client.peer().is_transport_closed() || e.fingerprint != fingerprint {
+                        None
+                    } else {
+                        e.lifecycle_seconds = config.lifecycle_seconds;
+                        e.last_use = Instant::now();
+                        e.in_flight += 1;
+                        Some((e.client.peer().clone(), e.generation))
+                    }
+                });
+            if let Some(joined) = raced {
+                drop(state);
+                duplicate = Some(client);
+                joined
             } else {
-                state.insert(
+                let peer = client.peer().clone();
+                replaced = state.insert(
                     config.name.clone(),
                     Entry {
                         client,
                         last_use: Instant::now(),
                         lifecycle_seconds: config.lifecycle_seconds,
+                        fingerprint,
+                        in_flight: 1,
+                        generation,
                     },
                 );
-                None
+                drop(state);
+                (peer, generation)
             }
         };
 
+        // Construct the guard BEFORE awaiting the cancels below: if this
+        // future is dropped at one of those awaits, the guard's Drop must
+        // release the reservation taken above — otherwise the entry's
+        // in_flight stays positive forever and the reaper never reaps it.
+        let guard = InFlightGuard {
+            state: Arc::clone(&self.state),
+            name: config.name.clone(),
+            generation,
+        };
+
+        if let Some(old) = replaced {
+            cancel_entry(&config.name, old).await;
+        }
         if let Some(dup) = duplicate {
             if let Err(e) = dup.cancel().await {
                 tracing::warn!(error = %e, server = %config.name, "duplicate-spawn cancel failed");
             }
         }
-        Ok(())
+        Ok((peer, generation, guard))
+    }
+}
+
+/// Connect using the given transport descriptor. Each call should receive a
+/// fresh child `CancellationToken` so cancellation is scoped to this client only.
+async fn connect_transport(
+    transport: &Transport,
+    server_name: &str,
+    child_ct: CancellationToken,
+) -> Result<RunningService<RoleClient, ()>, UpstreamError> {
+    match transport {
+        Transport::Stdio { command, args, env } => {
+            stdio::connect(command, args, env, child_ct).await
+        }
+        Transport::Http { url, bearer_token } => {
+            // Three cases: OAuth (stored creds → AuthClient w/ auto-refresh),
+            // static bearer token, or no auth.
+            match http::connect_oauth(url, server_name, child_ct.clone()).await? {
+                Some(client) => Ok(client),
+                None => http::connect(url, bearer_token.as_deref(), child_ct).await,
+            }
+        }
     }
 }
 
@@ -382,14 +533,14 @@ async fn cancel_entry(server_name: &str, entry: Entry) {
 /// Periodically scan for idle entries past their TTL and kill them.
 /// Bounded work: one timer tick + one lock acquisition per period; the
 /// number of upstreams per daemon is small (dozens at most).
-fn spawn_reaper(state: Arc<Mutex<HashMap<String, Entry>>>, cancel: CancellationToken) {
+fn spawn_reaper(state: StateMap, cancel: CancellationToken) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
                 () = cancel.cancelled() => break,
                 _ = tick.tick() => {
-                    let to_kill = collect_expired(&state).await;
+                    let to_kill = collect_expired(&state);
                     for (name, entry) in to_kill {
                         cancel_entry(&name, entry).await;
                     }
@@ -399,8 +550,8 @@ fn spawn_reaper(state: Arc<Mutex<HashMap<String, Entry>>>, cancel: CancellationT
     });
 }
 
-async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(String, Entry)> {
-    let mut guard = state.lock().await;
+fn collect_expired(state: &StateMap) -> Vec<(String, Entry)> {
+    let mut guard = lock_state(state);
     let now = Instant::now();
     let expired_names: Vec<String> = guard
         .iter()
@@ -418,11 +569,17 @@ async fn collect_expired(state: &Arc<Mutex<HashMap<String, Entry>>>) -> Vec<(Str
 }
 
 fn is_expired(entry: &Entry, now: Instant) -> bool {
-    if entry.client.is_closed() {
+    // Never reap while a call is in flight — avoids killing mid-call.
+    if entry.in_flight > 0 {
+        return false;
+    }
+    if entry.client.peer().is_transport_closed() {
         return true;
     }
     match entry.lifecycle_seconds {
         PERSISTENT => false,
+        // Ephemeral entries are only reaped here when idle (in_flight==0 above);
+        // active ephemeral entries are killed by the caller after the call.
         EPHEMERAL => true,
         n if n > 0 => {
             #[expect(clippy::cast_sign_loss, reason = "branch guarded by `n > 0` above")]
@@ -472,5 +629,18 @@ mod tests {
             parse_tool_call_params(v),
             Err(UpstreamError::InitFailed(_))
         ));
+    }
+
+    #[test]
+    fn child_token_does_not_cancel_parent() {
+        // UP-1: cancelling the child token (as rmcp's RunningService::cancel would)
+        // must not cancel the parent.
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+        child.cancel();
+        assert!(
+            !parent.is_cancelled(),
+            "child cancel must not propagate to parent"
+        );
     }
 }

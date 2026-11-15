@@ -123,38 +123,6 @@ pub(crate) fn install_skills_callbacks(window: &MainWindow, ctx: &CallbackContex
         });
     });
 
-    let rt_for_toggle = rt.clone();
-    let skills_for_toggle = skills.clone();
-    let weak = window.as_weak();
-    window.on_skills_toggle_target(move |directory, ide, enable| {
-        let skills = skills_for_toggle.clone();
-        let weak = weak.clone();
-        let directory = directory.to_string();
-        let ide = ide.to_string();
-        rt_for_toggle.spawn(async move {
-            let Ok(Some(current)) = skills
-                .list_installed()
-                .await
-                .map(|all| all.into_iter().find(|s| s.directory == directory))
-            else {
-                return;
-            };
-            let mut targets: Vec<String> = current.targets.clone();
-            targets.retain(|t| t != &ide);
-            if enable {
-                targets.push(ide.clone());
-            }
-            if let Err(e) = skills.set_targets(&directory, targets).await {
-                let msg = format!("Toggle failed: {e}");
-                tracing::warn!(error = %e, "skill set_targets failed");
-                weak.upgrade_in_event_loop(move |ui| {
-                    ui.set_skills_status_message(SharedString::from(msg));
-                })
-                .ok();
-            }
-        });
-    });
-
     let rt_for_add_repo = rt.clone();
     let skills_for_add_repo = skills.clone();
     window.on_skills_add_repo(move |owner, name, branch| {
@@ -205,7 +173,7 @@ pub(crate) fn install_skills_callbacks(window: &MainWindow, ctx: &CallbackContex
         };
         let all: Vec<SkillRow> = ui.get_skills_all().iter().collect();
         let filtered = filter_skill_rows(&all, query.as_str());
-        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
+        set_model_vec(&ui.get_skills(), filtered);
     });
 
     let rt_for_open_folder = rt.clone();
@@ -264,10 +232,19 @@ pub(crate) async fn paint_skills_from_db(
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
         let rows = installed_skills_to_rows(&installed, &active_client_ids);
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
-        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
-        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
-        ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
+        set_model_vec(&ui.get_skills(), filtered);
+        set_model_vec(&ui.get_skills_all(), rows);
+        set_model_vec(&ui.get_skill_repos(), repo_rows);
     });
+}
+
+/// Set a list property in place by mutating its seeded `VecModel`, preserving
+/// model identity (tier-4b). The models are seeded once in `push_initial_models`,
+/// so the downcast succeeds; the silent no-op on failure matches `refresh.rs`.
+fn set_model_vec<T: Clone + 'static>(model: &ModelRc<T>, rows: Vec<T>) {
+    if let Some(m) = model.as_any().downcast_ref::<VecModel<T>>() {
+        m.set_vec(rows);
+    }
 }
 
 pub(crate) fn filter_skill_rows(rows: &[SkillRow], query: &str) -> Vec<SkillRow> {
@@ -294,21 +271,29 @@ pub(crate) async fn paint_skills_with_discovery(
     let installed = skills.list_installed().await.unwrap_or_default();
     let repos = skills.list_repos().await.unwrap_or_default();
     let repo_rows = repos_to_rows(repos);
-    let installed_dirs: std::collections::HashSet<String> =
-        installed.iter().map(|s| s.directory.clone()).collect();
+    // SK-3: normalise to lowercase for case-insensitive FS collision detection.
+    let installed_dirs_lower: std::collections::HashSet<String> = installed
+        .iter()
+        .map(|s| s.directory.to_ascii_lowercase())
+        .collect();
     let active_client_ids = active_client_ids.to_vec();
 
     // Rows carry brand-icon `Image`s (!Send), so build them on the UI thread.
     let _ignored = weak.upgrade_in_event_loop(move |ui| {
         let mut rows = installed_skills_to_rows(&installed, &active_client_ids);
         for candidate in candidates {
-            let install_name = candidate
-                .directory
-                .rsplit('/')
-                .next()
-                .unwrap_or(&candidate.directory)
-                .to_string();
-            if installed_dirs.contains(&install_name) {
+            // SK-2: root-level sentinel means repo name is the install dir.
+            let install_name = if candidate.directory.is_empty() {
+                candidate.repo_name.clone()
+            } else {
+                candidate
+                    .directory
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&candidate.directory)
+                    .to_string()
+            };
+            if installed_dirs_lower.contains(&install_name.to_ascii_lowercase()) {
                 continue;
             }
             rows.push(SkillRow {
@@ -336,9 +321,9 @@ pub(crate) async fn paint_skills_with_discovery(
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         });
         let filtered = filter_skill_rows(&rows, ui.get_skills_search_query().as_str());
-        ui.set_skills(ModelRc::new(VecModel::from(filtered)));
-        ui.set_skills_all(ModelRc::new(VecModel::from(rows)));
-        ui.set_skill_repos(ModelRc::new(VecModel::from(repo_rows)));
+        set_model_vec(&ui.get_skills(), filtered);
+        set_model_vec(&ui.get_skills_all(), rows);
+        set_model_vec(&ui.get_skill_repos(), repo_rows);
     });
 }
 

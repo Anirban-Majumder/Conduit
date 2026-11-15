@@ -5,18 +5,24 @@
 //! wizard. Handlers offload to the tokio worker and repaint through
 //! `crate::window::refresh`; UI mutation only via `upgrade_in_event_loop`.
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, SharedString, VecModel};
 use tokio_util::sync::CancellationToken;
 
 use conduit::daemon::cascade;
-use conduit::daemon::db::types::{ApprovalStatus, Decision, DecisionSource, McpTool as DbMcpTool};
+use conduit::daemon::db::types::{
+    ApprovalStatus, Decision, EnvValue, McpTool as DbMcpTool, TRANSPORT_HTTP, TRANSPORT_STDIO,
+};
 use conduit::daemon::events::Event;
-use conduit::daemon::upstream::probe::{self};
+use conduit::daemon::upstream::http;
+use conduit::daemon::upstream::probe::{
+    self, DraftEnvEntry, DraftServerConfig, DraftTransport, HttpAuth,
+};
+use zeroize::Zeroizing;
 
-use crate::window::refresh::{refresh_server_detail, refresh_servers, toggle_server_for_ide};
+use crate::window::refresh::{refresh_server_detail, refresh_servers};
 use crate::window::util::unix_now;
 use crate::window::view::{MainWindow, ToolPolicyRow as ToolPolicyUiRow};
-use crate::window::wizard::{build_draft, env_field_from_server, picker_from_lifecycle};
+use crate::window::wizard::{bearer_from_headers, env_field_from_server, picker_from_lifecycle};
 use crate::window::CallbackContext;
 
 #[expect(clippy::too_many_lines, reason = "wires every server-tab callback")]
@@ -65,7 +71,7 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 return;
             }
             if let Err(e) = db
-                .set_tool_decision(&server, &tool, Decision::Allow, DecisionSource::User)
+                .set_tool_decision(&server, &tool, Decision::Allow)
                 .await
             {
                 tracing::warn!(error = %e, server = %server, tool = %tool, "approve always policy upgrade failed");
@@ -75,17 +81,26 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
 
     let db_for_remove_server = db.clone();
     let bus_for_remove_server = bus.clone();
+    let upstream_for_remove = ctx.upstream.clone();
     let rt_for_remove_server = rt.clone();
     let weak_for_remove_server = window.as_weak();
     let port_for_remove = port;
     window.on_remove_server_clicked(move |name| {
         let db = db_for_remove_server.clone();
         let bus = bus_for_remove_server.clone();
+        let upstream = upstream_for_remove.clone();
         let weak = weak_for_remove_server.clone();
         let name = name.to_string();
         rt_for_remove_server.spawn(async move {
-            match cascade::delete_server_with_cascade(&db, &bus, &name, port_for_remove, false)
-                .await
+            match cascade::delete_server_with_cascade(
+                &db,
+                &bus,
+                &upstream,
+                &name,
+                port_for_remove,
+                false,
+            )
+            .await
             {
                 Ok(report) => {
                     tracing::info!(
@@ -100,10 +115,14 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
             let _ignored = weak.upgrade_in_event_loop(move |ui| {
                 if ui.get_selected_server().as_str() == name {
                     ui.set_selected_server(SharedString::from(""));
-                    ui.set_selected_server_tools(ModelRc::new(VecModel::from(Vec::<
-                        ToolPolicyUiRow,
-                    >::new(
-                    ))));
+                    // Mutate the seeded model in place — never replace identity.
+                    if let Some(m) = ui
+                        .get_selected_server_tools()
+                        .as_any()
+                        .downcast_ref::<VecModel<ToolPolicyUiRow>>()
+                    {
+                        m.set_vec(vec![]);
+                    }
                 }
             });
             refresh_servers(&weak, &db).await;
@@ -117,6 +136,12 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
         let db = db_for_select.clone();
         let weak = weak_for_select.clone();
         let name = name.to_string();
+        // Set selection synchronously on the UI thread so the pane switches
+        // immediately and the guard in refresh_server_detail can detect stale
+        // completions from a previously-clicked server.
+        if let Some(ui) = weak.upgrade() {
+            ui.set_selected_server(SharedString::from(name.clone()));
+        }
         rt_for_select.spawn(async move {
             refresh_server_detail(&weak, &db, &name).await;
         });
@@ -145,17 +170,174 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
                 refresh_server_detail(&weak, &db, &name).await;
                 return;
             };
-            let draft = build_draft(
-                &server.name,
-                &server.transport,
-                server.command.as_deref().unwrap_or(""),
-                server.args.clone(),
-                server.url.as_deref().unwrap_or(""),
-                vec![],
-                server.lifecycle_seconds,
-            );
+
+            // Build the probe draft using the stored env/headers, mirroring how
+            // the edit path reconstructs them — so stdio servers probe with their
+            // real API-key env vars and HTTP servers probe with their bearer token.
             let cancel = CancellationToken::new();
             let now = unix_now();
+
+            // For HTTP servers without a plain bearer token, first try stored
+            // OAuth credentials via the keyring-backed store (avoids opening a
+            // browser and discarding fresh tokens). `Ok(None)` means no stored
+            // creds — that is NOT an error: a no-auth HTTP server looks exactly
+            // the same here, so fall through to the plain probe below (mirrors
+            // `connect_transport` in upstream/manager.rs). A genuine OAuth
+            // server with lost creds then fails the plain probe with a real
+            // auth error anyway.
+            let maybe_oauth_http = server.transport == TRANSPORT_HTTP
+                && !server.env.iter().any(|e| {
+                    e.name == http::BEARER_TOKEN_ENV
+                        && matches!(e.value, EnvValue::Plain(_))
+                });
+
+            if maybe_oauth_http {
+                let url = server.url.clone().unwrap_or_default();
+                match http::connect_oauth(&url, &name, cancel.clone()).await {
+                    Ok(Some(_client)) => {
+                        // OAuth connection succeeded; record a successful probe
+                        // timestamp (no tools re-enumerated on retest via OAuth to
+                        // keep this path simple — the routing path enumerates tools
+                        // on connect anyway).
+                        server.last_probed_at = Some(now);
+                        server.last_probe_error = None;
+                        if let Err(e) = db.upsert_server(server).await {
+                            tracing::warn!(error = %e, "re-test oauth upsert failed");
+                        }
+                        match db.clear_server_auth_error(&name).await {
+                            Ok(true) => bus.publish(Event::AuthCleared { server: name.clone() }),
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!(error = %e, "clear_server_auth_error after oauth retest failed"),
+                        }
+                        refresh_server_detail(&weak, &db, &name).await;
+                        refresh_servers(&weak, &db).await;
+                        return;
+                    }
+                    Ok(None) => {
+                        // No stored credentials — likely a no-auth server; fall
+                        // through to the plain probe.
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, server = %name, "re-test oauth probe failed");
+                        server.last_probed_at = Some(now);
+                        server.last_probe_error = Some(e.to_string());
+                        if let Err(e) = db.upsert_server(server).await {
+                            tracing::warn!(error = %e, "re-test oauth error upsert failed");
+                        }
+                        refresh_server_detail(&weak, &db, &name).await;
+                        refresh_servers(&weak, &db).await;
+                        return;
+                    }
+                }
+            }
+
+            // Non-OAuth path: reconstruct the env/headers from the stored server row.
+            let env_field = env_field_from_server(&server);
+            let env_pairs: Vec<(String, String)> = env_field
+                .split(',')
+                .filter_map(|chunk| {
+                    let chunk = chunk.trim();
+                    if chunk.is_empty() { return None; }
+                    let (k, v) = chunk.split_once('=')?;
+                    Some((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect();
+
+            // Also resolve any Secret-ref env entries (blocking keyring call on
+            // the worker thread — never on the UI thread).
+            let resolved_env: Vec<DraftEnvEntry> = if server.transport == TRANSPORT_STDIO {
+                let mut entries = Vec::new();
+                for env_entry in &server.env {
+                    let env_key = env_entry.name.clone();
+                    let value = match &env_entry.value {
+                        EnvValue::Plain(v) => Zeroizing::new(v.clone()),
+                        EnvValue::Secret(uuid) => {
+                            let server_name = name.clone();
+                            let uuid_owned = uuid.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                conduit::daemon::secrets::fetch(&server_name, &uuid_owned)
+                            })
+                            .await
+                            {
+                                Ok(Ok(v)) => Zeroizing::new(v),
+                                Ok(Err(e)) => {
+                                    tracing::warn!(error = %e, key = %env_key, "secret fetch failed for retest; skipping");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, key = %env_key, "secret fetch join failed for retest; skipping");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    entries.push(DraftEnvEntry {
+                        name: env_entry.name.clone(),
+                        value,
+                        is_secret: matches!(env_entry.value, EnvValue::Secret(_)),
+                    });
+                }
+                entries
+            } else {
+                Vec::new()
+            };
+
+            // Resolve the HTTP bearer: prefer a plain Authorization header, else
+            // fetch a Secret-backed bearer from the keyring. `headers_field_from_env`
+            // drops Secret values, so without this an HTTP server whose bearer is
+            // stored as a Secret would probe unauthenticated (#5). Latent today
+            // (nothing writes an HTTP bearer as Secret), fixed defensively.
+            let secret_bearer_uuid = server.env.iter().find_map(|e| match &e.value {
+                EnvValue::Secret(u) if e.name == http::BEARER_TOKEN_ENV => Some(u.clone()),
+                _ => None,
+            });
+            let http_bearer: Option<Zeroizing<String>> = if server.transport != TRANSPORT_HTTP {
+                None
+            } else if let Some(t) = bearer_from_headers(&env_pairs) {
+                Some(Zeroizing::new(t))
+            } else if let Some(uuid) = secret_bearer_uuid {
+                let server_name = name.clone();
+                match tokio::task::spawn_blocking(move || {
+                    conduit::daemon::secrets::fetch(&server_name, &uuid)
+                })
+                .await
+                {
+                    Ok(Ok(v)) => Some(Zeroizing::new(v)),
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, server = %name, "secret bearer fetch failed for retest; probing unauthenticated");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, server = %name, "secret bearer fetch join failed for retest");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            let draft = if server.transport == TRANSPORT_HTTP {
+                DraftServerConfig {
+                    name: name.clone(),
+                    transport: DraftTransport::Http {
+                        url: server.url.clone().unwrap_or_default(),
+                        auth: http_bearer.map_or(HttpAuth::None, HttpAuth::Bearer),
+                        headers: env_pairs,
+                    },
+                    lifecycle_seconds: server.lifecycle_seconds,
+                }
+            } else {
+                DraftServerConfig {
+                    name: name.clone(),
+                    transport: DraftTransport::Stdio {
+                        command: server.command.clone().unwrap_or_default(),
+                        args: server.args.clone(),
+                        env: resolved_env,
+                    },
+                    lifecycle_seconds: server.lifecycle_seconds,
+                }
+            };
+
             match probe::probe(&draft, cancel).await {
                 Ok(result) => {
                     let tools: Vec<DbMcpTool> = result
@@ -214,35 +396,14 @@ pub(crate) fn install_server_callbacks(window: &MainWindow, ctx: &CallbackContex
             if tool == "*" {
                 if let Ok(tools) = db.list_server_tools(&server).await {
                     for t in tools {
-                        if let Err(e) = db
-                            .set_tool_decision(&server, &t.name, decision, DecisionSource::User)
-                            .await
-                        {
+                        if let Err(e) = db.set_tool_decision(&server, &t.name, decision).await {
                             tracing::warn!(error = %e, "set tool decision failed");
                         }
                     }
                 }
-            } else if let Err(e) = db
-                .set_tool_decision(&server, &tool, decision, DecisionSource::User)
-                .await
-            {
+            } else if let Err(e) = db.set_tool_decision(&server, &tool, decision).await {
                 tracing::warn!(error = %e, "set tool decision failed");
             }
-            refresh_server_detail(&weak, &db, &server).await;
-        });
-    });
-
-    let db_for_toggle_target = db.clone();
-    let rt_for_toggle_target = rt.clone();
-    let weak_for_toggle_target = window.as_weak();
-    let port_for_toggle_target = port;
-    window.on_toggle_server_target(move |server, ide_kind, enable| {
-        let db = db_for_toggle_target.clone();
-        let weak = weak_for_toggle_target.clone();
-        let server = server.to_string();
-        let ide_kind = ide_kind.to_string();
-        rt_for_toggle_target.spawn(async move {
-            toggle_server_for_ide(&db, port_for_toggle_target, &server, &ide_kind, enable).await;
             refresh_server_detail(&weak, &db, &server).await;
         });
     });

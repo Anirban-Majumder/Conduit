@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -33,52 +33,117 @@ pub async fn bind_callback_listener() -> Result<(TcpListener, u16, String), Oaut
     Ok((listener, port, redirect_uri))
 }
 
-/// Accept one redirect, reply with HTML, return `(code, state)`. rmcp validates
-/// the CSRF `state` during token exchange, so we don't check it here. 5-minute
-/// hard cap.
+/// Timeout for reading + responding to a single accepted connection.
+const PER_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum bytes read for the HTTP request line; prevents unbounded allocation
+/// from a connection that trickle-feeds bytes.
+const MAX_REQUEST_LINE_BYTES: usize = 8192;
+
+/// Accept connections until one yields a valid `/callback?code=…` request, reply
+/// with HTML, then return `(code, state)`. rmcp validates the CSRF `state` during
+/// token exchange, so we don't check it here.
+///
+/// Browser pre-connect requests (which send nothing or garbage) are discarded and
+/// the loop continues. The overall 5-minute deadline and cancel token bound the
+/// whole loop; each accepted connection also has a short per-connection timeout so
+/// a stalled socket can't park the login forever.
 pub async fn wait_for_callback(
     listener: TcpListener,
     cancel: CancellationToken,
 ) -> Result<(String, String), OauthError> {
     let deadline = Duration::from_secs(300);
-    let accepted = tokio::select! {
-        biased;
-        () = cancel.cancelled() => return Err(OauthError::Cancelled),
-        r = tokio::time::timeout(deadline, listener.accept()) => {
-            r.map_err(|_elapsed| OauthError::CallbackTimeout(deadline))?
+    let deadline_at = tokio::time::Instant::now() + deadline;
+
+    loop {
+        // Wait for the next connection within the overall deadline.
+        let accepted = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(OauthError::Cancelled),
+            r = tokio::time::timeout_at(deadline_at, listener.accept()) => {
+                r.map_err(|_elapsed| OauthError::CallbackTimeout(deadline))?
+            }
+        };
+        let (mut stream, _addr) = accepted?;
+
+        // Per-connection short timeout covers read_line + write_all.
+        // Cancel-safe: the whole block is wrapped in timeout; we don't hold any
+        // state across the await points that would be lost on cancellation.
+        let conn_result = tokio::time::timeout(PER_CONNECTION_TIMEOUT, async {
+            let (rd, mut wr) = stream.split();
+            // Hard-cap the bytes the reader will ever produce: `read_line`
+            // internally loops until newline/EOF, so a length check between
+            // calls alone would not bound a newline-free byte stream.
+            let mut reader = BufReader::new(rd).take(MAX_REQUEST_LINE_BYTES as u64);
+            let mut request_line = String::new();
+
+            // Stops at the first newline, EOF, or the `take` cap.
+            loop {
+                let prev_len = request_line.len();
+                reader.read_line(&mut request_line).await?;
+                // Nothing appended → EOF or cap reached before a newline.
+                if request_line.len() == prev_len || request_line.ends_with('\n') {
+                    break;
+                }
+            }
+
+            let query = parse_callback_query(&request_line);
+
+            // Only accept connections that look like the real callback.
+            let is_callback = request_line.contains("/callback?");
+            let code = query
+                .as_ref()
+                .and_then(|q| q.get("code"))
+                .cloned()
+                .unwrap_or_default();
+            let state = query
+                .as_ref()
+                .and_then(|q| q.get("state"))
+                .cloned()
+                .unwrap_or_default();
+
+            let (status, body) = if !is_callback || code.is_empty() {
+                (
+                    "400 Bad Request",
+                    "<h1>Sign-in failed</h1><p>No authorization code returned. You can close this tab.</p>",
+                )
+            } else {
+                (
+                    "200 OK",
+                    "<h1>Signed in</h1><p>You can close this tab and return to Conduit.</p>",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            wr.write_all(response.as_bytes()).await.ok();
+            wr.flush().await.ok();
+
+            Ok::<_, std::io::Error>((is_callback, code, state))
+        })
+        .await;
+
+        match conn_result {
+            Err(_elapsed) => {
+                // Connection timed out (browser pre-connect / stalled client);
+                // fall through to the next accept iteration.
+                tracing::debug!(
+                    "oauth callback: per-connection timeout; waiting for next connection"
+                );
+            }
+            Ok(Err(e)) => {
+                // A reset/aborted connection (browsers tear down speculative
+                // pre-connect sockets with RST) must not kill the whole login
+                // wait — only the deadline or cancel token ends the loop.
+                tracing::debug!(error = %e, "oauth callback: connection error; waiting for next connection");
+            }
+            Ok(Ok((false, _, _))) => {
+                // Not a callback request (e.g. prefetch / favicon); keep waiting.
+            }
+            Ok(Ok((true, code, _))) if code.is_empty() => return Err(OauthError::MissingCode),
+            Ok(Ok((true, code, state))) => return Ok((code, state)),
         }
-    };
-    let (mut stream, _addr) = accepted?;
-    let (rd, mut wr) = stream.split();
-    let mut reader = BufReader::new(rd);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line).await?;
-    let query = parse_callback_query(&request_line).unwrap_or_default();
-    let state = query.get("state").cloned().unwrap_or_default();
-    let code = query.get("code").cloned().unwrap_or_default();
-
-    let (status, body) = if code.is_empty() {
-        (
-            "400 Bad Request",
-            "<h1>Sign-in failed</h1><p>No authorization code returned. You can close this tab.</p>",
-        )
-    } else {
-        (
-            "200 OK",
-            "<h1>Signed in</h1><p>You can close this tab and return to Conduit.</p>",
-        )
-    };
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    wr.write_all(response.as_bytes()).await.ok();
-    wr.flush().await.ok();
-
-    if code.is_empty() {
-        return Err(OauthError::MissingCode);
     }
-    Ok((code, state))
 }
 
 fn parse_callback_query(request_line: &str) -> Option<HashMap<String, String>> {
@@ -97,26 +162,31 @@ fn parse_callback_query(request_line: &str) -> Option<HashMap<String, String>> {
 }
 
 fn url_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    // Collect decoded bytes first, then interpret as UTF-8. Decoding each
+    // percent-encoded byte directly as `char` (Latin-1) mangles multibyte
+    // sequences — e.g. %C3%A9 ("é") must decode to [0xC3, 0xA9] together.
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
     let mut iter = s.bytes();
     while let Some(b) = iter.next() {
         match b {
-            b'+' => out.push(' '),
+            b'+' => bytes.push(b' '),
             b'%' => {
                 let hi = iter.next().and_then(|c| (c as char).to_digit(16));
                 let lo = iter.next().and_then(|c| (c as char).to_digit(16));
                 if let (Some(h), Some(l)) = (hi, lo) {
-                    let combined = h * 16 + l;
-                    let byte = u8::try_from(combined).unwrap_or(b'?');
-                    out.push(char::from(byte));
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "h*16+l fits in u8 (max 0xFF)"
+                    )]
+                    bytes.push((h * 16 + l) as u8);
                 } else {
-                    out.push(b as char);
+                    bytes.push(b);
                 }
             }
-            other => out.push(other as char),
+            other => bytes.push(other),
         }
     }
-    out
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(test)]
@@ -142,5 +212,16 @@ mod tests {
     #[test]
     fn parse_callback_query_none_without_query() {
         assert!(parse_callback_query("GET /callback HTTP/1.1").is_none());
+    }
+
+    #[test]
+    fn url_decode_multibyte_utf8() {
+        // "é" = U+00E9 = 0xC3 0xA9 in UTF-8.
+        // Latin-1 decoding would yield two garbage chars; correct decoding yields "é".
+        assert_eq!(url_decode("%C3%A9"), "é");
+        // Three-byte sequence: "€" = U+20AC = 0xE2 0x82 0xAC.
+        assert_eq!(url_decode("%E2%82%AC"), "€");
+        // Mixed: ASCII + multibyte.
+        assert_eq!(url_decode("caf%C3%A9"), "café");
     }
 }

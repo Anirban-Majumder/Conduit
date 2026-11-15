@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
     Json, Router,
@@ -81,8 +81,20 @@ async fn handle_mcp_get() -> (StatusCode, &'static str) {
 async fn handle_mcp(
     Path((key, server)): Path<(String, String)>,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(envelope): Json<Value>,
 ) -> axum::response::Response {
+    // DS-6: DNS-rebinding hardening — validate Host (and Origin if present) before
+    // any processing so unauthenticated callers learn nothing about daemon state.
+    if !host_is_local(&headers, state.port) {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+
+    // DS-5: JSON-RPC batch requests are arrays; we don't support them.
+    if envelope.is_array() {
+        return rpc_error_response(Value::Null, INVALID_REQUEST, "batch_not_supported");
+    }
+
     let id = envelope.get("id").cloned().unwrap_or(Value::Null);
     let method = envelope
         .get("method")
@@ -96,21 +108,29 @@ async fn handle_mcp(
         return (StatusCode::ACCEPTED, "").into_response();
     }
 
+    // DS-6 (second half): key validation before daemon-state checks so routing_paused
+    // is not visible to unauthenticated callers.
+    let client_lookup = match state.db.lookup_client_key(&key).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "db error looking up client key");
+            return rpc_error_response(id, INTERNAL, "internal");
+        }
+    };
+    let Some(client) = client_lookup else {
+        return rpc_error_response(id, IDE_KEY_INVALID, "ide_key_invalid");
+    };
+
     match state.db.get_settings_kv("routing_paused").await {
         Ok(Some(v)) if v == "true" => {
             return rpc_error_response(id, DAEMON_PAUSED, "daemon_paused");
         }
         Ok(_) => {}
-        Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
+        Err(e) => {
+            tracing::warn!(error = %e, "db error reading routing_paused");
+            return rpc_error_response(id, INTERNAL, "internal");
+        }
     }
-
-    let client_lookup = match state.db.lookup_client_key(&key).await {
-        Ok(v) => v,
-        Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
-    };
-    let Some(client) = client_lookup else {
-        return rpc_error_response(id, IDE_KEY_INVALID, "ide_key_invalid");
-    };
 
     if method == "initialize" {
         return rpc_success_response(id, conduit_initialize_result(&params));
@@ -121,11 +141,23 @@ async fn handle_mcp(
 
     let server_lookup = match state.db.get_server(&server).await {
         Ok(v) => v,
-        Err(e) => return rpc_error_response(id, INTERNAL, &format!("db: {e}")),
+        Err(e) => {
+            tracing::warn!(error = %e, "db error looking up server");
+            return rpc_error_response(id, INTERNAL, "internal");
+        }
     };
     let Some(server_cfg) = server_lookup else {
         return rpc_error_response(id, SERVER_NOT_FOUND, "server_not_found");
     };
+
+    match state.db.client_manages_server(&client.id, &server).await {
+        Ok(true) => {}
+        Ok(false) => return rpc_error_response(id, SERVER_NOT_FOUND, "server_not_found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "db error checking client_manages_server");
+            return rpc_error_response(id, INTERNAL, "internal");
+        }
+    }
 
     match route_tool_call(
         &state,
@@ -142,10 +174,58 @@ async fn handle_mcp(
         Ok(ProxyOutcome::ApprovalTimeout) => {
             rpc_error_response(id, APPROVAL_TIMEOUT, "approval_timeout")
         }
-        Err(ProxyError::Upstream(e)) => rpc_error_response(id, INTERNAL, &e.to_string()),
-        Err(ProxyError::Db(e)) => rpc_error_response(id, INTERNAL, &format!("db: {e}")),
-        Err(ProxyError::Approval(e)) => rpc_error_response(id, INTERNAL, &format!("approval: {e}")),
+        Ok(ProxyOutcome::MethodNotFound) => {
+            rpc_error_response(id, METHOD_NOT_FOUND, "method_not_found")
+        }
+        Err(ProxyError::Upstream(e)) => {
+            tracing::warn!(error = %e, "upstream error");
+            rpc_error_response(id, INTERNAL, "internal")
+        }
+        Err(ProxyError::Db(e)) => {
+            tracing::warn!(error = %e, "db error in proxy");
+            rpc_error_response(id, INTERNAL, "internal")
+        }
+        Err(ProxyError::Approval(e)) => {
+            tracing::warn!(error = %e, "approval error");
+            rpc_error_response(id, INTERNAL, "internal")
+        }
     }
+}
+
+/// Returns true if the request Host header (and Origin if present) refer to
+/// localhost or 127.0.0.1. Rejects anything else to prevent DNS-rebinding.
+fn host_is_local(headers: &HeaderMap, port: u16) -> bool {
+    // Both `localhost:<port>` and `127.0.0.1:<port>` are accepted; bare
+    // hostnames without port are also allowed (some clients omit it for port 80).
+    let is_local_host = |value: &str| -> bool {
+        let h = value.split('/').next().unwrap_or(value); // strip any path component
+        matches!(h, "localhost" | "127.0.0.1")
+            || h == format!("localhost:{port}")
+            || h == format!("127.0.0.1:{port}")
+    };
+
+    let host_ok = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_local_host);
+
+    if !host_ok {
+        return false;
+    }
+
+    // Origin is optional; if present it must also be local.
+    if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+        // Origin looks like `http://localhost:1234` — strip scheme.
+        let after_scheme = origin
+            .strip_prefix("http://")
+            .or_else(|| origin.strip_prefix("https://"))
+            .unwrap_or(origin);
+        if !is_local_host(after_scheme) {
+            return false;
+        }
+    }
+
+    true
 }
 
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
@@ -178,6 +258,10 @@ pub const APPROVAL_TIMEOUT: i32 = -32001;
 pub const SERVER_NOT_FOUND: i32 = -32002;
 pub const IDE_KEY_INVALID: i32 = -32003;
 pub const DAEMON_PAUSED: i32 = -32004;
+/// Standard JSON-RPC -32601: method does not exist or is not available.
+pub const METHOD_NOT_FOUND: i32 = -32601;
+/// Standard JSON-RPC -32600: invalid request (e.g. batch arrays).
+pub const INVALID_REQUEST: i32 = -32600;
 pub const INTERNAL: i32 = -32603;
 
 fn rpc_success_response(id: Value, result: Value) -> axum::response::Response {
@@ -204,31 +288,73 @@ fn rpc_error_response(id: Value, code: i32, reason: &str) -> axum::response::Res
 
 /// Resolve a DB-stored `McpServer` into the upstream-layer `ServerConfig`, fetching
 /// keyring secrets. Caller must already have the `McpServer` row.
-pub(crate) fn server_to_config(
+///
+/// Keyring I/O runs inside a single `spawn_blocking` call so that synchronous
+/// D-Bus/keychain operations do not block tokio workers; the common all-plain
+/// case resolves inline without a blocking-pool hop.
+pub(crate) async fn server_to_config(
     server: &McpServer,
 ) -> Result<crate::daemon::upstream::manager::ServerConfig, ServerError> {
     use crate::daemon::db::types::{EnvValue, TRANSPORT_HTTP, TRANSPORT_STDIO};
     use crate::daemon::secrets;
+    use crate::daemon::upstream::http::BEARER_TOKEN_ENV;
     use crate::daemon::upstream::manager::{ServerConfig, Transport};
 
-    use crate::daemon::upstream::http::BEARER_TOKEN_ENV;
+    let has_secrets = server
+        .env
+        .iter()
+        .any(|e| matches!(e.value, EnvValue::Secret(_)));
 
-    let resolved_env: Vec<(String, String)> = {
-        let mut out = Vec::with_capacity(server.env.len());
-        for entry in &server.env {
-            let value = match &entry.value {
-                EnvValue::Plain(v) => v.clone(),
-                EnvValue::Secret(uuid) => match secrets::fetch(&server.name, uuid) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, server = %server.name, env = %entry.name, "secret fetch failed");
-                        String::new()
-                    }
-                },
-            };
-            out.push((entry.name.clone(), value));
-        }
-        out
+    let resolved_env: Vec<(String, String)> = if has_secrets {
+        // Collect the data needed inside the blocking closure up front so we
+        // do not borrow `server` across the spawn boundary.
+        let server_name = server.name.clone();
+        let env_entries: Vec<(String, EnvValue)> = server
+            .env
+            .iter()
+            .map(|e| (e.name.clone(), e.value.clone()))
+            .collect();
+        tokio::task::spawn_blocking(move || -> Vec<(String, String)> {
+            let mut out = Vec::with_capacity(env_entries.len());
+            for (name, value) in env_entries {
+                let resolved = match value {
+                    EnvValue::Plain(v) => v,
+                    EnvValue::Secret(uuid) => match secrets::fetch(&server_name, &uuid) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                server = %server_name,
+                                env = %name,
+                                "secret fetch failed"
+                            );
+                            String::new()
+                        }
+                    },
+                };
+                out.push((name, resolved));
+            }
+            out
+        })
+        .await
+        .map_err(|e| {
+            ServerError::Io(std::io::Error::other(format!(
+                "spawn_blocking join error: {e}"
+            )))
+        })?
+    } else {
+        server
+            .env
+            .iter()
+            .map(|e| {
+                let value = match &e.value {
+                    EnvValue::Plain(v) => v.clone(),
+                    // Unreachable: has_secrets is false on this branch.
+                    EnvValue::Secret(_) => String::new(),
+                };
+                (e.name.clone(), value)
+            })
+            .collect()
     };
 
     let transport = match server.transport.as_str() {
@@ -266,6 +392,7 @@ pub(crate) fn server_to_config(
 mod tests {
     #![allow(clippy::indexing_slicing, reason = "test ergonomics")]
     use super::*;
+    use axum::http::HeaderMap;
 
     #[test]
     fn error_codes_match_spec() {
@@ -274,7 +401,52 @@ mod tests {
         assert_eq!(SERVER_NOT_FOUND, -32002);
         assert_eq!(IDE_KEY_INVALID, -32003);
         assert_eq!(DAEMON_PAUSED, -32004);
+        assert_eq!(METHOD_NOT_FOUND, -32601);
+        assert_eq!(INVALID_REQUEST, -32600);
         assert_eq!(INTERNAL, -32603);
+    }
+
+    // DS-5: batch requests (JSON arrays) must return -32600 INVALID_REQUEST.
+    #[test]
+    fn batch_envelope_is_array() {
+        let envelope = json!([{"jsonrpc": "2.0", "id": 1, "method": "ping"}]);
+        assert!(envelope.is_array(), "batch detection requires is_array()");
+    }
+
+    // DS-6: host_is_local rejects external origins.
+    #[test]
+    fn host_is_local_allows_localhost() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "localhost:9876".parse().unwrap());
+        assert!(host_is_local(&headers, 9876));
+    }
+
+    #[test]
+    fn host_is_local_allows_127() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:9876".parse().unwrap());
+        assert!(host_is_local(&headers, 9876));
+    }
+
+    #[test]
+    fn host_is_local_rejects_external() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "evil.example.com".parse().unwrap());
+        assert!(!host_is_local(&headers, 9876));
+    }
+
+    #[test]
+    fn host_is_local_rejects_bad_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "localhost:9876".parse().unwrap());
+        headers.insert("origin", "http://evil.example.com".parse().unwrap());
+        assert!(!host_is_local(&headers, 9876));
+    }
+
+    #[test]
+    fn host_is_local_missing_host_rejected() {
+        let headers = HeaderMap::new();
+        assert!(!host_is_local(&headers, 9876));
     }
 
     #[test]
